@@ -1,0 +1,17 @@
+{
+  "dexscreener_url": "https://api.dexscreener.com/latest/dex/search?q=",
+  "coingecko_url": "https://api.coingecko.com/api/v3/simple/price",
+  "bsc_rpc": "https://bsc-dataseed.binance.org",
+  "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+  "symbol_map": {
+    "BNB": "binancecoin",
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "USDT": "tether",
+    "USDC": "usd-coin",
+    "CAKE": "pancakeswap-token",
+    "ALPACA": "alpaca-finance",
+    "ADA": "cardano",
+    "BUSD": "binance-usd"
+  }
+}
