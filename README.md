@@ -33,9 +33,6 @@ A high-performance arbitrage bot that scans 13 different arbitrage strategies ac
 - **Real-Time Telegram Alerts**: Instant notifications
 
 ### 💰 **Expected Performance**
-- **Daily Opportunities**: 50-200 micro-arbitrage trades
-- **Average Profit**: $15-80 per trade
-- **Total Daily**: $750-$16,000
 - **Volatility Multiplier**: 2x faster scanning during market moves
 
 ## 📋 Prerequisites
