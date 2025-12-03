@@ -1,7 +1,10 @@
 {
-  "dexscreener_url": "https://api.dexscreener.com/latest/dex/search?q=",
-  "coingecko_url": "https://api.coingecko.com/api/v3/simple/price",
-  "bsc_rpc": "https://bsc-dataseed.binance.org",
+    "apiEndpoints": {
+        "dexscreener": "https://api.dexscreener.com/latest/dex",
+        "geckoterminal": "https://api.geckoterminal.com/api/v2",
+        "coingecko": "https://api.coingecko.com/api/v3",
+        "1inch": "https://api.1inch.io/v5.0/56"
+    },
   "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
   "symbol_map": {
     "BNB": "binancecoin",

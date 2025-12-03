@@ -1,0 +1,6 @@
+{
+  "liquidationThreshold": 0.8,
+  "maxGasPriceGwei": 30,
+  "minProfitUsd": 200,
+  "scanIntervalSeconds": 15
+}

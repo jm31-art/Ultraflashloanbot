@@ -8,7 +8,7 @@ class RiskManager {
         this.circuitBreakers = {
             maxGasPrice: BigInt(50e9), // 50 Gwei
             minLiquidity: BigInt(1e18), // 1 ETH
-            maxSlippage: 0.5, // 0.5%
+            maxSlippage: 0.005, // 0.5% - Updated to match production config
             profitThreshold: BigInt(1e17), // 0.1 ETH
         };
         

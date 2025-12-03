@@ -4,11 +4,37 @@ const fs = require('fs');
 const path = require('path');
 
 class PriceService {
-    constructor() {
-        const configPath = path.join(__dirname, '../config/price_sources.json');
-        this.CONFIG = JSON.parse(fs.readFileSync(configPath));
-        
-        this.provider = new ethers.providers.JsonRpcProvider(this.CONFIG.bsc_rpc);
+    constructor(provider = null) {
+        // Allow provider to be passed in for testing
+        this.provider = provider;
+
+        // Default config if file doesn't exist
+        this.CONFIG = {
+            bsc_rpc: 'https://bsc-dataseed.binance.org/',
+            router: '0x10ED43C718714eb63d5aA57B78B54704E256024E',
+            apiEndpoints: {
+                coingecko: 'https://api.coingecko.com/api/v3',
+                dexscreener: 'https://api.dexscreener.com/latest'
+            },
+            symbol_map: {
+                'BNB': 'binancecoin',
+                'USDT': 'tether',
+                'BTC': 'bitcoin',
+                'ETH': 'ethereum'
+            }
+        };
+
+        try {
+            const configPath = path.join(__dirname, '../config/price_sources.json');
+            const fileConfig = JSON.parse(fs.readFileSync(configPath));
+            this.CONFIG = { ...this.CONFIG, ...fileConfig };
+        } catch (error) {
+            // Use defaults if config file doesn't exist
+        }
+
+        if (!this.provider) {
+            this.provider = new ethers.providers.JsonRpcProvider(this.CONFIG.bsc_rpc);
+        }
         
         this.routerAbi = [
             {
@@ -41,11 +67,20 @@ class PriceService {
         
         let price = null;
         
-        // Try DexScreener first
+        // Try DexScreener first with corrected endpoint
         try {
-            const res = await axios.get(this.CONFIG.dexscreener_url + `${base}/${quote}`);
-            if (res.data?.pairs?.length) {
-                price = parseFloat(res.data.pairs[0].priceUsd);
+            const res = await axios.get(`${this.CONFIG.apiEndpoints.dexscreener}/pairs/bsc/${this.CONFIG.router}`);
+            if (res.data?.pairs) {
+                const pair = res.data.pairs.find(p => 
+                    (p.baseToken.symbol === base && p.quoteToken.symbol === quote) ||
+                    (p.baseToken.symbol === quote && p.quoteToken.symbol === base)
+                );
+                if (pair) {
+                    price = parseFloat(pair.priceUsd);
+                    if (pair.baseToken.symbol === quote) {
+                        price = 1 / price;
+                    }
+                }
             }
         } catch (e) {
             console.log(`DexScreener error for ${base}/${quote}:`, e.message);
@@ -71,7 +106,7 @@ class PriceService {
                 ].join(",");
                 
                 const response = await axios.get(
-                    `${this.CONFIG.coingecko_url}?ids=${ids}&vs_currencies=usd`
+                    `${this.CONFIG.apiEndpoints.coingecko}/simple/price?ids=${ids}&vs_currencies=usd`
                 );
                 
                 const data = response.data;
@@ -98,14 +133,14 @@ class PriceService {
             const baseAmount = ethers.utils.parseUnits("1", 18);
             const basePrice = await this.router.getAmountsOut(
                 baseAmount,
-                [token, this.TOKENS.USDT]
+                [token, '0x55d398326f99059fF775485246999027B3197955'] // USDT address
             );
-            
+
             // Get price for actual amount
             const actualAmount = ethers.utils.parseUnits(amount.toString(), 18);
             const actualPrice = await this.router.getAmountsOut(
                 actualAmount,
-                [token, this.TOKENS.USDT]
+                [token, '0x55d398326f99059fF775485246999027B3197955'] // USDT address
             );
             
             // Calculate price impact

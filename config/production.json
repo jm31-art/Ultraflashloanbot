@@ -1,0 +1,46 @@
+{
+    "safeTradeAmounts": {
+        "WBNB": {
+            "maxSafeAmount": "5000000000000000000",
+            "description": "5 BNB - Maximum safe amount to avoid slippage",
+            "slippageThreshold": "0.005",
+            "liquidityRatio": "0.1"
+        },
+        "USDT": {
+            "maxSafeAmount": "1000000000000",
+            "description": "1M USDT - Maximum safe amount to avoid slippage",
+            "slippageThreshold": "0.005",
+            "liquidityRatio": "0.1"
+        },
+        "USDC": {
+            "maxSafeAmount": "1000000000000",
+            "description": "1M USDC - Maximum safe amount to avoid slippage",
+            "slippageThreshold": "0.005",
+            "liquidityRatio": "0.1"
+        },
+        "ETH": {
+            "maxSafeAmount": "1000000000000000000",
+            "description": "1 ETH - Maximum safe amount to avoid slippage",
+            "slippageThreshold": "0.005",
+            "liquidityRatio": "0.1"
+        },
+        "BTC": {
+            "maxSafeAmount": "50000000",
+            "description": "0.5 BTCB - Maximum safe amount to avoid slippage",
+            "slippageThreshold": "0.005",
+            "liquidityRatio": "0.1"
+        }
+    },
+    "riskParameters": {
+        "maxSlippageTolerance": "0.005",
+        "minLiquidityRatio": "0.1",
+        "maxGasPriceGwei": "50",
+        "minProfitMargin": "0.01",
+        "circuitBreakerThreshold": "0.02"
+    },
+    "tradingLimits": {
+        "maxDailyVolume": "10000000000000000000000",
+        "maxSingleTrade": "10000000000000000000",
+        "minTradeInterval": "30000"
+    }
+}

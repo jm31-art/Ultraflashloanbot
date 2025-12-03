@@ -1,0 +1,40 @@
+{
+    "dexes": {
+        "PancakeSwap": {
+            "factory": "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+            "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+            "version": "v2",
+            "fee": 0.25
+        },
+        "ApeSwap": {
+            "factory": "0x0841BD0B734E4F5853f0dD8d7Ea041c241fb0Da6",
+            "router": "0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7",
+            "version": "v2",
+            "fee": 0.2
+        },
+        "BiSwap": {
+            "factory": "0x858E3312ed3A876947EA49d572A7C42DE08af7EE",
+            "router": "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8",
+            "version": "v2",
+            "fee": 0.1
+        }
+    },
+    "rpcUrls": [
+        "https://bsc-dataseed.binance.org",
+        "https://bsc-dataseed1.defibit.io",
+        "https://bsc-dataseed1.ninicoin.io",
+        "https://bsc-dataseed2.defibit.io"
+    ],
+    "wsUrls": [
+        "wss://bsc-ws-node.nariox.org:443",
+        "wss://bsc.getblock.io/mainnet/"
+    ],
+    "multicallAddress": "0x1Ee38d535d541c55C9dae27B12edf090C608E6Fb",
+    "retryAttempts": 3,
+    "retryDelay": 1000,
+    "priceUpdateInterval": 1000,
+    "minLiquidity": 50000,
+    "maxPriceDeviation": 1.0,
+    "gasLimit": 500000,
+    "defaultSlippage": 0.5
+}

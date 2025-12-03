@@ -1,0 +1,25 @@
+{
+  "unifiedManager": {
+    "maxConcurrentStrategies": 3,
+    "strategyRotationInterval": 3600000,
+    "performanceRebalancingInterval": 1800000
+  },
+  "strategies": {
+    "flashloanArbitrage": {
+      "enabled": true,
+      "resourceAllocation": 0.4,
+      "minProfitThreshold": 0.01,
+      "maxGasPrice": 10
+    },
+    "liquidation": {
+      "enabled": true,
+      "resourceAllocation": 0.3,
+      "minProfitThreshold": 0.02
+    },
+    "mevProtection": {
+      "enabled": true,
+      "resourceAllocation": 0.3,
+      "protectionLevel": "high"
+    }
+  }
+}

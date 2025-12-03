@@ -1,0 +1,46 @@
+{
+    "profitThresholds": {
+        "WBNB": {
+            "minProfitUSD": "50",
+            "description": "Minimum profit in USD for BNB trades"
+        },
+        "USDT": {
+            "minProfitUSD": "100",
+            "description": "Minimum profit in USD for USDT trades"
+        },
+        "USDC": {
+            "minProfitUSD": "100",
+            "description": "Minimum profit in USD for USDC trades"
+        },
+        "ETH": {
+            "minProfitUSD": "75",
+            "description": "Minimum profit in USD for ETH trades"
+        },
+        "BTC": {
+            "minProfitUSD": "150",
+            "description": "Minimum profit in USD for BTC trades"
+        }
+    },
+    "withdrawalThresholds": {
+        "WBNB": {
+            "minWithdrawUSD": "100",
+            "description": "Minimum amount in USD to trigger BNB withdrawal"
+        },
+        "USDT": {
+            "minWithdrawUSD": "200",
+            "description": "Minimum amount in USD to trigger USDT withdrawal"
+        },
+        "USDC": {
+            "minWithdrawUSD": "200",
+            "description": "Minimum amount in USD to trigger USDC withdrawal"
+        },
+        "ETH": {
+            "minWithdrawUSD": "150",
+            "description": "Minimum amount in USD to trigger ETH withdrawal"
+        },
+        "BTC": {
+            "minWithdrawUSD": "300",
+            "description": "Minimum amount in USD to trigger BTC withdrawal"
+        }
+    }
+}

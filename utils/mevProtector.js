@@ -33,9 +33,34 @@ class MEVProtector {
     }
 
     async sendViaFlashbots(txData) {
-        // Implement Flashbots bundling
-        // This requires Flashbots RPC setup
-        return txData;
+        // Use Flashbots bundler for MEV protection
+        const FlashbotsBundler = require('./FlashbotsBundler');
+        const bundler = new FlashbotsBundler(this.web3.currentProvider, null, 'mainnet');
+
+        try {
+            await bundler.initialize();
+
+            // Create bundle with the arbitrage transaction
+            const bundle = await bundler.createArbitrageBundle(txData);
+
+            // Get target block number
+            const currentBlock = await this.web3.eth.getBlockNumber();
+            const targetBlockNumber = currentBlock + 1;
+
+            // Submit bundle
+            const result = await bundler.submitBundle(bundle, targetBlockNumber);
+
+            if (result.success) {
+                console.log(`Flashbots bundle submitted successfully: ${result.bundleHash}`);
+                return { success: true, bundleHash: result.bundleHash };
+            } else {
+                console.error('Flashbots bundle submission failed:', result.error);
+                return { success: false, error: result.error };
+            }
+        } catch (error) {
+            console.error('Flashbots transaction failed:', error);
+            return { success: false, error: error.message };
+        }
     }
 }
 

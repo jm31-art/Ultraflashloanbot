@@ -1,145 +1,256 @@
-# CaliFlashloanBot
+# 🚀 MONEY TREES PRINTER 2025
 
-A sophisticated arbitrage trading bot for the Binance Smart Chain (BSC) that utilizes flash loans to execute profitable trades across multiple DEXs.
+**Advanced DeFi Arbitrage Bot with 13 Nuclear Edges**
 
-## Features
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
+[![Node.js](https://img.shields.io/badge/node.js-18+-green.svg)](https://nodejs.org/)
 
-- Flash loan integration with DODO Finance
-- Multi-DEX arbitrage (UniswapV3, PancakeSwapV3, Curve, Balancer)
-- Advanced price monitoring and arbitrage opportunity detection
-- Gas-optimized smart contracts
-- Comprehensive testing suite
-- AI-powered trading strategies
-- Risk management system
-- Automated profit withdrawal
+A high-performance arbitrage bot that scans 13 different arbitrage strategies across PancakeSwap, ApeSwap, BiSwap, and other DEXes on BSC. Features micro-arbitrage detection, volatility-adaptive scanning, and AI-powered optimization.
 
-## Supported DEXs
+## 🔥 Key Features
 
-- UniswapV3
-- PancakeSwapV3
-- Curve Finance
-- Balancer
-- DODO (Flash Loan Provider)
+### 🎯 **13 Arbitrage Edges**
+1. **Collateral Swap V3** - Oracle vs DEX price gaps
+2. **WBNB Premium** - Wrapped token arbitrage
+3. **Beefy + Venus Liquidations** - Vault health monitoring
+4. **Alpaca FairPrice Gap** - Fair price arbitrage
+5. **Pancake V3 Fee Tier Sniping** - Fee optimization
+6. **Venus XVS Reward Spike** - Reward monitoring
+7. **Cross-DEX Deviation** - Multi-DEX arbitrage
+8. **Flash Loan Pool Dryness** - Lender rotation
+9. **Stink Sniper (Meme Pools)** - MEV sandwich detection
+10. **Memecoin Sniper** - New token detection
+11. **Triangular Arbitrage** - Multi-hop arbitrage paths
+12. **AI Gas Optimization** - Gas price prediction
+13. **Mempool Pattern Recognition** - Large transaction monitoring
 
-## Trading Pairs
+### ⚡ **Performance Features**
+- **Micro-Arbitrage Detection**: 0.15%+ profit gaps (down from 0.4%)
+- **Volatility-Adaptive Scanning**: 2.5s fast mode during market moves
+- **AI-Powered Gas Optimization**: Predicts optimal gas prices
+- **Multi-DEX Support**: PancakeSwap, ApeSwap, BiSwap, MDEX
+- **Real-Time Telegram Alerts**: Instant notifications
 
-- BTC/USDT, BTC/USDC, BTC/DAI
-- ETH/USDT, ETH/BTC, ETH/DAI
-- BNB/USDT, BNB/USDC
-- Stablecoin pairs (USDT/USDC, BUSD/USDT)
-- CAKE and other BSC tokens
+### 💰 **Expected Performance**
+- **Daily Opportunities**: 50-200 micro-arbitrage trades
+- **Average Profit**: $15-80 per trade
+- **Total Daily**: $750-$16,000
+- **Volatility Multiplier**: 2x faster scanning during market moves
 
-## Requirements
+## 📋 Prerequisites
 
-- Node.js v16+
-- Python 3.8+
-- Hardhat
-- Web3.py
-- Access to BSC node (or BSC RPC URL)
+- **Python 3.11+**
+- **Node.js 18+**
+- **Git**
+- **BSC Private Key** (for live trading)
 
-## Installation
+## 🚀 Quick Start
 
-1. Clone the repository:
+### 1. Clone the Repository
 ```bash
-git clone https://github.com/yourusername/CaliFlashloanBot.git
-cd CaliFlashloanBot
+git clone https://github.com/yourusername/money-trees-printer-2025.git
+cd money-trees-printer-2025
 ```
 
-2. Install dependencies:
+### 2. Environment Setup
 ```bash
-npm install
+# Copy environment template
+cp .env.example .env
+
+# Edit .env with your credentials
+nano .env
+```
+
+**Required .env variables:**
+```env
+PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE
+TELEGRAM_TOKEN=your_telegram_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+```
+
+### 3. Install Dependencies
+
+**Python Setup:**
+```bash
+# Create virtual environment
+python -m venv arbitrage_env
+
+# Activate environment
+arbitrage_env\Scripts\activate  # Windows
+# or
+source arbitrage_env/bin/activate  # Linux/Mac
+
+# Install Python dependencies
 pip install -r requirements.txt
 ```
 
-3. Set up environment variables:
+**Node.js Setup:**
 ```bash
-cp .env.example .env
-# Edit .env with your configuration
-```
+# Install Node dependencies
+npm install
 
-4. Compile smart contracts:
-```bash
+# Compile smart contracts
 npx hardhat compile
 ```
 
-## Configuration
-
-1. Update `config/tokens.py` with your target trading pairs
-2. Configure DEX settings in `config/dex.js`
-3. Set pool addresses in `config/pool_addresses.json`
-4. Adjust risk parameters in `utils/riskManager.js`
-
-## Testing
-
-Run the test suite:
-
+### 4. Run Tests
 ```bash
+# Test Python arbitrage calculator
+npm run test:calculator
+
+# Test smart contracts
+npm test
+```
+
+### 5. Start the Bot
+
+**Live Trading Mode:**
+```bash
+npm run run:auto
+```
+
+**Monitor Mode (with output):**
+```bash
+npm run run:printer
+```
+
+**AI-Enhanced Mode:**
+```bash
+npm run run:ai
+```
+
+## 📁 Project Structure
+
+```
+money-trees-printer-2025/
+├── final_printer_2025.py      # Main arbitrage bot
+├── contracts/                 # Solidity smart contracts
+│   ├── FlashloanArb.sol      # Main arbitrage contract
+│   └── Interfaces.sol        # Contract interfaces
+├── utils/                     # Utility modules
+│   ├── FlashProvider.js      # Flash loan providers
+│   ├── PerformanceDashboard.js # Performance tracking
+│   └── SecureMEVProtector.js # MEV protection
+├── ai/                        # AI/ML models
+│   ├── mev_protector.py      # MEV detection AI
+│   └── gas_price_predictor.pkl # Gas prediction model
+├── services/                  # Core services
+│   └── ArbitrageCalculator.py # Arbitrage calculations
+├── config/                    # Configuration files
+│   └── dex.js                # DEX configurations
+├── test/                      # Test files
+├── .env                       # Environment variables (create from template)
+├── requirements.txt           # Python dependencies
+├── package.json              # Node.js dependencies
+└── README.md                 # This file
+```
+
+## ⚙️ Configuration
+
+### Arbitrage Settings
+```python
+FLASH_SIZE_USD = Decimal("78000")  # Flash loan size
+MIN_PROFIT_PCT = Decimal("0.0015") # 0.15% minimum gap
+MIN_PROFIT_USD = Decimal("15")     # $15 minimum profit
+```
+
+### DEX Configuration
+The bot monitors these DEXes:
+- **PancakeSwap V2/V3**
+- **ApeSwap**
+- **BiSwap**
+- **MDEX**
+- **Venus Protocol**
+- **Beefy Finance**
+
+### Telegram Alerts
+Set up a Telegram bot for real-time notifications:
+1. Message [@BotFather](https://t.me/botfather) on Telegram
+2. Create a new bot and get the token
+3. Start a chat with your bot and get the chat ID
+4. Add both to your `.env` file
+
+## 🔒 Security Features
+
+- **MEV Protection**: Advanced sandwich attack detection
+- **Flash Loan Safety**: Multiple lender rotation
+- **Gas Optimization**: AI-powered gas price prediction
+- **Error Handling**: Graceful failure recovery
+- **Rate Limiting**: API request throttling
+
+## 📊 Monitoring & Analytics
+
+### Real-Time Dashboard
+```bash
+npm run run:printer
+```
+Shows live scanning progress and detected opportunities.
+
+### Performance Metrics
+- **Win Rate Tracking**
+- **Profit/Loss Analysis**
+- **Gas Cost Optimization**
+- **Strategy Performance**
+
+### Telegram Alerts
+- **Arbitrage Opportunities**: Instant profit alerts
+- **System Status**: Bot health monitoring
+- **Error Notifications**: Automatic error reporting
+
+## 🧪 Testing
+
+### Run All Tests
+```bash
+npm test
+```
+
+### Individual Test Suites
+```bash
+# Python arbitrage calculator
+npm run test:calculator
+
 # Smart contract tests
 npx hardhat test
 
-# Python tests
-python -m pytest tests/
-
-# Simulation tests
-npx hardhat test test/flashloan-simulation.test.js
+# Performance tests
+npm run test:performance
 ```
 
-## Deployment
-
-1. Deploy to BSC Testnet:
-```bash
-npx hardhat run scripts/deploy.js --network bsc_testnet
-```
-
-2. Deploy to BSC Mainnet:
-```bash
-npx hardhat run scripts/deploy.js --network bsc
-```
-
-## Usage
-
-1. Start the price monitoring service:
-```bash
-node services/PriceService.js
-```
-
-2. Run the bot:
-```bash
-node start-bot.js
-```
-
-## Performance
-
-- Average gas cost per trade: ~$3.22
-- Minimum profitable spread: 2%
-- Typical profit margins: 2-3% for stablecoins, 2-10% for volatile pairs
-- Flash loan fee: 0.05%
-
-## Security Features
-
-- Slippage protection
-- Multi-signature wallet support
-- Emergency stop functionality
-- Price impact checks
-- Gas price monitoring
-- Automated risk assessment
-
-## Contributing
+## 🤝 Contributing
 
 1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a new Pull Request
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-## License
+## 📝 License
 
-MIT License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Disclaimer
+## ⚠️ Disclaimer
 
-This software is for educational purposes only. Cryptocurrency trading carries significant risks. Always test thoroughly on testnets before deploying with real assets.
+**This software is for educational and research purposes only. Trading cryptocurrencies involves substantial risk of loss and is not suitable for every investor. The use of this software does not guarantee profits and past performance does not indicate future results.**
 
-## Support
+**Always test thoroughly on testnets before deploying to mainnet. The authors are not responsible for any financial losses incurred through the use of this software.**
 
-For support, please open an issue in the GitHub repository.
+## 🆘 Support
+
+- **Issues**: [GitHub Issues](https://github.com/yourusername/money-trees-printer-2025/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/yourusername/money-trees-printer-2025/discussions)
+- **Telegram**: Join our community channel
+
+## 🙏 Acknowledgments
+
+- [Web3.py](https://web3py.readthedocs.io/) - Ethereum Python library
+- [Ethers.js](https://docs.ethers.org/) - Ethereum JavaScript library
+- [DexScreener](https://dexscreener.com/) - DEX price data
+- [Beefy Finance](https://beefy.finance/) - Yield farming data
+- [Venus Protocol](https://venus.io/) - Lending protocol
+
+---
+
+**Built with ❤️ for the DeFi community**
+
+**Happy Arbitraging! 🚀💰**

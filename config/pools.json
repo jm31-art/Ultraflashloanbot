@@ -1,0 +1,113 @@
+{
+    "mainnet": {
+        "dexes": {
+            "uniswap_v2": {
+                "factory": "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",
+                "router": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+                "pools": {
+                    "WETH-USDC": "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",
+                    "WETH-USDT": "0x0d4a11d5EEaaC28EC3F61d100daF4d40471f1852",
+                    "USDC-USDT": "0x3041CbD36888beC069C41B19F5F946F499D3A546",
+                    "WBTC-WETH": "0xBb2b8038a1640196FbE3e38816F3e67Cba72D940"
+                }
+            },
+            "uniswap_v3": {
+                "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+                "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+                "pools": {
+                    "WETH-USDC-500": "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+                    "WETH-USDT-500": "0x11b815efB8f581194ae79006d24E0d814B7697F6",
+                    "USDC-USDT-100": "0x3416cF6C708Da44DB2624D63ea0AAef7113527C6",
+                    "WBTC-WETH-500": "0x4585FE77225b41b697C938B018E2Ac67Ac5a20c0"
+                }
+            },
+            "sushiswap": {
+                "factory": "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac",
+                "router": "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F",
+                "pools": {
+                    "WETH-USDC": "0x397FF1542f962076d0BFE58eA045FfA2d347ACa0",
+                    "WETH-USDT": "0x06da0fd433C1A5d7a4faa01111c044910A184553",
+                    "WBTC-WETH": "0xCEfF51756c56CeFFCA006cD410B03FFC46dd3a58",
+                    "SUSHI-WETH": "0x795065dCc9f64b5614C407a6EFDC400DA6221FB0"
+                }
+            },
+            "pancakeswap": {
+                "factory": "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+                "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+                "pools": {
+                    "WBNB-BUSD": "0x58F876857a02D6762E0101bb5C46A8c1ED44Dc16",
+                    "WBNB-USDT": "0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE",
+                    "WBNB-CAKE": "0x0eD7e52944161450477ee417DE9Cd3a859b14fD0",
+                    "BUSD-USDT": "0x7EFaEf62fDdCCa950418312c6C91Aef321375A00"
+                }
+            },
+            "biswap": {
+                "factory": "0x858E3312ed3A876947EA49d572A7C42DE08af7EE",
+                "router": "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8",
+                "pools": {
+                    "WBNB-BUSD": "0xaCAac9311b0096E04Dfe96b6D87dec867d3883Dc",
+                    "WBNB-USDT": "0x8840C6252e2e86e545deFb6da98B2a0E26d8C1BA",
+                    "BUSD-USDT": "0x86b5152e78316DD3339d7B0BB9b70a26E723dEA1"
+                }
+            },
+            "apeswap": {
+                "factory": "0x0841BD0B734E4F5853f0dD8d7Ea041c241fb0Da6",
+                "router": "0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7",
+                "pools": {
+                    "WBNB-BUSD": "0x51e6D27FA57373d8d4C256231241053a70Cb1d93",
+                    "WBNB-USDT": "0x83C5b5b309EE8E232Fe9dB217d394e262a71bCC4",
+                    "BUSD-USDT": "0x4b49eE462EA0984fdD29abc4a36A1CD6f404Ec6e"
+                }
+            }
+        },
+        "lending": {
+            "aave_v3": {
+                "lendingPool": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+                "pools": {
+                    "WETH": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                    "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                    "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+                    "WBTC": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
+                }
+            },
+            "aave_v2": {
+                "lendingPool": "0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9",
+                "pools": {
+                    "WETH": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                    "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                    "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+                    "WBTC": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
+                }
+            },
+            "venus": {
+                "unitroller": "0xfD36E2c2a6789Db23113685031d7F16329158384",
+                "pools": {
+                    "WBNB": "0xA07c5b74C9B40447a954e1466938b865b6BBea36",
+                    "BUSD": "0x95c78222B3D6e262426483D42CfA53685A67Ab9D",
+                    "USDT": "0xfD5840Cd36d94D7229439859C0112a4185BC0255"
+                }
+            }
+        }
+    },
+    "testnet": {
+        "dexes": {
+            "pancakeswap": {
+                "factory": "0x6725F303b657a9451d8BA641348b6761A6CC7a17",
+                "router": "0xD99D1c33F9fC3444f8101754aBC46c52416550D1",
+                "pools": {
+                    "WBNB-BUSD": "0x4E96D2e92680Ca65D58A0e2eB5bd1c0f44cAB897",
+                    "WBNB-USDT": "0x7F3064F6A77891e78A4220Be3750e6E74B9C4a69"
+                }
+            }
+        },
+        "lending": {
+            "aave": {
+                "lendingPool": "0x0bA1626eBDf6E39EDB7B147d0915D83cB84059f4",
+                "pools": {
+                    "WBNB": "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd",
+                    "BUSD": "0x8301F2213c0eeD49a7E28Ae4c3e91722919B8B47"
+                }
+            }
+        }
+    }
+}
