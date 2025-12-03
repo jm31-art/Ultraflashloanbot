@@ -26,26 +26,94 @@ FACTORY = "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73"
 RPC = os.getenv("BSC_RPC", "https://bsc-dataseed.binance.org/")
 w3 = Web3(Web3.HTTPProvider(RPC))
 
-# Triangular paths (add as many as you want)
-TRI_PATHS = [
-    {"name": "USDT→USDC→BNB→USDT", "path": [USDT, USDC, WBNB, USDT], "start": USDT},
-    {"name": "USDT→BUSD→BNB→USDT", "path": [USDT, BUSD, WBNB, USDT], "start": USDT},
-    {"name": "USDT→FDUSD→BNB→USDT", "path": [USDT, FDUSD, WBNB, USDT], "start": USDT},
-    {"name": "BTCB→BNB→USDT→BTCB", "path": [BTCB, WBNB, USDT, BTCB], "start": BTCB},
-    {"name": "CAKE→BNB→USDT→CAKE", "path": [CAKE, WBNB, USDT, CAKE], "start": CAKE},
-]
+# Base tokens for triangular arbitrage
+BASE_TOKENS = [USDT, USDC, BUSD, FDUSD, BTCB, CAKE, WBNB]
+
+# Generate all possible triangular paths dynamically
+def generate_triangular_paths():
+    paths = []
+    for token_a in BASE_TOKENS:
+        for token_b in BASE_TOKENS:
+            if token_a == token_b:
+                continue
+            for token_c in BASE_TOKENS:
+                if token_c == token_a or token_c == token_b:
+                    continue
+                # Create triangular path: A -> B -> C -> A
+                path = [token_a, token_b, token_c, token_a]
+                path_name = f"{get_token_symbol(token_a)}→{get_token_symbol(token_b)}→{get_token_symbol(token_c)}→{get_token_symbol(token_a)}"
+                paths.append({
+                    "name": path_name,
+                    "path": path,
+                    "start": token_a
+                })
+    return paths
+
+def get_token_symbol(address):
+    """Get token symbol from address"""
+    symbols = {
+        USDT: "USDT", USDC: "USDC", BUSD: "BUSD", FDUSD: "FDUSD",
+        BTCB: "BTCB", CAKE: "CAKE", WBNB: "BNB"
+    }
+    return symbols.get(address, address[:6])
+
+# Generate dynamic paths
+TRI_PATHS = generate_triangular_paths()
+
+def get_price_multi_source(token_in: str, token_out: str, amount_in: int = 10**18) -> dict:
+    """Get price from multiple DEXes with manipulation detection"""
+    prices = {}
+    routers = {
+        'pancakeswap': ROUTER,
+        'biswap': '0x3a6d8cA21D1CF76F653A67577FA0D27453350dD48',
+        'apeswap': '0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7'
+    }
+
+    for dex_name, router_addr in routers.items():
+        try:
+            router = w3.eth.contract(address=router_addr, abi=[
+                {"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"}],"name":"getAmountsOut","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"view","type":"function"}
+            ])
+            amounts = router.functions.getAmountsOut(amount_in, [token_in, token_out]).call()
+            prices[dex_name] = amounts[-1]
+        except:
+            prices[dex_name] = 0
+
+    # Calculate median price and detect manipulation
+    valid_prices = [p for p in prices.values() if p > 0]
+    if not valid_prices:
+        return {'price': 0, 'confidence': 0, 'manipulation_detected': False}
+
+    valid_prices.sort()
+    median_price = valid_prices[len(valid_prices) // 2]
+
+    # Check for price manipulation (large deviation from median)
+    manipulation_detected = False
+    max_deviation = 0
+    for dex, price in prices.items():
+        if price > 0:
+            deviation = abs(price - median_price) / median_price
+            max_deviation = max(max_deviation, deviation)
+            if deviation > 0.05:  # 5% deviation threshold
+                manipulation_detected = True
+
+    confidence = 1.0 - min(max_deviation, 1.0)  # Higher deviation = lower confidence
+
+    return {
+        'price': median_price,
+        'confidence': confidence,
+        'manipulation_detected': manipulation_detected,
+        'sources': len(valid_prices),
+        'all_prices': prices
+    }
 
 def get_price(token_in: str, token_out: str, amount_in: int = 10**18) -> int:
-    try:
-        router = w3.eth.contract(address=ROUTER, abi=[
-            {"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"}],"name":"getAmountsOut","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"view","type":"function"}
-        ])
-        amounts = router.functions.getAmountsOut(amount_in, [token_in, token_out]).call()
-        return amounts[-1]
-    except:
-        return 0
+    """Backward compatibility - returns median price"""
+    result = get_price_multi_source(token_in, token_out, amount_in)
+    return result['price']
 
-def calculate_tri_profit(path_info: dict, flash_amount_usd: Decimal = Decimal("12000")) -> Decimal:
+def calculate_tri_profit(path_info: dict, flash_amount_usd: Decimal = Decimal("12000")) -> dict:
+    """Calculate triangular arbitrage profit with enhanced validation"""
     path = path_info["path"]
     amount = flash_amount_usd
 
@@ -53,35 +121,78 @@ def calculate_tri_profit(path_info: dict, flash_amount_usd: Decimal = Decimal("1
     if path_info["start"] in [USDT, USDC, BUSD, FDUSD]:
         amount_in = int(amount * (10**18))
     else:
-        price = get_price(USDT, path_info["start"])
-        if price == 0: return Decimal("0")
-        amount_in = int(amount * 10**18 * 10**18 // price)
+        price_data = get_price_multi_source(USDT, path_info["start"])
+        if price_data['price'] == 0 or price_data['confidence'] < 0.7:
+            return {'profit': Decimal("0"), 'confidence': 0, 'manipulation_risk': True}
+        amount_in = int(amount * 10**18 * 10**18 // price_data['price'])
+
+    total_manipulation_risk = False
+    total_confidence = 1.0
 
     for i in range(len(path)-1):
-        out = get_price(path[i], path[i+1], amount_in)
-        if out == 0: return Decimal("0")
-        amount_in = out * 9975 // 10000  # 0.25% fee
+        price_data = get_price_multi_source(path[i], path[i+1], amount_in)
+        if price_data['price'] == 0:
+            return {'profit': Decimal("0"), 'confidence': 0, 'manipulation_risk': True}
 
-    # Back to USD
-    final_usdt = get_price(path[-1], USDT, amount_in)
-    if final_usdt == 0: return Decimal("0")
+        amount_in = price_data['price'] * 9975 // 10000  # 0.25% fee
+        total_manipulation_risk = total_manipulation_risk or price_data['manipulation_detected']
+        total_confidence = min(total_confidence, price_data['confidence'])
+
+    # Back to USD with validation
+    final_price_data = get_price_multi_source(path[-1], USDT, amount_in)
+    if final_price_data['price'] == 0 or final_price_data['confidence'] < 0.7:
+        return {'profit': Decimal("0"), 'confidence': 0, 'manipulation_risk': True}
+
+    final_usdt = final_price_data['price']
     profit_usd = Decimal(final_usdt) / Decimal(10**18) - flash_amount_usd
-    return profit_usd.quantize(Decimal("0.01"))
+
+    # Additional validation
+    total_manipulation_risk = total_manipulation_risk or final_price_data['manipulation_detected']
+    total_confidence = min(total_confidence, final_price_data['confidence'])
+
+    return {
+        'profit': profit_usd.quantize(Decimal("0.01")),
+        'confidence': total_confidence,
+        'manipulation_risk': total_manipulation_risk,
+        'sources_used': min([get_price_multi_source(path[i], path[i+1])['sources'] for i in range(len(path)-1)] + [final_price_data['sources']])
+    }
 
 def scan_all_paths():
     print(f"Scanning {len(TRI_PATHS)} triangular paths...")
-    best = Decimal("0")
+    best_profit = Decimal("0")
     best_path = None
+    opportunities = []
+
     for p in TRI_PATHS:
-        profit = calculate_tri_profit(p)
-        if profit > best:
-            best = profit
+        result = calculate_tri_profit(p)
+        profit = result['profit']
+        confidence = result['confidence']
+        manipulation_risk = result['manipulation_risk']
+
+        # Only consider opportunities with high confidence and no manipulation risk
+        if profit > Decimal("30") and confidence > 0.8 and not manipulation_risk:
+            opportunities.append({
+                'path': p,
+                'profit': profit,
+                'confidence': confidence,
+                'sources': result['sources_used']
+            })
+
+        if profit > best_profit:
+            best_profit = profit
             best_path = p
-    if best > Decimal("30"):
-        print(f"ARBITRAGE FOUND → {best_path['name']} | Profit ≈ ${best}")
+
+    # Sort opportunities by profit
+    opportunities.sort(key=lambda x: x['profit'], reverse=True)
+
+    if opportunities:
+        best_opp = opportunities[0]
+        print(f"🎯 ARBITRAGE FOUND → {best_opp['path']['name']}")
+        print(f"   Profit: ${best_opp['profit']} | Confidence: {best_opp['confidence']:.1%} | Sources: {best_opp['sources']}")
+        return best_opp['profit']
     else:
-        print(f"No profitable arb right now (best: ${best})")
-    return best
+        print(f"❌ No profitable arb right now (best: ${best_profit})")
+        return best_profit
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

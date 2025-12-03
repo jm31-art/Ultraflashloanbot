@@ -28,6 +28,41 @@ const privateNodeConfig = {
             reconnectDelay: 1000,
             maxRetries: 5
         }
+    },
+    // Nodereal MEV Protection Configuration
+    nodereal: {
+        url: process.env.NODEREAL_RPC || "https://bsc-mainnet.nodereal.io/v1/your_nodereal_api_key",
+        chainId: 56,
+        mevProtection: true, // Enable MEV protection features
+        settings: {
+            maxPriorityFeePerGas: "3000000000", // 3 gwei (lower for MEV protection)
+            maxFeePerGas: "5000000000", // 5 gwei
+            gasLimit: 500000,
+            confirmations: 2, // Slightly higher confirmations for MEV protection
+            timeoutBlocks: 3,
+            networkCheckTimeout: 15000,
+            // Nodereal API key authentication
+            headers: {
+                "Content-Type": "application/json",
+                "X-API-Key": process.env.NODEREAL_API_KEY
+            }
+        },
+        // MEV-specific settings
+        mev: {
+            enabled: true,
+            protectionLevel: "high", // high, medium, low
+            sandwichProtection: true,
+            frontrunProtection: true,
+            backrunProtection: true,
+            privateMempool: true
+        },
+        // Websocket configuration for real-time MEV monitoring
+        websocket: {
+            enabled: true,
+            url: process.env.NODEREAL_WS_URL || "wss://bsc-mainnet.nodereal.io/ws/v1/your_nodereal_api_key",
+            reconnectDelay: 2000,
+            maxRetries: 10
+        }
     }
 };
 

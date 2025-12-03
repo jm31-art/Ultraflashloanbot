@@ -11,60 +11,78 @@ class ChainConnection {
         this.isPolling = false;
         this.nodeIndex = 0;
         
-        // Backup node URLs
+        // Prioritized node URLs with MEV protection (Nodereal first for protection)
         this.bscNodes = [
-            'https://bsc-dataseed1.binance.org',
+            process.env.NODEREAL_RPC || 'https://bsc-mainnet.nodereal.io/v1/your_nodereal_api_key', // Nodereal MEV Protection (highest priority)
+            process.env.MERKLE_RPC || 'https://bsc.merkle.io', // Merkle Private Mempool
+            process.env.BSC_PRIVATE_NODE_URL || 'http://localhost:8545', // Private node
+            'https://bsc-dataseed1.binance.org', // Public Binance nodes (fallback)
             'https://bsc-dataseed2.binance.org',
             'https://bsc-dataseed3.binance.org',
             'https://bsc-dataseed4.binance.org',
-            'https://bsc.nodereal.io'
+            'https://bsc.nodereal.io' // Public Nodereal (lowest priority)
         ];
-        
+
         this.wsNodes = [
+            process.env.NODEREAL_WS_URL || 'wss://bsc-mainnet.nodereal.io/ws/v1/your_nodereal_api_key', // Nodereal WS with MEV protection
+            process.env.BSC_PRIVATE_WS_URL || 'ws://localhost:8546', // Private WS
             'wss://bsc-ws-node.nariox.org:443',
             'wss://bsc.nodereal.io/ws'
         ];
-        
+
         // Get node URLs from environment variables or use defaults
         this.bscNodeUrl = process.env.BSC_PRIVATE_NODE_URL || this.bscNodes[0];
         this.bscWsUrl = process.env.BSC_PRIVATE_WS_URL || this.wsNodes[0];
         this.privateNodeAuth = process.env.PRIVATE_NODE_AUTH;
+        this.noderealApiKey = process.env.NODEREAL_API_KEY;
     }
 
     async getHTTPProvider() {
         if (!this.httpProvider) {
-            // Try each node until one works
+            // Try each node until one works (prioritize MEV-protected nodes)
             for (let i = 0; i < this.bscNodes.length; i++) {
-                const nodeUrl = process.env.BSC_PRIVATE_NODE_URL || this.bscNodes[i];
+                const nodeUrl = this.bscNodes[i];
                 const providerConfig = {
                     url: nodeUrl,
                     timeout: 60000, // 60 second timeout
                     allowInsecureAuthentication: true
                 };
-                
-                if (this.privateNodeAuth) {
+
+                // Add appropriate headers based on node type
+                if (nodeUrl.includes('nodereal.io') && this.noderealApiKey) {
+                    // Nodereal MEV Protection headers
+                    providerConfig.headers = {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': this.noderealApiKey
+                    };
+                    console.log('🔒 Using Nodereal MEV-protected RPC endpoint');
+                } else if (this.privateNodeAuth) {
+                    // Private node authentication
                     providerConfig.headers = {
                         Authorization: this.privateNodeAuth
                     };
                 }
-                
+
                 try {
                     const provider = new ethers.providers.JsonRpcProvider(providerConfig);
                     await provider.ready;
-                    
+
                     // Test the connection
                     const blockNumber = await provider.getBlockNumber();
-                    console.log(`Connected to BSC node ${nodeUrl}, current block: ${blockNumber}`);
-                    
+                    const nodeType = nodeUrl.includes('nodereal.io') ? 'Nodereal MEV-Protected' :
+                                   nodeUrl.includes('merkle.io') ? 'Merkle Private Mempool' :
+                                   nodeUrl.includes('localhost') ? 'Private Node' : 'Public Node';
+                    console.log(`✅ Connected to ${nodeType}: ${nodeUrl}, current block: ${blockNumber}`);
+
                     this.httpProvider = provider;
                     this.nodeIndex = i;
                     break;
                 } catch (error) {
-                    console.log(`Failed to connect to ${nodeUrl}: ${error.message}`);
+                    console.log(`❌ Failed to connect to ${nodeUrl}: ${error.message}`);
                     continue;
                 }
             }
-            
+
             if (!this.httpProvider) {
                 throw new Error('Failed to connect to any BSC node');
             }

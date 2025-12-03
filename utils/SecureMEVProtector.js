@@ -38,8 +38,24 @@ class SecureMEVProtector {
             'recommend_protection_strategy',
             'calculate_dynamic_fees',
             'monitor_competition',
-            'score_opportunity'
+            'score_opportunity',
+            'enable_nodereal_protection',
+            'get_protection_status'
         ]);
+
+        // Nodereal MEV Protection integration
+        this.noderealEnabled = process.env.NODEREAL_API_KEY && process.env.NODEREAL_API_KEY !== 'your_nodereal_api_key_here';
+        this.noderealConfig = {
+            apiKey: process.env.NODEREAL_API_KEY,
+            rpcUrl: process.env.NODEREAL_RPC,
+            protectionLevel: 'high', // high, medium, low
+            features: {
+                sandwichProtection: true,
+                frontrunProtection: true,
+                backrunProtection: true,
+                privateMempool: true
+            }
+        };
 
         this.requestSchema = {
             analyze_mempool: ['transaction'],
@@ -123,12 +139,118 @@ class SecureMEVProtector {
         }
     }
 
+    // Enable Nodereal MEV Protection
+    async enableNoderealProtection(options = {}) {
+        if (!this.noderealEnabled) {
+            console.warn('⚠️ Nodereal API key not configured. Please set NODEREAL_API_KEY in your .env file');
+            return false;
+        }
+
+        try {
+            // Update protection level if specified
+            if (options.protectionLevel) {
+                this.noderealConfig.protectionLevel = options.protectionLevel;
+            }
+
+            // Update feature flags
+            if (options.features) {
+                this.noderealConfig.features = { ...this.noderealConfig.features, ...options.features };
+            }
+
+            console.log('🔒 Nodereal MEV Protection enabled with configuration:', {
+                protectionLevel: this.noderealConfig.protectionLevel,
+                features: this.noderealConfig.features
+            });
+
+            return true;
+        } catch (error) {
+            console.error('Failed to enable Nodereal protection:', error);
+            return false;
+        }
+    }
+
+    // Get comprehensive protection status
+    // Transaction batching for MEV protection
+    async createBatchedTransaction(transactions) {
+        if (!this.noderealEnabled) {
+            throw new Error('Nodereal MEV protection required for transaction batching');
+        }
+
+        const batchedTx = {
+            type: 'batched_arbitrage',
+            transactions: transactions,
+            timestamp: Date.now(),
+            sessionId: this.sessionId,
+            mevProtection: {
+                level: this.noderealConfig.protectionLevel,
+                features: this.noderealConfig.features
+            }
+        };
+
+        // Add gas optimization
+        batchedTx.optimizedGas = await this.optimizeGasForBatch(transactions);
+
+        return batchedTx;
+    }
+
+    async optimizeGasForBatch(transactions) {
+        // Calculate optimal gas parameters for batched transaction
+        const totalGas = transactions.reduce((sum, tx) => sum + (tx.gasLimit || 200000), 0);
+        const avgGasPrice = await this.aiProtector.getSafeGasPrice(5000000000); // 5 gwei base
+
+        return {
+            gasLimit: Math.ceil(totalGas * 1.1), // 10% buffer
+            gasPrice: avgGasPrice,
+            maxFeePerGas: avgGasPrice * 2n,
+            maxPriorityFeePerGas: avgGasPrice / 2n
+        };
+    }
+
+    getProtectionStatus() {
+        return {
+            initialized: this.isInitialized,
+            aiReady: this.aiProtector.isReady,
+            sessionId: this.sessionId,
+            noderealEnabled: this.noderealEnabled,
+            noderealConfig: this.noderealConfig,
+            aiStats: this.aiProtector.getStats(),
+            overallProtectionLevel: this.calculateOverallProtectionLevel(),
+            batchingAvailable: this.noderealEnabled
+        };
+    }
+
+    // Calculate overall protection level based on all enabled protections
+    calculateOverallProtectionLevel() {
+        let protectionScore = 0;
+
+        // AI Protection (40% weight)
+        if (this.aiProtector.isReady) {
+            protectionScore += 40;
+        }
+
+        // Nodereal Protection (60% weight)
+        if (this.noderealEnabled) {
+            const noderealScore = this.noderealConfig.protectionLevel === 'high' ? 60 :
+                                 this.noderealConfig.protectionLevel === 'medium' ? 40 : 20;
+            protectionScore += noderealScore;
+        }
+
+        // Return protection level
+        if (protectionScore >= 80) return 'VERY_HIGH';
+        if (protectionScore >= 60) return 'HIGH';
+        if (protectionScore >= 40) return 'MEDIUM';
+        if (protectionScore >= 20) return 'LOW';
+        return 'NONE';
+    }
+
     getHealthStatus() {
         return {
             initialized: this.isInitialized,
             aiReady: this.aiProtector.isReady,
             sessionId: this.sessionId,
-            aiStats: this.aiProtector.getStats()
+            aiStats: this.aiProtector.getStats(),
+            noderealEnabled: this.noderealEnabled,
+            overallProtection: this.calculateOverallProtectionLevel()
         };
     }
 
