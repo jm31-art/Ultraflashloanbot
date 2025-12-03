@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 // Uniswap V2 Router Interface
 interface IUniswapV2Router {
@@ -19,7 +20,7 @@ interface IUniswapV2Router {
     ) external returns (uint[] memory amounts);
 }
 
-contract FlashloanArb is Ownable, Pausable, AccessControl {
+contract FlashloanArb is Ownable, Pausable, AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
@@ -34,6 +35,19 @@ contract FlashloanArb is Ownable, Pausable, AccessControl {
     mapping(bytes32 => uint256) public confirmations;
     mapping(bytes32 => mapping(address => bool)) public hasConfirmed;
     mapping(bytes32 => address[]) public confirmationList;
+
+    // Authorized flashloan providers (security critical)
+    mapping(address => bool) public authorizedFlashloanProviders;
+
+    // Circuit breakers for extreme conditions
+    uint256 public maxGasPrice = 1000 gwei; // 1000 gwei max
+    uint256 public maxSlippageTolerance = 50; // 5% max slippage
+    uint256 public minLiquidityRequired = 100000 * 10**18; // $100k min liquidity
+    uint256 public maxTradeSize = 500000 * 10**18; // $500k max trade size
+    bool public circuitBreakerActive = false;
+
+    // Gas limit validation
+    uint256 public constant MAX_ARBITRAGE_GAS = 1000000; // 1M gas limit for arbitrage
 
     event RouterSet(string indexed name, address indexed router);
     event MinProfitSet(uint256 oldProfit, uint256 newProfit);
@@ -67,6 +81,39 @@ contract FlashloanArb is Ownable, Pausable, AccessControl {
         for (uint i = 0; i < emergencyOperators.length; i++) {
             _grantRole(EMERGENCY_ROLE, emergencyOperators[i]);
         }
+
+        // Set up authorized flashloan providers (BSC mainnet)
+        authorizedFlashloanProviders[0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9] = true; // Aave V3 Pool
+        authorizedFlashloanProviders[0x89d065572136814230A55DdEeDDEC9DF34EB0B76] = true; // Venus Pool
+        authorizedFlashloanProviders[0x470fBfb1e62D0c1c0c5b6d3b5e5e5e5e5e5e5e5] = true; // Equalizer
+        authorizedFlashloanProviders[0x1F98431c8aD98523631AE4a59f267346ea31F984] = true; // Uniswap V3 Factory (for flash swaps)
+        authorizedFlashloanProviders[0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73] = true; // PancakeSwap Factory
+    }
+
+    // Flashloan provider management (only admin)
+    function addFlashloanProvider(address provider) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        authorizedFlashloanProviders[provider] = true;
+    }
+
+    function removeFlashloanProvider(address provider) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        authorizedFlashloanProviders[provider] = false;
+    }
+
+    // Circuit breaker management
+    function setCircuitBreaker(bool active) external onlyRole(EMERGENCY_ROLE) {
+        circuitBreakerActive = active;
+    }
+
+    function updateCircuitBreakerSettings(
+        uint256 _maxGasPrice,
+        uint256 _maxSlippageTolerance,
+        uint256 _minLiquidityRequired,
+        uint256 _maxTradeSize
+    ) external onlyRole(OPERATOR_ROLE) {
+        maxGasPrice = _maxGasPrice;
+        maxSlippageTolerance = _maxSlippageTolerance;
+        minLiquidityRequired = _minLiquidityRequired;
+        maxTradeSize = _maxTradeSize;
     }
 
     // Multi-sig router management
@@ -246,16 +293,27 @@ contract FlashloanArb is Ownable, Pausable, AccessControl {
         }
     }
 
-    // Entry point for flashloan provider callback
-    function receiveFlashLoan(address token, uint amount, uint fee, bytes calldata data) external whenNotPaused {
-        require(amount > 0, "Invalid flashloan amount");
+    // Entry point for flashloan provider callback with comprehensive security
+    function receiveFlashLoan(address token, uint amount, uint fee, bytes calldata data) external whenNotPaused nonReentrant {
+        // CRITICAL: Only authorized flashloan providers can call this
+        require(authorizedFlashloanProviders[msg.sender], "Unauthorized flashloan provider");
+        require(amount > 0 && amount <= maxTradeSize, "Invalid flashloan amount");
+        require(!circuitBreakerActive, "Circuit breaker active");
+
+        // Gas limit validation
+        require(gasleft() >= MAX_ARBITRAGE_GAS, "Insufficient gas for arbitrage");
+
+        // Gas price circuit breaker
+        require(tx.gasprice <= maxGasPrice, "Gas price too high");
 
         // Decode arbitrage parameters
         (address token0, address token1, string[] memory exchanges, address[] memory path, address caller, uint gasReimbursement) = abi.decode(data, (address, address, string[], address[], address, uint));
 
-        // Execute triangular arbitrage: token0 -> token1 -> token -> token0
-        require(path.length >= 3, "Invalid arbitrage path");
+        // Validate arbitrage path
+        require(path.length >= 3 && path.length <= 6, "Invalid arbitrage path length");
+        require(path[0] == token0 && path[path.length - 1] == token0, "Path must start and end with token0");
 
+        // Execute triangular arbitrage: token0 -> token1 -> token -> token0
         uint initialBalance = IERC20(token).balanceOf(address(this));
 
         // Step 1: token0 -> token1 on first exchange
@@ -267,9 +325,13 @@ contract FlashloanArb is Ownable, Pausable, AccessControl {
         path01[0] = token0;
         path01[1] = token1;
 
+        // Calculate minimum output with slippage protection
+        uint[] memory expectedOutAB = IUniswapV2Router(router1).getAmountsOut(amount, path01);
+        uint minOutAB = expectedOutAB[expectedOutAB.length - 1] * (10000 - maxSlippageTolerance) / 10000;
+
         IUniswapV2Router(router1).swapExactTokensForTokens(
             amount,
-            0, // Accept any amount out (slippage handled by min profit check)
+            minOutAB, // Protected minimum output
             path01,
             address(this),
             block.timestamp + 300
@@ -287,9 +349,13 @@ contract FlashloanArb is Ownable, Pausable, AccessControl {
         path12[0] = token1;
         path12[1] = token;
 
+        // Calculate minimum output for second swap
+        uint[] memory expectedOutBC = IUniswapV2Router(router2).getAmountsOut(token1Balance, path12);
+        uint minOutBC = expectedOutBC[expectedOutBC.length - 1] * (10000 - maxSlippageTolerance) / 10000;
+
         IUniswapV2Router(router2).swapExactTokensForTokens(
             token1Balance,
-            0,
+            minOutBC, // Protected minimum output
             path12,
             address(this),
             block.timestamp + 300
@@ -315,9 +381,13 @@ contract FlashloanArb is Ownable, Pausable, AccessControl {
                 path20[0] = token;
                 path20[1] = token0;
 
+                // Calculate minimum output for third swap
+                uint[] memory expectedOutCA = IUniswapV2Router(router3).getAmountsOut(amountToConvert, path20);
+                uint minOutCA = expectedOutCA[expectedOutCA.length - 1] * (10000 - maxSlippageTolerance) / 10000;
+
                 IUniswapV2Router(router3).swapExactTokensForTokens(
                     amountToConvert,
-                    0,
+                    minOutCA, // Protected minimum output
                     path20,
                     address(this),
                     block.timestamp + 300

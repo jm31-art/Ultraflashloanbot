@@ -14,6 +14,26 @@ class MonitoringSystem extends EventEmitter {
             alertCooldown: options.alertCooldown || 300000 // 5 minutes
         };
 
+        // Alerting configuration
+        this.telegramBotToken = options.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN;
+        this.telegramChatId = options.telegramChatId || process.env.TELEGRAM_CHAT_ID;
+        this.emailConfig = options.emailConfig || {
+            smtpHost: process.env.SMTP_HOST,
+            smtpPort: process.env.SMTP_PORT,
+            username: process.env.SMTP_USERNAME,
+            password: process.env.SMTP_PASSWORD,
+            fromEmail: process.env.ALERT_FROM_EMAIL,
+            toEmails: (process.env.ALERT_TO_EMAILS || '').split(',')
+        };
+
+        // Alert levels
+        this.ALERT_LEVELS = {
+            INFO: '📘',
+            WARNING: '⚠️',
+            CRITICAL: '🚨',
+            SUCCESS: '✅'
+        };
+
         this.stats = {
             startTime: Date.now(),
             totalScans: 0,
@@ -124,11 +144,17 @@ class MonitoringSystem extends EventEmitter {
             });
         }
 
-        // Emit alerts
+        // Emit alerts and send notifications
         for (const alert of alerts) {
             this.stats.lastAlertTime = now;
             this.alerts.push({ ...alert, timestamp: now });
             this.emit('alert', alert);
+
+            // Send external notifications for WARNING and CRITICAL alerts
+            if (alert.level === 'WARNING' || alert.level === 'CRITICAL') {
+                await this.sendTelegramAlert(alert);
+                await this.sendEmailAlert(alert);
+            }
 
             // Keep only last 100 alerts
             if (this.alerts.length > 100) {
@@ -235,6 +261,107 @@ class MonitoringSystem extends EventEmitter {
                 recentActivity: (Date.now() - (this.performanceHistory[this.performanceHistory.length - 1]?.timestamp || 0)) < 300000 // 5 minutes
             }
         };
+    }
+
+    // Telegram alerting
+    async sendTelegramAlert(alert) {
+        if (!this.telegramBotToken || !this.telegramChatId) {
+            return; // Telegram not configured
+        }
+
+        try {
+            const emoji = this.ALERT_LEVELS[alert.level] || '📢';
+            const message = `${emoji} **${alert.level} ALERT**\n\n` +
+                          `**Type:** ${alert.type}\n` +
+                          `**Message:** ${alert.message}\n` +
+                          `**Time:** ${new Date(alert.timestamp).toISOString()}\n` +
+                          `**Bot Status:** ${this.getStats().successRate.toFixed(1)}% success rate`;
+
+            const url = `https://api.telegram.org/bot${this.telegramBotToken}/sendMessage`;
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    chat_id: this.telegramChatId,
+                    text: message,
+                    parse_mode: 'Markdown'
+                })
+            });
+
+            if (!response.ok) {
+                console.error('Telegram alert failed:', response.statusText);
+            }
+        } catch (error) {
+            console.error('Telegram alert error:', error);
+        }
+    }
+
+    // Email alerting
+    async sendEmailAlert(alert) {
+        if (!this.emailConfig.smtpHost || !this.emailConfig.toEmails.length) {
+            return; // Email not configured
+        }
+
+        try {
+            const nodemailer = require('nodemailer');
+            const transporter = nodemailer.createTransporter({
+                host: this.emailConfig.smtpHost,
+                port: this.emailConfig.smtpPort || 587,
+                secure: false,
+                auth: {
+                    user: this.emailConfig.username,
+                    pass: this.emailConfig.password
+                }
+            });
+
+            const emoji = this.ALERT_LEVELS[alert.level] || '📢';
+            const subject = `${emoji} ${alert.level} ALERT - Arbitrage Bot`;
+            const html = `
+                <h2>${emoji} ${alert.level} ALERT</h2>
+                <p><strong>Type:</strong> ${alert.type}</p>
+                <p><strong>Message:</strong> ${alert.message}</p>
+                <p><strong>Time:</strong> ${new Date(alert.timestamp).toISOString()}</p>
+                <hr>
+                <h3>Bot Status</h3>
+                <ul>
+                    <li>Success Rate: ${this.getStats().successRate.toFixed(1)}%</li>
+                    <li>Total Profit: $${this.getStats().totalProfit.toFixed(2)}</li>
+                    <li>Consecutive Failures: ${this.getStats().consecutiveFailures}</li>
+                </ul>
+            `;
+
+            for (const toEmail of this.emailConfig.toEmails) {
+                if (toEmail.trim()) {
+                    await transporter.sendMail({
+                        from: this.emailConfig.fromEmail,
+                        to: toEmail.trim(),
+                        subject: subject,
+                        html: html
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('Email alert error:', error);
+        }
+    }
+
+    // Send success notifications
+    async sendSuccessNotification(tradeData) {
+        const successAlert = {
+            level: 'SUCCESS',
+            type: 'trade_executed',
+            message: `Arbitrage executed! Profit: $${tradeData.profit.toFixed(2)}`,
+            timestamp: Date.now(),
+            tradeData
+        };
+
+        await this.sendTelegramAlert(successAlert);
+        // Optional: send email for large profits
+        if (tradeData.profit > 100) {
+            await this.sendEmailAlert(successAlert);
+        }
     }
 }
 
