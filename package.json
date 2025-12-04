@@ -8,7 +8,7 @@
     "test:calculator": "node test_arbitrage_calculator.js",
     "run:calculator": "arbitrage_env\\Scripts\\python.exe services/ArbitrageCalculator.py",
     "run:calculator:once": "arbitrage_env\\Scripts\\python.exe services/ArbitrageCalculator.py --once",
-    "run:auto": "arbitrage_env\\Scripts\\python.exe self_discover_hybrid_bot.py",
+    "run:auto": "python3 final_printer_2025.py",
     "run:auto:tri": "arbitrage_env\\Scripts\\python.exe self_discover_hybrid_bot.py --mode tri",
     "run:auto:liq": "arbitrage_env\\Scripts\\python.exe self_discover_hybrid_bot.py --mode liq",
     "run:auto:hybrid": "arbitrage_env\\Scripts\\python.exe self_discover_hybrid_bot.py --mode hybrid",

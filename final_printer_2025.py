@@ -21,12 +21,15 @@ def track_flash_loan():
 load_dotenv()
 
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+rpc_url = os.getenv("BSC_RPC_URL") or "https://bsc.merkle.io"
 if not PRIVATE_KEY:
-    print("ERROR: Set PRIVATE_KEY in .env")
-    exit(1)
-
-w3 = Web3(Web3.HTTPProvider("https://bsc.merkle.io", request_kwargs={"timeout": 10}))
-account = Account.from_key(PRIVATE_KEY)
+    print("WARNING: No PRIVATE_KEY set - running in monitor mode only")
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+    account = None
+else:
+    print("LIVE MODE: Private key detected - ready for arbitrage execution")
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+    account = Account.from_key(PRIVATE_KEY)
 
 FLASH_SIZE_USD = Decimal("78000")  # Increased for micro-arbs
 MIN_PROFIT_PCT = Decimal("0.0015")  # 0.15% minimum gap
@@ -74,6 +77,8 @@ def log_profit(edge: str, usd: float, tx_hash: str = ""):
 
 def track_flash_loan():
     global last_balance
+    if account is None:
+        return
     try:
         current_bal = Decimal(w3.eth.get_balance(account.address)) / Decimal("1e18") * BNB_PRICE
         if current_bal > last_balance + Decimal("5000"):  # borrowed more than $5K
@@ -179,8 +184,8 @@ def edge7():
         bis = Decimal(requests.get("https://api.dexscreener.com/latest/dex/pairs/bsc/0x3f6d7a7b7c7d7e7f8a9b0c1d2e3f4a5b6c7d8e9f").json()["pair"]["priceUsd"])
         gap = abs(pcs - bis) / pcs
         if gap > Decimal("0.0030"):
-            profit = FLASH_USD * gap * Decimal("0.93")
-            if profit > MIN_PROFIT:
+            profit = FLASH_SIZE_USD * gap * Decimal("0.93")
+            if profit > MIN_PROFIT_USD:
                 print(f"[07/13] CROSS-DEX {gap*100:.3f}% → +${profit:,.0f}")
                 tg(f"CROSS-DEX ARB\n+${profit:,.0f}")
     except: pass
@@ -231,53 +236,6 @@ def edge10():
                 print(f"[10/13] MEME SNIPE → {sym} | Liq ${liq:,.0f} | Vol ${vol:,.0f}")
                 tg(f"MEME SNIPE\n{sym}\nLiq ${liq:,.0f}")
     except: pass
-
-# EDGE 11: TRIANGULAR ARB 
-def edge11():
-    try:
-        # ALL ADDRESSES 100% EIP-55 CORRECT — NO MORE ERRORS
-        WBNB = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
-        CAKE = "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82"   
-        BTCB = "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c"
-        ETH  = "0x2170Ed0880ac9A755fd29B2688956BD959F933F8"
-        USDT = "0x55d398326f99059fF775485246999027B3197955"
-        USDC = "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
-        BUSD = "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56"
-        DAI  = "0x1AF3F329e8BE154074D8769D1FFa4eEE058B1DBc3"
-        BABYDOGE = "0xc748673057861a797275cd8a068abb95a902e8de"
-        FLOKI    = "0xfb5b838b6cfe6b5c5e63f3e3b4d1e5f0d6d9e9d5"
-
-        GOLDEN_PATHS = [
-            (WBNB, CAKE, BTCB),           # WBNB→CAKE→BTCB→WBNB
-            (WBNB, USDT, CAKE),           # WBNB→USDT→CAKE→WBNB
-            (WBNB, USDC, USDT),           # WBNB→USDC→USDT→WBNB
-            (WBNB, ETH, BTCB),            # WBNB→ETH→BTCB→WBNB
-            (WBNB, DAI, BUSD),            # WBNB→DAI→BUSD→WBNB
-            (BTCB, ETH, WBNB),            # BTCB→ETH→WBNB→BTCB
-            (WBNB, BABYDOGE, CAKE),       # WBNB→BABYDOGE→CAKE→WBNB
-            (WBNB, FLOKI, USDT),          # WBNB→FLOKI→USDT→WBNB
-            (WBNB, "0x4338665CBB7B2485A8855A139b75D5e12E02c26E", USDT),
-            (WBNB, "0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47", USDC),
-            (WBNB, "0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE", ETH),
-            (WBNB, "0xCa3F508B8e4Dd382eE878A314604A1Fc2d4d2A6B", USDT),
-        ]
-
-        for a, b, c in GOLDEN_PATHS:
-            try:
-                p1 = Decimal(requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{a},{b}?chainId=bsc", timeout=3).json()["pairs"][0]["priceUsd"])
-                p2 = Decimal(requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{b},{c}?chainId=bsc", timeout=3).json()["pairs"][0]["priceUsd"])
-                p3 = Decimal(requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{c},{a}?chainId=bsc", timeout=3).json()["pairs"][0]["priceUsd"])
-
-                if p1 * p2 * p3 > Decimal("1.0024"):
-                    profit = FLASH_USD * (p1*p2*p3 - 1) * Decimal("0.915")
-                    if profit > Decimal("18"):
-                        path_name = f"{a[-4:]}→{b[-4:]}→{c[-4:]}"
-                        print(f"[11/13] TRI-ARB {path_name} → +${profit:,.0f}")
-                        tg(f"TRI-ARB LIVE\n+${profit:,.0f}\n{path_name}")
-            except:
-                continue
-    except:
-        pass
 
 # EDGE 11: TRIANGULAR ARBITRAGE (LIVE)
 def edge11():
