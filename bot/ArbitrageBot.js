@@ -383,7 +383,7 @@ class ArbitrageBot extends EventEmitter {
             console.log(`📡 Connected to network. Current block: ${blockNumber}`);
 
             // Check signer
-            const balance = await this.signer.getBalance();
+            const balance = await this.provider.getBalance(this.signer.address);
             const balanceBNB = parseFloat(ethers.formatEther(balance));
             console.log(`💰 Signer balance: ${balanceBNB.toFixed(4)} BNB`);
 

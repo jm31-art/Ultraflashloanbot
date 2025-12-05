@@ -224,7 +224,7 @@ class TransactionVerifier {
     }
 
     async _verifyGasCosts(transaction) {
-        const balance = await this.signer.getBalance();
+        const balance = await this.provider.getBalance(this.signer.address);
         const maxGasCost = BigNumber.from(transaction.gasPrice || (await this.provider.getFeeData()).gasPrice)
             .mul(transaction.gasLimit || 500000);
 

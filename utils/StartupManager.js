@@ -45,7 +45,7 @@ class StartupManager {
             await this.provider.getBlockNumber();
 
             // Test signer balance
-            const balance = await this.signer.getBalance();
+            const balance = await this.provider.getBalance(this.signer.address);
             console.log('Wallet balance:', ethers.formatEther(balance), 'ETH');
 
             // Test transaction verifier
