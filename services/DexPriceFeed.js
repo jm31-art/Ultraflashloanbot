@@ -215,7 +215,7 @@ class DexPriceFeed {
 
     async _getDexPricesWithLiquidity(token0Address, token1Address) {
         const prices = {};
-        const amountIn = ethers.utils.parseEther('1'); // 1 token for price calculation
+        const amountIn = ethers.parseEther('1'); // 1 token for price calculation
 
         for (const [dexKey, dexConfig] of Object.entries(DEX_CONFIGS)) {
             try {
@@ -228,7 +228,7 @@ class DexPriceFeed {
                 // Try token0 -> token1
                 try {
                     const amountsOut = await routerContract.getAmountsOut(amountIn, [token0Address, token1Address]);
-                    const price = parseFloat(ethers.utils.formatEther(amountsOut[1]));
+                    const price = parseFloat(ethers.formatEther(amountsOut[1]));
 
                     // Check liquidity by testing different amounts
                     const liquidityCheck = await this._checkLiquidity(routerContract, token0Address, token1Address, price);
@@ -243,7 +243,7 @@ class DexPriceFeed {
                     // Try token1 -> token0 if direct path fails
                     try {
                         const amountsOut = await routerContract.getAmountsOut(amountIn, [token1Address, token0Address]);
-                        const price = 1 / parseFloat(ethers.utils.formatEther(amountsOut[1]));
+                        const price = 1 / parseFloat(ethers.formatEther(amountsOut[1]));
 
                         // Check liquidity for reverse direction
                         const liquidityCheck = await this._checkLiquidity(routerContract, token1Address, token0Address, price);
@@ -271,9 +271,9 @@ class DexPriceFeed {
         try {
             // Test with different amounts to check liquidity
             const testAmounts = [
-                ethers.utils.parseEther('10'),   // Small trade
-                ethers.utils.parseEther('100'),  // Medium trade
-                ethers.utils.parseEther('1000')  // Large trade
+                ethers.parseEther('10'),   // Small trade
+                ethers.parseEther('100'),  // Medium trade
+                ethers.parseEther('1000')  // Large trade
             ];
 
             let totalPriceImpact = 0;
@@ -282,7 +282,7 @@ class DexPriceFeed {
             for (const testAmount of testAmounts) {
                 try {
                     const amountsOut = await routerContract.getAmountsOut(testAmount, [tokenIn, tokenOut]);
-                    const testPrice = parseFloat(ethers.utils.formatEther(amountsOut[1])) / parseFloat(ethers.utils.formatEther(testAmount));
+                    const testPrice = parseFloat(ethers.formatEther(amountsOut[1])) / parseFloat(ethers.formatEther(testAmount));
                     const priceImpact = Math.abs((testPrice - basePrice) / basePrice) * 100;
 
                     totalPriceImpact += priceImpact;
@@ -340,14 +340,14 @@ class DexPriceFeed {
                 params: {
                     fromTokenAddress: this._getTokenAddress(pair.split('/')[0]),
                     toTokenAddress: this._getTokenAddress(pair.split('/')[1]),
-                    amount: ethers.utils.parseEther('1').toString()
+                    amount: ethers.parseEther('1').toString()
                 },
                 timeout: 5000
             });
 
             if (response.data?.toTokenAmount) {
                 prices.oneinch = {
-                    price: parseFloat(ethers.utils.formatEther(response.data.toTokenAmount)),
+                    price: parseFloat(ethers.formatEther(response.data.toTokenAmount)),
                     liquidity: 'api',
                     priceImpact: 0,
                     recommended: true

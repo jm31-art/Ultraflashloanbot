@@ -28,7 +28,7 @@ const CURVE_POOL_ABI = [
 
 class DexLiquidityChecker {
     constructor(provider) {
-        this.provider = provider || new ethers.providers.JsonRpcProvider('https://bsc-dataseed.binance.org/');
+        this.provider = provider || new ethers.JsonRpcProvider('https://bsc-dataseed.binance.org/');
         this.poolAddresses = require('../config/pool_addresses.json');
         this.tokenPrices = {
             '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c': 300, // WBNB
@@ -149,7 +149,7 @@ class DexLiquidityChecker {
             const liquidity = await pool.liquidity();
 
             // Estimate USD value (simplified - in production use proper calculations)
-            const estimatedUSD = parseFloat(ethers.utils.formatEther(liquidity)) * 1000; // Rough estimate
+            const estimatedUSD = parseFloat(ethers.formatEther(liquidity)) * 1000; // Rough estimate
 
             return {
                 available: liquidity,
@@ -179,7 +179,7 @@ class DexLiquidityChecker {
 
     estimateReserveValue(tokenAddress, reserve) {
         const price = this.tokenPrices[tokenAddress.toLowerCase()] || 1;
-        const amount = parseFloat(ethers.utils.formatEther(reserve));
+        const amount = parseFloat(ethers.formatEther(reserve));
         return amount * price;
     }
 
@@ -188,7 +188,7 @@ class DexLiquidityChecker {
             // This would normally query the Uniswap V3 factory for pool address
             // For testing, we'll simulate liquidity check
             return {
-                available: ethers.utils.parseEther("1000000"),
+                available: ethers.parseEther("1000000"),
                 fee: 0.0005 // 0.05%
             };
         } catch (error) {
@@ -202,7 +202,7 @@ class DexLiquidityChecker {
             // This would normally query the PancakeSwap V3 factory for pool address
             // For testing, we'll simulate liquidity check
             return {
-                available: ethers.utils.parseEther("800000"),
+                available: ethers.parseEther("800000"),
                 fee: 0.0002 // 0.02%
             };
         } catch (error) {
@@ -216,7 +216,7 @@ class DexLiquidityChecker {
             // This would normally query Balancer vault for pool tokens and balances
             // For testing, we'll simulate liquidity check
             return {
-                available: ethers.utils.parseEther("500000"),
+                available: ethers.parseEther("500000"),
                 fee: 0 // Balancer has no protocol fee
             };
         } catch (error) {
@@ -230,7 +230,7 @@ class DexLiquidityChecker {
             // This would normally query Curve pool for balances and virtual price
             // For testing, we'll simulate liquidity check
             return {
-                available: ethers.utils.parseEther("1200000"),
+                available: ethers.parseEther("1200000"),
                 fee: 0.0004 // 0.04%
             };
         } catch (error) {

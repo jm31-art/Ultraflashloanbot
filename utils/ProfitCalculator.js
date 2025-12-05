@@ -1,4 +1,4 @@
-const { ethers } = require("hardhat");
+const { ethers } = require("ethers");
 const PriceService = require("../services/PriceService");
 const FlashProvider = require("./FlashProvider");
 
@@ -56,10 +56,10 @@ class ProfitCalculator {
             let flashLoanFee = 0;
             if (protocol) {
                 const feeAmount = await this.flashProvider.estimateFlashCost(
-                    ethers.utils.parseUnits(amount.toString(), 18),
+                    ethers.parseUnits(amount.toString(), 18),
                     protocol
                 );
-                flashLoanFee = parseFloat(ethers.utils.formatEther(feeAmount));
+                flashLoanFee = parseFloat(ethers.formatEther(feeAmount));
             } else {
                 // Fallback to default DODO fee for backward compatibility
                 flashLoanFee = amount * 0.0002; // 0.02% DODO flashloan fee from simulation

@@ -105,9 +105,9 @@ class SettlementManager extends EventEmitter {
 
     _isProfitEvent(log) {
         const profitEventSignatures = [
-            ethers.utils.id('ProfitGenerated(uint256)'),
-            ethers.utils.id('ArbitrageComplete(uint256,uint256)'),
-            ethers.utils.id('FlashloanProfit(uint256)')
+            ethers.id('ProfitGenerated(uint256)'),
+            ethers.id('ArbitrageComplete(uint256,uint256)'),
+            ethers.id('FlashloanProfit(uint256)')
         ];
 
         return profitEventSignatures.includes(log.topics[0]);
@@ -115,7 +115,7 @@ class SettlementManager extends EventEmitter {
 
     _decodeProfitFromLog(log) {
         try {
-            const decoded = ethers.utils.defaultAbiCoder.decode(['uint256'], log.data);
+            const decoded = ethers.AbiCoder.defaultAbiCoder().decode(['uint256'], log.data);
             return BigNumber.from(decoded[0]);
         } catch (error) {
             return BigNumber.from(0);

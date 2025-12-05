@@ -196,8 +196,8 @@ class StrategyRiskAssessor extends EventEmitter {
 
     async _calculateGasRisk() {
         try {
-            const gasPrice = await this.provider.getGasPrice();
-            const gasPriceGwei = parseFloat(ethers.utils.formatUnits(gasPrice, 'gwei'));
+            const gasPrice = (await this.provider.getFeeData()).gasPrice;
+            const gasPriceGwei = parseFloat(ethers.formatUnits(gasPrice, 'gwei'));
 
             // Compare to recent average (simplified)
             const avgGasPrice = 5; // 5 gwei average

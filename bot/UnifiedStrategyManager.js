@@ -28,7 +28,7 @@ class MulticoinArbitrageStrategy extends EventEmitter {
 
         // Configuration
         this.minProfitUSD = options.minProfitUSD || 1.0;
-        this.maxGasPrice = options.maxGasPrice || ethers.utils.parseUnits('5', 'gwei');
+        this.maxGasPrice = options.maxGasPrice || ethers.parseUnits('5', 'gwei');
         this.scanInterval = options.scanInterval || 15000; // 15 seconds
         this.isRunning = false;
 
@@ -184,7 +184,7 @@ class MulticoinArbitrageStrategy extends EventEmitter {
         }
 
         // Check gas price
-        const gasPrice = await this.provider.getGasPrice();
+        const gasPrice = (await this.provider.getFeeData()).gasPrice;
         if (gasPrice.gt(this.maxGasPrice)) {
             return false;
         }
@@ -233,7 +233,7 @@ class MulticoinArbitrageStrategy extends EventEmitter {
         }
 
         const [token0, token1] = opportunity.pair.split('/');
-        const flashAmount = ethers.utils.parseEther('10'); // 10 tokens for testing
+        const flashAmount = ethers.parseEther('10'); // 10 tokens for testing
 
         // Prepare arbitrage parameters
         const arbitrageParams = {
@@ -243,7 +243,7 @@ class MulticoinArbitrageStrategy extends EventEmitter {
             sellDex: opportunity.sellDex,
             expectedProfit: opportunity.profitPotential,
             caller: this.signer.address,
-            gasReimbursement: ethers.utils.parseEther('0.001'),
+            gasReimbursement: ethers.parseEther('0.001'),
             contractAddress: process.env.FLASHLOAN_ARB_CONTRACT
         };
 
@@ -304,8 +304,8 @@ class UnifiedStrategyManager extends EventEmitter {
 
         // Resource management
         this.resourceLimits = {
-            maxGasPerStrategy: options.maxGasPerStrategy || ethers.utils.parseUnits('10', 'gwei'),
-            maxCapitalPerStrategy: options.maxCapitalPerStrategy || ethers.utils.parseEther('50000'), // $50k
+            maxGasPerStrategy: options.maxGasPerStrategy || ethers.parseUnits('10', 'gwei'),
+            maxCapitalPerStrategy: options.maxCapitalPerStrategy || ethers.parseEther('50000'), // $50k
             maxTradesPerMinute: options.maxTradesPerMinute || 10
         };
 
@@ -356,8 +356,8 @@ class UnifiedStrategyManager extends EventEmitter {
             minProfitUSD: 0.1, // Execute any profitable opportunity (bundled saves 50% fees)
             maxGasPrice: 5,
             scanInterval: 5000,
-            maxGasPerTransaction: ethers.utils.parseEther('0.0005'),
-            minBalanceRequired: ethers.utils.parseEther('0.001'),
+            maxGasPerTransaction: ethers.parseEther('0.0005'),
+            minBalanceRequired: ethers.parseEther('0.001'),
             gasPriceRefund: 2.0,
             bnbReserveRatio: 0.8,
             btcReserveRatio: 0.2,
@@ -377,8 +377,8 @@ class UnifiedStrategyManager extends EventEmitter {
         this.strategies.liquidation = new LiquidationBot(this.provider, this.signer, {
             minProfitUSD: 10, // Lower threshold for more opportunities
             maxGasPrice: 5,
-            maxGasPerTransaction: ethers.utils.parseEther('0.0005'),
-            minBalanceRequired: ethers.utils.parseEther('0.001'),
+            maxGasPerTransaction: ethers.parseEther('0.0005'),
+            minBalanceRequired: ethers.parseEther('0.001'),
             gasPriceRefund: 2.0,
             maxConsecutiveFailures: 5,
             minTimeBetweenTransactions: 3000,
@@ -391,8 +391,8 @@ class UnifiedStrategyManager extends EventEmitter {
         this.strategies.nft = new NFTFlashLoanTrader(this.provider, this.signer, {
             minProfitUSD: 50, // NFT trades need higher minimums
             maxGasPrice: 5,
-            maxGasPerTransaction: ethers.utils.parseEther('0.001'), // Higher gas for NFT operations
-            minBalanceRequired: ethers.utils.parseEther('0.002'),
+            maxGasPerTransaction: ethers.parseEther('0.001'), // Higher gas for NFT operations
+            minBalanceRequired: ethers.parseEther('0.002'),
             gasPriceRefund: 2.0,
             maxConsecutiveFailures: 3, // Stricter for NFT trades
             minTimeBetweenTransactions: 5000,
@@ -405,8 +405,8 @@ class UnifiedStrategyManager extends EventEmitter {
         this.strategies.crossProtocol = new CrossProtocolArbitrageScanner(this.provider, this.signer, {
             minProfitUSD: 5, // Lower for cross-protocol opportunities
             maxGasPrice: 5,
-            maxGasPerTransaction: ethers.utils.parseEther('0.0005'),
-            minBalanceRequired: ethers.utils.parseEther('0.001'),
+            maxGasPerTransaction: ethers.parseEther('0.0005'),
+            minBalanceRequired: ethers.parseEther('0.001'),
             gasPriceRefund: 2.0,
             maxConsecutiveFailures: 5,
             minTimeBetweenTransactions: 3000,
@@ -423,8 +423,8 @@ class UnifiedStrategyManager extends EventEmitter {
             minProfitUSD: 1.0, // $1 minimum for multicoin arbitrage
             maxGasPrice: 5,
             scanInterval: 15000, // 15 seconds for multicoin cycles
-            maxGasPerTransaction: ethers.utils.parseEther('0.0005'),
-            minBalanceRequired: ethers.utils.parseEther('0.001'),
+            maxGasPerTransaction: ethers.parseEther('0.0005'),
+            minBalanceRequired: ethers.parseEther('0.001'),
             gasPriceRefund: 2.0,
             maxConsecutiveFailures: 5,
             minTimeBetweenTransactions: 10000,

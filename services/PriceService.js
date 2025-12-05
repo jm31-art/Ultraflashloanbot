@@ -33,7 +33,7 @@ class PriceService {
         }
 
         if (!this.provider) {
-            this.provider = new ethers.providers.JsonRpcProvider(this.CONFIG.bsc_rpc);
+            this.provider = new ethers.JsonRpcProvider(this.CONFIG.bsc_rpc);
         }
         
         this.routerAbi = [
@@ -89,9 +89,9 @@ class PriceService {
         // Try on-chain router if path provided
         if (!price && path.length) {
             try {
-                const amountIn = ethers.utils.parseUnits("1", 18);
+                const amountIn = ethers.parseUnits("1", 18);
                 const amounts = await this.router.getAmountsOut(amountIn, path);
-                price = parseFloat(ethers.utils.formatUnits(amounts[amounts.length - 1], 18));
+                price = parseFloat(ethers.formatUnits(amounts[amounts.length - 1], 18));
             } catch (e) {
                 console.log(`Router error for ${base}/${quote}:`, e.message);
             }
@@ -130,14 +130,14 @@ class PriceService {
     async getPriceImpact(token, amount, dex) {
         try {
             // Get price for 1 token
-            const baseAmount = ethers.utils.parseUnits("1", 18);
+            const baseAmount = ethers.parseUnits("1", 18);
             const basePrice = await this.router.getAmountsOut(
                 baseAmount,
                 [token, '0x55d398326f99059fF775485246999027B3197955'] // USDT address
             );
 
             // Get price for actual amount
-            const actualAmount = ethers.utils.parseUnits(amount.toString(), 18);
+            const actualAmount = ethers.parseUnits(amount.toString(), 18);
             const actualPrice = await this.router.getAmountsOut(
                 actualAmount,
                 [token, '0x55d398326f99059fF775485246999027B3197955'] // USDT address

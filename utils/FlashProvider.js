@@ -1,4 +1,4 @@
-const { ethers } = require("hardhat");
+const { ethers } = require("ethers");
 
 // ABIs for various protocols
 const UNISWAP_V3_POOL_ABI = [
@@ -228,7 +228,7 @@ class FlashProvider {
             const feeRate = await this.getDynamicFee(protocol);
             return {
                 hasLiquidity: mockLiquidity[protocol] || false,
-                maxAmount: ethers.utils.parseUnits('1000000', 18), // Simulated max amount
+                maxAmount: ethers.parseUnits('1000000', 18), // Simulated max amount
                 fee: feeRate
             };
         } catch (error) {
@@ -401,7 +401,7 @@ class FlashProvider {
             const pool = new ethers.Contract(poolAddress, CURVE_POOL_ABI, this.provider);
             const fee = await pool.flash_loan_fee();
             // Curve fees are typically in wei, convert to decimal
-            return parseFloat(ethers.utils.formatEther(fee));
+            return parseFloat(ethers.formatEther(fee));
         } catch (error) {
             console.warn('Error fetching Curve fee:', error.message);
             return this.fallbackFees.Curve;
@@ -574,7 +574,7 @@ class FlashProvider {
             const token1 = await poolContract.token1();
 
             // Encode arbitrage parameters with token addresses, caller, and gas reimbursement
-            const data = ethers.utils.defaultAbiCoder.encode(
+            const data = ethers.AbiCoder.defaultAbiCoder().encode(
                 ['address', 'address', 'string[]', 'address[]', 'address', 'uint256'],
                 [token0, token1, arbitrageParams.exchanges, arbitrageParams.path, arbitrageParams.caller, arbitrageParams.gasReimbursement]
             );
@@ -614,7 +614,7 @@ class FlashProvider {
             const token1 = await poolContract.token1();
 
             // Encode arbitrage parameters with token addresses, caller, and gas reimbursement
-            const data = ethers.utils.defaultAbiCoder.encode(
+            const data = ethers.AbiCoder.defaultAbiCoder().encode(
                 ['address', 'address', 'string[]', 'address[]', 'address', 'uint256'],
                 [token0, token1, arbitrageParams.exchanges, arbitrageParams.path, arbitrageParams.caller, arbitrageParams.gasReimbursement]
             );
@@ -654,7 +654,7 @@ class FlashProvider {
             const token1 = await poolContract.token1();
 
             // Encode arbitrage parameters with token addresses, caller, and gas reimbursement
-            const data = ethers.utils.defaultAbiCoder.encode(
+            const data = ethers.AbiCoder.defaultAbiCoder().encode(
                 ['address', 'address', 'string[]', 'address[]', 'address', 'uint256'],
                 [token0, token1, arbitrageParams.exchanges, arbitrageParams.path, arbitrageParams.caller, arbitrageParams.gasReimbursement]
             );
@@ -716,7 +716,7 @@ class FlashProvider {
         const modes = [0]; // 0 = no debt, 1 = stable, 2 = variable
 
         // Encode arbitrage parameters with caller and gas reimbursement
-        const params = ethers.utils.defaultAbiCoder.encode(
+        const params = ethers.AbiCoder.defaultAbiCoder().encode(
             ['string[]', 'address[]', 'address', 'uint256'],
             [arbitrageParams.exchanges, arbitrageParams.path, arbitrageParams.caller, arbitrageParams.gasReimbursement]
         );
@@ -754,7 +754,7 @@ class FlashProvider {
         const amounts = [amount];
 
         // Encode arbitrage parameters with caller and gas reimbursement
-        const userData = ethers.utils.defaultAbiCoder.encode(
+        const userData = ethers.AbiCoder.defaultAbiCoder().encode(
             ['string[]', 'address[]', 'address', 'uint256'],
             [arbitrageParams.exchanges, arbitrageParams.path, arbitrageParams.caller, arbitrageParams.gasReimbursement]
         );

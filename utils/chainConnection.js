@@ -49,7 +49,7 @@ class ChainConnection {
                 }
                 
                 try {
-                    const provider = new ethers.providers.JsonRpcProvider(providerConfig);
+                    const provider = new ethers.JsonRpcProvider(providerConfig);
                     await provider.ready;
                     
                     // Test the connection
@@ -80,7 +80,7 @@ class ChainConnection {
                     `${this.bscWsUrl}?auth=${encodeURIComponent(this.privateNodeAuth)}` :
                     this.bscWsUrl;
 
-                this.wsProvider = new ethers.providers.WebSocketProvider(wsUrl);
+                this.wsProvider = new ethers.WebSocketProvider(wsUrl);
 
                 // Handle WebSocket reconnection
                 this.wsProvider._websocket.on('close', () => {
@@ -107,7 +107,7 @@ class ChainConnection {
 
     async getGasPrice() {
         const provider = this.getHTTPProvider();
-        return await provider.getGasPrice();
+        return (await provider.getFeeData()).gasPrice;
     }
 
     async getBlockNumber() {

@@ -3,7 +3,7 @@ const { ethers } = require('ethers');
 class LiquidityChecker {
     constructor(provider) {
         this.provider = provider;
-        this.minStableLiquidity = ethers.utils.parseUnits('1000000', 18); // $1M minimum for stables
+        this.minStableLiquidity = ethers.parseUnits('1000000', 18); // $1M minimum for stables
         this.dexFactories = {
             PancakeSwap: "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
             ApeSwap: "0x0841BD0B734E4F5853f0dD8d7Ea041c241fb0Da6",
@@ -143,10 +143,10 @@ class LiquidityChecker {
         const isStablePair = this.isStablecoin(tokenA) && this.isStablecoin(tokenB);
         const requiredLiquidity = isStablePair ?
             this.minStableLiquidity :
-            ethers.utils.parseUnits('100000', 18); // $100k for non-stables
+            ethers.parseUnits('100000', 18); // $100k for non-stables
 
         // Check if liquidity is at least 10x the trade amount
-        const minLiquidity = ethers.utils.parseUnits(amount.toString(), 18).mul(10);
+        const minLiquidity = ethers.parseUnits(amount.toString(), 18).mul(10);
         return liquidity.totalLiquidity.gte(minLiquidity) &&
                liquidity.totalLiquidity.gte(requiredLiquidity);
     }
@@ -170,7 +170,7 @@ class LiquidityChecker {
             deepestPool: analysis.deepestPool,
             liquidityDistribution: analysis.allPools.map(pool => ({
                 dex: pool.dex,
-                liquidity: ethers.utils.formatEther(pool.totalLiquidity),
+                liquidity: ethers.formatEther(pool.totalLiquidity),
                 percentage: analysis.deepestPool ?
                     (pool.totalLiquidity.mul(100).div(analysis.deepestPool.totalLiquidity)).toString() + '%' : '0%'
             })),

@@ -19,8 +19,8 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
         this.minProfitUSD = options.minProfitUSD || 25;
         this.maxGasPrice = options.maxGasPrice || 5; // gwei
         this.scanInterval = options.scanInterval || 15000; // 15 seconds
-        this.maxTradeSize = options.maxTradeSize || ethers.utils.parseEther('50000'); // $50k max
-        this.minLiquidityThreshold = options.minLiquidityThreshold || ethers.utils.parseEther('10000'); // $10k min liquidity
+        this.maxTradeSize = options.maxTradeSize || ethers.parseEther('50000'); // $50k max
+        this.minLiquidityThreshold = options.minLiquidityThreshold || ethers.parseEther('10000'); // $10k min liquidity
 
         this.isRunning = false;
         this.scanCount = 0;
@@ -117,7 +117,7 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
             if (dexConfig.contract) {
                 try {
                     await dexConfig.contract.getAmountsOut(
-                        ethers.utils.parseEther('1'),
+                        ethers.parseEther('1'),
                         [TOKENS.WETH.address, TOKENS.USDC.address]
                     );
                     console.log(`✅ ${dexName} DEX connected`);
@@ -216,10 +216,10 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
                 if (dexConfig.contract) {
                     try {
                         const amounts = await dexConfig.contract.getAmountsOut(
-                            ethers.utils.parseEther('1'),
+                            ethers.parseEther('1'),
                             [tokenIn, tokenOut]
                         );
-                        const price = parseFloat(ethers.utils.formatEther(amounts[1]));
+                        const price = parseFloat(ethers.formatEther(amounts[1]));
                         dexPrices[dexName] = price;
                     } catch (error) {
                         console.warn(`⚠️ Failed to get price from ${dexName}:`, error.message);
@@ -375,10 +375,10 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
             const dexConfig = Object.values(this.dexProtocols)[0];
             if (dexConfig.contract) {
                 const amounts = await dexConfig.contract.getAmountsOut(
-                    ethers.utils.parseEther('1'),
+                    ethers.parseEther('1'),
                     [tokenIn, tokenOut]
                 );
-                return parseFloat(ethers.utils.formatEther(amounts[1]));
+                return parseFloat(ethers.formatEther(amounts[1]));
             }
         } catch (error) {
             console.warn('⚠️ Failed to get DEX price:', error.message);
@@ -426,8 +426,8 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
 
             // Parse reserve data based on protocol
             // This is simplified - actual implementation would depend on protocol ABIs
-            const supplyRate = parseFloat(ethers.utils.formatEther(reserveData[2] || 0));
-            const borrowRate = parseFloat(ethers.utils.formatEther(reserveData[3] || 0));
+            const supplyRate = parseFloat(ethers.formatEther(reserveData[2] || 0));
+            const borrowRate = parseFloat(ethers.formatEther(reserveData[3] || 0));
 
             return { supplyRate, borrowRate };
         } catch (error) {
@@ -631,8 +631,8 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
                 return {
                     tokens: [opportunity.tokenIn, opportunity.tokenOut],
                     protocols: [this.dexProtocols[opportunity.buyDex].router, this.dexProtocols[opportunity.sellDex].router],
-                    amounts: [ethers.utils.parseEther('10')], // Example amount
-                    strategyData: ethers.utils.defaultAbiCoder.encode(
+                    amounts: [ethers.parseEther('10')], // Example amount
+                    strategyData: ethers.AbiCoder.defaultAbiCoder.encode(
                         ['string', 'address', 'address'],
                         ['dex-dex', opportunity.tokenIn, opportunity.tokenOut]
                     )
@@ -642,8 +642,8 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
                 return {
                     tokens: [opportunity.token],
                     protocols: [this.dexProtocols.PANCAKESWAP.router, this.lendingProtocols.AAVE.pool],
-                    amounts: [ethers.utils.parseEther('10')],
-                    strategyData: ethers.utils.defaultAbiCoder.encode(
+                    amounts: [ethers.parseEther('10')],
+                    strategyData: ethers.AbiCoder.defaultAbiCoder.encode(
                         ['string', 'address'],
                         ['dex-lending', opportunity.token]
                     )

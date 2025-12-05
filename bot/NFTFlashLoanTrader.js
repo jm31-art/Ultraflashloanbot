@@ -17,7 +17,7 @@ class NFTFlashLoanTrader extends EventEmitter {
         this.minProfitUSD = options.minProfitUSD || 100; // Higher minimum for NFT trades
         this.maxGasPrice = options.maxGasPrice || 5; // gwei
         this.scanInterval = options.scanInterval || 60000; // 1 minute (NFT markets move slower)
-        this.maxNFTPrice = options.maxNFTPrice || ethers.utils.parseEther('100'); // 100 ETH max
+        this.maxNFTPrice = options.maxNFTPrice || ethers.parseEther('100'); // 100 ETH max
         this.profitMarginThreshold = options.profitMarginThreshold || 0.05; // 5% minimum margin
 
         this.isRunning = false;
@@ -447,8 +447,8 @@ class NFTFlashLoanTrader extends EventEmitter {
                 opportunity.collection,
                 opportunity.tokenId,
                 NFT_MARKETPLACES[opportunity.buyMarketplace].contract,
-                ethers.utils.parseEther(opportunity.buyPrice.toString()),
-                ethers.utils.parseEther(opportunity.sellPrice.toString())
+                ethers.parseEther(opportunity.buyPrice.toString()),
+                ethers.parseEther(opportunity.sellPrice.toString())
             );
 
             console.log(`✅ NFT arbitrage executed: ${txResponse.hash}`);

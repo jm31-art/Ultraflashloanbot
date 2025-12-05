@@ -38,7 +38,7 @@ const TOKENS = {
 function validateAddresses() {
     for (const [symbol, token] of Object.entries(TOKENS)) {
         try {
-            token.address = ethers.utils.getAddress(token.address);
+            token.address = ethers.getAddress(token.address);
         } catch (error) {
             console.error(`Invalid address for ${symbol}:`, error.message);
         }

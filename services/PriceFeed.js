@@ -67,12 +67,12 @@ class PriceFeed {
 
             // Normalize addresses to checksum format
             const normalizedToken0 = token0.address.toLowerCase() < token1.address.toLowerCase() 
-                ? ethers.utils.getAddress(token0.address)
-                : ethers.utils.getAddress(token1.address);
+                ? ethers.getAddress(token0.address)
+                : ethers.getAddress(token1.address);
             const normalizedToken1 = token0.address.toLowerCase() < token1.address.toLowerCase()
-                ? ethers.utils.getAddress(token1.address)
-                : ethers.utils.getAddress(token0.address);
-            const normalizedFactory = ethers.utils.getAddress(dexConfig.factory);
+                ? ethers.getAddress(token1.address)
+                : ethers.getAddress(token0.address);
+            const normalizedFactory = ethers.getAddress(dexConfig.factory);
 
             const factory = new ethers.Contract(normalizedFactory, [
                 'function getPair(address tokenA, address tokenB) external view returns (address pair)'
@@ -92,7 +92,7 @@ class PriceFeed {
                 return null;
             }
 
-            const normalizedPair = ethers.utils.getAddress(pairAddress);
+            const normalizedPair = ethers.getAddress(pairAddress);
             const pair = new ethers.Contract(normalizedPair, PAIR_ABI, this.provider);
             const reserves = await pair.getReserves();
             
@@ -109,7 +109,7 @@ class PriceFeed {
             const decimals1 = ethers.BigNumber.from(10).pow(token1.decimals);
             
             const price = reserve1.mul(decimals0).div(reserve0.mul(decimals1));
-            return parseFloat(ethers.utils.formatUnits(price, 0));
+            return parseFloat(ethers.formatUnits(price, 0));
             
         } catch (error) {
             if (error.message.includes('bad address checksum')) {

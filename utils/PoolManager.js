@@ -85,7 +85,7 @@ class PoolManager {
         };
 
         const price = tokenPrices[tokenAddress.toLowerCase()] || 1;
-        return (parseFloat(ethers.utils.formatEther(amount)) * price);
+        return (parseFloat(ethers.formatEther(amount)) * price);
     }
 
     estimateVolume(token0, token1, totalLiquidity) {

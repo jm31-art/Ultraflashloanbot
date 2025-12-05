@@ -8,7 +8,7 @@ async function calculateOptimalTradeAmount(flashloanArb, tokenIn, tokenOut, dexB
 
     // Get safe amount limits from config
     const safeConfig = productionConfig.safeTradeAmounts[tokenSymbol] || {
-        maxSafeAmount: ethers.utils.parseEther('1').toString(), // Default 1 ETH equivalent
+        maxSafeAmount: ethers.parseEther('1').toString(), // Default 1 ETH equivalent
         slippageThreshold: 0.005,
         liquidityRatio: 0.1
     };

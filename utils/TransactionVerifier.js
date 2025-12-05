@@ -30,7 +30,7 @@ class TransactionVerifier {
         };
 
         // Dynamic profit threshold based on gas price
-        this.BASE_PROFIT_THRESHOLD = ethers.utils.parseEther('0.01'); // 0.01 BNB
+        this.BASE_PROFIT_THRESHOLD = ethers.parseEther('0.01'); // 0.01 BNB
         this.MAX_GAS_PRICE_GWEI = 15; // Base gas price threshold in gwei
         
         this.mevProtector = new SecureMEVProtector(provider);
@@ -125,7 +125,7 @@ class TransactionVerifier {
         }
 
         // Verify gas price and check for sandwich resistance
-        const currentGasPrice = await this.provider.getGasPrice();
+        const currentGasPrice = (await this.provider.getFeeData()).gasPrice;
         const block = await this.provider.getBlock('latest');
         const baseFeePerGas = block.baseFeePerGas || currentGasPrice;
         
@@ -209,11 +209,11 @@ class TransactionVerifier {
     }
 
     async _verifyProfitability(transaction, simResult) {
-        const currentGasPrice = BigNumber.from(transaction.gasPrice || await this.provider.getGasPrice());
+        const currentGasPrice = BigNumber.from(transaction.gasPrice || (await this.provider.getFeeData()).gasPrice);
         const gasCost = currentGasPrice.mul(simResult.gasEstimate);
 
         // Adjust profit threshold based on gas price
-        const gasGwei = Number(ethers.utils.formatUnits(currentGasPrice, 'gwei'));
+        const gasGwei = Number(ethers.formatUnits(currentGasPrice, 'gwei'));
         const adjustedThreshold = this.BASE_PROFIT_THRESHOLD.mul(
             Math.max(1, Math.floor(gasGwei / this.MAX_GAS_PRICE_GWEI))
         );
@@ -225,7 +225,7 @@ class TransactionVerifier {
 
     async _verifyGasCosts(transaction) {
         const balance = await this.signer.getBalance();
-        const maxGasCost = BigNumber.from(transaction.gasPrice || await this.provider.getGasPrice())
+        const maxGasCost = BigNumber.from(transaction.gasPrice || (await this.provider.getFeeData()).gasPrice)
             .mul(transaction.gasLimit || 500000);
 
         // Add buffer for potential gas price increases
@@ -475,7 +475,7 @@ class TransactionVerifier {
         const decimals = await tokenContract.decimals();
 
         // Convert to human readable
-        const humanAmount = ethers.utils.formatUnits(amount, decimals);
+        const humanAmount = ethers.formatUnits(amount, decimals);
         
         // Check if amount is suspiciously large
         if (parseFloat(humanAmount) > 1000000) { // 1M tokens

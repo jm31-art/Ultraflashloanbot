@@ -166,7 +166,7 @@ class ConfigValidator {
     validateAddressChecksum(address, expectedChecksum = null) {
         try {
             const ethers = require('ethers');
-            const checksummed = ethers.utils.getAddress(address);
+            const checksummed = ethers.getAddress(address);
             if (expectedChecksum && checksummed !== expectedChecksum) {
                 throw new ConfigurationError(
                     `Address checksum mismatch: expected ${expectedChecksum}, got ${checksummed}`,
@@ -213,8 +213,8 @@ class ConfigValidator {
         try {
             // Get current gas price if not provided
             if (!gasPrice && this.provider) {
-                gasPrice = await this.provider.getGasPrice();
-                gasPrice = parseFloat(ethers.utils.formatUnits(gasPrice, 'gwei'));
+                gasPrice = (await this.provider.getFeeData()).gasPrice;
+                gasPrice = parseFloat(ethers.formatUnits(gasPrice, 'gwei'));
             }
 
             // Base deadline adjustment based on gas price

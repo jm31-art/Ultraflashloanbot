@@ -7,9 +7,9 @@ class LiquidityValidator {
 
     calculateProfit(amount, buyPrice, sellPrice) {
         // Convert amount to BigNumber to handle large numbers precisely
-        const amountBN = ethers.utils.parseUnits(amount.toString(), 18);
-        const buyPriceBN = ethers.utils.parseUnits(buyPrice.toString(), 18);
-        const sellPriceBN = ethers.utils.parseUnits(sellPrice.toString(), 18);
+        const amountBN = ethers.parseUnits(amount.toString(), 18);
+        const buyPriceBN = ethers.parseUnits(buyPrice.toString(), 18);
+        const sellPriceBN = ethers.parseUnits(sellPrice.toString(), 18);
 
         // Calculate: amount * buyPrice - amount * sellPrice
         // This gives us the direct price difference
@@ -18,21 +18,21 @@ class LiquidityValidator {
         const profit = soldAmount.sub(boughtAmount);
 
         return {
-            profit: ethers.utils.formatEther(profit),
-            tokensBought: ethers.utils.formatEther(tokensReceived),
-            amountReceived: ethers.utils.formatEther(sellAmount)
+            profit: ethers.formatEther(profit),
+            tokensBought: ethers.formatEther(tokensReceived),
+            amountReceived: ethers.formatEther(sellAmount)
         };
     }
 
     calculateNetProfit(amount, buyPrice, sellPrice, fees) {
         const { profit } = this.calculateProfit(amount, buyPrice, sellPrice);
-        const profitBN = ethers.utils.parseEther(profit);
+        const profitBN = ethers.parseEther(profit);
         
         // Subtract all fees
-        const totalFeesBN = ethers.utils.parseEther(fees.toString());
+        const totalFeesBN = ethers.parseEther(fees.toString());
         const netProfitBN = profitBN.sub(totalFeesBN);
 
-        return ethers.utils.formatEther(netProfitBN);
+        return ethers.formatEther(netProfitBN);
     }
 
     isProfitable(amount, buyPrice, sellPrice, fees) {

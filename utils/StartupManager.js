@@ -14,7 +14,7 @@ class StartupManager {
             console.log('Initializing bot systems...');
 
             // Initialize provider
-            this.provider = new ethers.providers.JsonRpcProvider(this.config.rpcUrl);
+            this.provider = new ethers.JsonRpcProvider(this.config.rpcUrl);
             console.log('Provider initialized:', await this.provider.getNetwork());
 
             // Initialize signer
@@ -46,7 +46,7 @@ class StartupManager {
 
             // Test signer balance
             const balance = await this.signer.getBalance();
-            console.log('Wallet balance:', ethers.utils.formatEther(balance), 'ETH');
+            console.log('Wallet balance:', ethers.formatEther(balance), 'ETH');
 
             // Test transaction verifier
             const mockTx = {

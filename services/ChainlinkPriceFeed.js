@@ -25,7 +25,7 @@ class ChainlinkPriceFeed {
             throw new Error('Price feed is stale');
         }
         
-        return ethers.utils.formatUnits(price, 8); // Chainlink prices have 8 decimals
+        return ethers.formatUnits(price, 8); // Chainlink prices have 8 decimals
     }
 
     async getTokenPrice(symbol) {

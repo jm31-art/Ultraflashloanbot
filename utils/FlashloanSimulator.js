@@ -53,7 +53,7 @@ class FlashloanSimulator {
         }
 
         try {
-            const normalizedTokenAddress = ethers.utils.getAddress(tokenAddress);
+            const normalizedTokenAddress = ethers.getAddress(tokenAddress);
             const dodoRouter = new ethers.Contract(providerAddress, DODO_ABI, this.provider);
             
             // Try different methods to find the DODO pool
@@ -95,33 +95,33 @@ class FlashloanSimulator {
     async checkLiquidity(vaultAddress, tokenAddress) {
         if (this.TEST_MODE) {
             return {
-                available: ethers.utils.parseEther("1000"),
+                available: ethers.parseEther("1000"),
                 formatted: "1000.0"
             };
         }
         
         try {
-            const normalizedTokenAddress = ethers.utils.getAddress(tokenAddress);
+            const normalizedTokenAddress = ethers.getAddress(tokenAddress);
             const vault = new ethers.Contract(vaultAddress, DODO_ABI, this.provider);
             const token = new ethers.Contract(normalizedTokenAddress, IERC20_ABI, this.provider);
             
             // Get vault balance
             const balance = await token.balanceOf(vaultAddress);
             const decimals = await token.decimals();
-            const formatted = ethers.utils.formatUnits(balance, decimals);
+            const formatted = ethers.formatUnits(balance, decimals);
             
             // Calculate max flash loan (DODO allows up to 90% of pool liquidity)
             const maxLoan = balance.mul(90).div(100);
-            const formattedMaxLoan = ethers.utils.formatUnits(maxLoan, decimals);
+            const formattedMaxLoan = ethers.formatUnits(maxLoan, decimals);
             
             console.log(`DODO vault ${vaultAddress} liquidity for ${tokenAddress}:`);
             console.log(`Total Balance: ${formatted}`);
             console.log(`Max Flash Loan: ${formattedMaxLoan}`);
             
             // Calculate fee for sample amount
-            const sampleAmount = ethers.utils.parseUnits("10000", decimals);
+            const sampleAmount = ethers.parseUnits("10000", decimals);
             const fee = sampleAmount.mul(3).div(1000); // 0.3% fee
-            const formattedFee = ethers.utils.formatUnits(fee, decimals);
+            const formattedFee = ethers.formatUnits(fee, decimals);
             
             return {
                 available: maxLoan,
@@ -232,7 +232,7 @@ class FlashloanSimulator {
 
     async simulateAmount(usdAmount) {
         // Convert USD amount to ETH (we multiply by 1e18 to get wei format)
-        const ethAmountInWei = ethers.utils.parseEther(
+        const ethAmountInWei = ethers.parseEther(
             (usdAmount / this.ETH_PRICE).toFixed(18)
         );
         
@@ -242,7 +242,7 @@ class FlashloanSimulator {
         const bestProvider = await this.flashProvider.findBestFlashProvider('WETH', ethAmountInWei);
         
         // Convert fee back to ETH for display
-        const flashLoanFeeEth = parseFloat(ethers.utils.formatEther(bestProvider.fee));
+        const flashLoanFeeEth = parseFloat(ethers.formatEther(bestProvider.fee));
         
         // Gas cost calculation
         const gasCostEth = (this.GAS_ESTIMATE * gasPrice * 1e-9);
@@ -273,8 +273,8 @@ class FlashloanSimulator {
     }
 
     async getOptimalGasPrice() {
-        const gasPrice = await ethers.provider.getGasPrice();
-        return Math.ceil(ethers.utils.formatUnits(gasPrice, 'gwei'));
+        const gasPrice = (await this.provider.getFeeData()).gasPrice;
+        return Math.ceil(ethers.formatUnits(gasPrice, 'gwei'));
     }
 
     async getTokenPrice(token, inUSD = true) {

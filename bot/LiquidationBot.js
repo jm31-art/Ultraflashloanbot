@@ -19,7 +19,7 @@ class LiquidationBot extends EventEmitter {
         this.minProfitUSD = options.minProfitUSD || 50;
         this.maxGasPrice = options.maxGasPrice || 5; // gwei
         this.scanInterval = options.scanInterval || 30000; // 30 seconds
-        this.maxLiquidationAmount = options.maxLiquidationAmount || ethers.utils.parseEther('10000'); // $10k max
+        this.maxLiquidationAmount = options.maxLiquidationAmount || ethers.parseEther('10000'); // $10k max
         this.liquidationBonusThreshold = options.liquidationBonusThreshold || 0.05; // 5% minimum bonus
 
         this.isRunning = false;
@@ -280,7 +280,7 @@ class LiquidationBot extends EventEmitter {
     async _getAvailableLiquidity(asset) {
         // Placeholder - implement actual liquidity checking
         // Check flash loan availability, DEX liquidity, etc.
-        return ethers.utils.parseEther('100000'); // $100k placeholder
+        return ethers.parseEther('100000'); // $100k placeholder
     }
 
     async _calculateLiquidationProfit(protocolName, opportunity, liquidationAmount) {
@@ -295,7 +295,7 @@ class LiquidationBot extends EventEmitter {
 
             // Calculate gas costs
             const gasEstimate = await this._estimateLiquidationGas(protocolName);
-            const gasPrice = await this.provider.getGasPrice();
+            const gasPrice = (await this.provider.getFeeData()).gasPrice;
             const gasCost = gasEstimate.mul(gasPrice);
 
             // Calculate flash loan fee (0.09% for Aave)
@@ -312,7 +312,7 @@ class LiquidationBot extends EventEmitter {
                 collateralReceived,
                 gasCost,
                 flashLoanFee,
-                netProfit: ethers.utils.parseEther(netProfitUSD.toString())
+                netProfit: ethers.parseEther(netProfitUSD.toString())
             };
 
         } catch (error) {
@@ -395,7 +395,7 @@ class LiquidationBot extends EventEmitter {
             opportunity.debtAsset,
             opportunity.collateralAsset,
             amount,
-            ethers.utils.parseEther(minProfit.toString())
+            ethers.parseEther(minProfit.toString())
         );
     }
 

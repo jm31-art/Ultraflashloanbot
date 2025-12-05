@@ -12,7 +12,7 @@ async function initializeBot() {
             
             // Get gas price for each block
             const gasPrice = await chainConnection.getGasPrice();
-            console.log('Current gas price:', ethers.utils.formatUnits(gasPrice, 'gwei'), 'gwei');
+            console.log('Current gas price:', ethers.formatUnits(gasPrice, 'gwei'), 'gwei');
             
             // Check for arbitrage opportunities
             // ... your arbitrage logic here

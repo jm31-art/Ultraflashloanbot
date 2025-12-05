@@ -14,10 +14,10 @@ class PrivateNodeService {
 
         try {
             // Initialize HTTP provider
-            this.provider = new ethers.providers.JsonRpcProvider(
+            this.provider = new ethers.JsonRpcProvider(
                 this.config.url,
+                this.config.chainId,
                 {
-                    chainId: this.config.chainId,
                     name: 'BSC-Private',
                     headers: this.config.settings.headers
                 }
@@ -25,7 +25,7 @@ class PrivateNodeService {
 
             // Initialize WebSocket provider if enabled
             if (this.config.websocket.enabled) {
-                this.wsProvider = new ethers.providers.WebSocketProvider(
+                this.wsProvider = new ethers.WebSocketProvider(
                     this.config.websocket.url,
                     {
                         chainId: this.config.chainId,
@@ -57,7 +57,7 @@ class PrivateNodeService {
 
         setTimeout(async () => {
             try {
-                this.wsProvider = new ethers.providers.WebSocketProvider(
+                this.wsProvider = new ethers.WebSocketProvider(
                     this.config.websocket.url,
                     {
                         chainId: this.config.chainId,

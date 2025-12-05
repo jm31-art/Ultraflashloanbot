@@ -40,7 +40,7 @@ class ThresholdManager {
         if (!this.config.profitThresholds[token]) {
             throw new Error(`Invalid token: ${token}`);
         }
-        return ethers.utils.parseUnits(
+        return ethers.parseUnits(
             this.config.profitThresholds[token].minProfitUSD,
             18
         );
@@ -51,7 +51,7 @@ class ThresholdManager {
         if (!this.config.withdrawalThresholds[token]) {
             throw new Error(`Invalid token: ${token}`);
         }
-        return ethers.utils.parseUnits(
+        return ethers.parseUnits(
             this.config.withdrawalThresholds[token].minWithdrawUSD,
             18
         );
