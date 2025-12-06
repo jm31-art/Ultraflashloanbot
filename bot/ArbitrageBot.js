@@ -18,7 +18,8 @@ class ArbitrageBot extends EventEmitter {
             throw new Error('Signer is required for ArbitrageBot');
         }
 
-        this.provider = provider;
+        // Create robust provider with retry logic and high limits
+        this.provider = this._createRobustProvider(provider);
         this.signer = signer;
         this.priceFeed = new DexPriceFeed(provider);
         this.flashProvider = new FlashProvider(provider, signer);
@@ -57,6 +58,11 @@ class ArbitrageBot extends EventEmitter {
         this.actualProfitBNB = 0;
         this.profitValidationCount = 0;
         this.profitValidationSuccess = 0;
+
+        // ERROR HANDLING AND CONFIGURATION
+        this.maxDexBatchSize = options.maxDexBatchSize || 4; // Limit DEX batch size
+        this.requestTimeout = options.requestTimeout || 15000; // 15 second timeout
+        this.retryAttempts = options.retryAttempts || 3; // Retry failed requests
     }
 
     _validateMinProfit(minProfit) {
@@ -229,109 +235,151 @@ class ArbitrageBot extends EventEmitter {
         }
     }
 
-    // Calculate comprehensive profit for arbitrage opportunity (with transaction bundling)
+    // BigInt-native comprehensive profit calculation for arbitrage opportunity
     async _calculateArbitrageProfit(opportunity, flashAmount, flashProvider) {
         try {
-            // Input validation
-            if (!opportunity) {
-                throw new Error('Opportunity object is required for profit calculation');
+            // Input validation with defensive checks
+            if (!opportunity || typeof opportunity !== 'object') {
+                console.error('❌ Invalid opportunity object:', opportunity);
+                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Invalid opportunity object' };
             }
             if (!opportunity.spread || !opportunity.pair) {
-                throw new Error('Opportunity must have spread and pair properties');
+                console.error('❌ Opportunity missing required properties:', opportunity);
+                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Missing spread or pair' };
             }
 
             const { spread, pair } = opportunity;
 
-            // Get gas cost estimate
-            const gasCost = await this._calculateGasCost(opportunity);
+            // Validate spread and flashAmount
+            if (typeof spread !== 'number' || spread <= 0 || spread > 5) {
+                console.error('❌ Invalid spread:', spread);
+                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Invalid spread' };
+            }
+            if (!flashAmount || typeof flashAmount !== 'bigint' || flashAmount <= 0n) {
+                console.error('❌ Invalid flashAmount:', flashAmount);
+                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Invalid flashAmount' };
+            }
 
-            // Estimate flash loan fee - CRITICAL FIX: Use correct fee rates
-            const flashFeeRate = await this.flashProvider.getDynamicFee(flashProvider.protocol);
-            const flashFee = flashAmount.mul(ethers.BigNumber.from(Math.floor(flashFeeRate * 1000000))).div(ethers.BigNumber.from(1000000));
+            console.log(`🔄 Calculating profit for ${pair} with spread ${spread.toFixed(4)}%`);
 
-            // BUNDLED TRANSACTION: Reduce DEX fees for 0% flash loan providers
-            let dexFeeRate;
+            // Get gas cost estimate with fallback
+            let gasCost;
+            try {
+                gasCost = await this._calculateGasCost(opportunity);
+            } catch (gasError) {
+                console.warn('⚠️ Gas cost calculation failed, using fallback:', gasError.message);
+                gasCost = {
+                    gasCostWei: ethers.parseEther('0.0001'), // 0.0001 BNB fallback
+                    gasCostUSD: 0.057 // ~$0.057
+                };
+            }
+
+            // Estimate flash loan fee with BigInt
+            let flashFeeRate = 0.0009; // Default 0.09%
+            try {
+                const dynamicFee = await this.flashProvider.getDynamicFee(flashProvider.protocol);
+                if (typeof dynamicFee === 'number' && dynamicFee >= 0 && dynamicFee <= 0.01) {
+                    flashFeeRate = dynamicFee;
+                }
+            } catch (feeError) {
+                console.warn('⚠️ Flash fee fetch failed, using default 0.09%:', feeError.message);
+            }
+
+            const flashFeeRateBigInt = BigInt(Math.floor(flashFeeRate * 1000000));
+            const flashFee = (flashAmount * flashFeeRateBigInt) / 1000000n;
+
+            // DEX fee calculation with BigInt
+            let dexFeeRate = 0.0025; // Default 0.25%
             if (flashProvider.protocol === 'Equalizer' || flashProvider.protocol === 'PancakeV3') {
-                // 0% flash fee providers get lower DEX fees (0.1% bundled)
                 dexFeeRate = 0.001; // 0.1% for 0% flash fee providers
-            } else {
-                // Regular providers get 0.25% bundled
-                dexFeeRate = 0.0025; // 0.25% for bundled transaction
             }
-            const dexFee = flashAmount.mul(ethers.BigNumber.from(Math.floor(dexFeeRate * 10000))).div(ethers.BigNumber.from(10000));
 
-            // Estimate slippage (reduced for 0% fee providers)
-            let slippageRate;
+            const dexFeeRateBigInt = BigInt(Math.floor(dexFeeRate * 10000));
+            const dexFee = (flashAmount * dexFeeRateBigInt) / 10000n;
+
+            // Slippage calculation with BigInt
+            let slippageRate = 0.001; // Default 0.1%
             if (flashProvider.protocol === 'Equalizer' || flashProvider.protocol === 'PancakeV3') {
-                // Lower slippage for 0% fee providers (0.05%)
-                slippageRate = 0.0005; // 0.05%
-            } else {
-                // Conservative slippage for regular providers (0.1%)
-                slippageRate = 0.001; // 0.1%
+                slippageRate = 0.0005; // 0.05% for 0% flash fee providers
             }
-            const slippage = flashAmount.mul(ethers.BigNumber.from(Math.floor(slippageRate * 10000))).div(ethers.BigNumber.from(10000));
 
-            // Calculate gross profit from spread
-            const grossProfit = flashAmount.mul(ethers.BigNumber.from(Math.floor(spread * 100))).div(ethers.BigNumber.from(10000));
+            const slippageRateBigInt = BigInt(Math.floor(slippageRate * 10000));
+            const slippage = (flashAmount * slippageRateBigInt) / 10000n;
 
-            // Calculate net profit: gross profit - flash fee - dex fees - slippage - gas
-            const totalFees = flashFee.add(dexFee).add(slippage);
-            const netProfitWei = grossProfit.sub(totalFees).sub(gasCost.gasCostWei);
+            // Calculate gross profit from spread using BigInt
+            const spreadBasisPoints = BigInt(Math.floor(spread * 10000)); // Convert to basis points
+            const grossProfit = (flashAmount * spreadBasisPoints) / 10000n;
 
-            // Convert to USD values (assuming flashAmount is in token units, need to convert to USD)
-            const flashAmountUSD = parseFloat(ethers.formatEther(flashAmount)) * 567; // BNB price approximation
-            const grossProfitUSD = parseFloat(ethers.formatEther(grossProfit)) * 567;
-            const flashFeeUSD = parseFloat(ethers.formatEther(flashFee)) * 567;
-            const dexFeeUSD = parseFloat(ethers.formatEther(dexFee)) * 567;
-            const slippageUSD = parseFloat(ethers.formatEther(slippage)) * 567;
-            const netProfitUSD = parseFloat(ethers.formatEther(netProfitWei)) * 567;
+            // Calculate total fees and net profit with BigInt
+            const totalFees = flashFee + dexFee + slippage + gasCost.gasCostWei;
+            const netProfitWei = grossProfit > totalFees ? grossProfit - totalFees : -totalFees;
+
+            // Convert to USD values (BNB price ~$567)
+            const BNB_PRICE = 567;
+            const flashAmountUSD = Number(ethers.formatEther(flashAmount)) * BNB_PRICE;
+            const grossProfitUSD = Number(ethers.formatEther(grossProfit)) * BNB_PRICE;
+            const flashFeeUSD = Number(ethers.formatEther(flashFee)) * BNB_PRICE;
+            const dexFeeUSD = Number(ethers.formatEther(dexFee)) * BNB_PRICE;
+            const slippageUSD = Number(ethers.formatEther(slippage)) * BNB_PRICE;
+            const netProfitUSD = Number(ethers.formatEther(netProfitWei)) * BNB_PRICE;
 
             const feeSavings = flashProvider.protocol === 'Equalizer' || flashProvider.protocol === 'PancakeV3' ?
                 '90% reduction (0% flash + low DEX fees)!' : '50% reduction via transaction bundling!';
 
-            console.log(`💰 PROFIT ANALYSIS for ${pair} (BUNDLED):`);
+            console.log(`💰 PROFIT ANALYSIS for ${pair} (BigInt-native):`);
             console.log(`   Flash Amount: ${ethers.formatEther(flashAmount)} WBNB ($${flashAmountUSD.toFixed(2)})`);
             console.log(`   Spread: ${spread.toFixed(4)}%`);
             console.log(`   Gross Profit: ${ethers.formatEther(grossProfit)} WBNB ($${grossProfitUSD.toFixed(4)})`);
-            console.log(`   Flash Fee (${flashProvider.protocol} ${flashFeeRate*100}%): ${ethers.formatEther(flashFee)} WBNB ($${flashFeeUSD.toFixed(4)})`);
-            console.log(`   DEX Fees (${dexFeeRate*100}% bundled): ${ethers.formatEther(dexFee)} WBNB ($${dexFeeUSD.toFixed(4)})`);
-            console.log(`   Slippage (${slippageRate*100}%): ${ethers.formatEther(slippage)} WBNB ($${slippageUSD.toFixed(4)})`);
+            console.log(`   Flash Fee (${flashProvider.protocol} ${(flashFeeRate*100).toFixed(3)}%): ${ethers.formatEther(flashFee)} WBNB ($${flashFeeUSD.toFixed(4)})`);
+            console.log(`   DEX Fees (${(dexFeeRate*100).toFixed(2)}%): ${ethers.formatEther(dexFee)} WBNB ($${dexFeeUSD.toFixed(4)})`);
+            console.log(`   Slippage (${(slippageRate*100).toFixed(2)}%): ${ethers.formatEther(slippage)} WBNB ($${slippageUSD.toFixed(4)})`);
             console.log(`   Gas Cost: $${gasCost.gasCostUSD.toFixed(4)}`);
+            console.log(`   Total Fees: ${ethers.formatEther(totalFees)} WBNB`);
             console.log(`   Net Profit: ${ethers.formatEther(netProfitWei)} WBNB ($${netProfitUSD.toFixed(4)})`);
             console.log(`   🎯 Fee Savings: ${feeSavings}`);
 
             return {
-                isProfitable: netProfitUSD > 0.01, // Minimum $0.01 profit for arbitrage (very aggressive)
-                grossProfit: grossProfitUSD,
-                netProfit: netProfitUSD,
-                fees: {
-                    flash: flashFeeUSD,
-                    dex: dexFeeUSD,
-                    slippage: slippageUSD,
-                    gas: gasCost.gasCostUSD
-                },
+                profit: grossProfit,
+                netProfit: netProfitWei,
+                totalFees: totalFees,
+                profitUSD: grossProfitUSD,
+                netProfitUSD: netProfitUSD,
                 breakdown: {
                     flashAmount: flashAmountUSD,
                     spread: spread,
                     grossProfit: grossProfitUSD,
+                    flashFee: flashFeeUSD,
+                    dexFee: dexFeeUSD,
+                    slippage: slippageUSD,
+                    gasCost: gasCost.gasCostUSD,
                     totalFees: flashFeeUSD + dexFeeUSD + slippageUSD + gasCost.gasCostUSD,
                     netProfit: netProfitUSD,
-                    bundled: true // Flag indicating bundled transaction
+                    bundled: true
                 }
             };
         } catch (error) {
-            console.error('Error calculating arbitrage profit:', error);
+            console.error('❌ Error calculating arbitrage profit:', error);
+            console.error('   Error details:', error.stack);
             return {
-                isProfitable: false,
-                netProfit: -999,
+                profit: 0n,
+                netProfit: -999n,
+                totalFees: 0n,
+                profitUSD: 0,
+                netProfitUSD: -999,
                 error: error.message
             };
         }
     }
 
-    // Calculate gas cost for arbitrage opportunity (AGGRESSIVE OPTIMIZATION)
+    // Calculate gas cost for arbitrage opportunity (BigInt-native with enhanced error handling)
     async _calculateGasCost(opportunity) {
         try {
+            // Input validation
+            if (!opportunity || typeof opportunity !== 'object') {
+                console.warn('⚠️ Invalid opportunity for gas calculation, using fallback');
+                return this._getFallbackGasCost();
+            }
+
             // Estimate gas limit based on operation type (much more realistic)
             let gasLimit;
             if (opportunity.type === 'wbnb_usdt_arbitrage' || opportunity.type === 'stablecoin_flashloan_arbitrage') {
@@ -342,11 +390,22 @@ class ArbitrageBot extends EventEmitter {
                 gasLimit = 120000; // Default (reduced from 200k)
             }
 
-            // Get current gas price
-            const gasPrice = (await this.provider.getFeeData()).gasPrice;
+            // Get current gas price with retry logic
+            let gasPrice;
+            try {
+                const feeData = await this.provider.getFeeData();
+                gasPrice = feeData.gasPrice;
+                if (!gasPrice || gasPrice === 0n) {
+                    throw new Error('Invalid gas price from provider');
+                }
+            } catch (gasError) {
+                console.warn('⚠️ Failed to get gas price, using fallback:', gasError.message);
+                gasPrice = ethers.parseUnits('5', 'gwei'); // 5 gwei fallback
+            }
 
-            // Calculate total gas cost in wei
-            const gasCostWei = gasPrice * BigInt(gasLimit);
+            // Calculate total gas cost in wei using BigInt
+            const gasLimitBigInt = BigInt(gasLimit);
+            const gasCostWei = gasPrice * gasLimitBigInt;
 
             // Convert to BNB and USD
             const gasCostBNB = ethers.formatEther(gasCostWei);
@@ -366,16 +425,28 @@ class ArbitrageBot extends EventEmitter {
                 gasCostUSD: bufferedGasCostUSD // Use buffered amount for safety checks
             };
         } catch (error) {
-            console.error('Error calculating gas cost:', error);
-            // Return very conservative estimate
-            return {
-                gasLimit: 120000,
-                gasPrice: ethers.parseUnits('5', 'gwei'),
-                gasCostWei: ethers.parseEther('0.0006'),
-                gasCostBNB: 0.0006,
-                gasCostUSD: 0.34 // Much lower fallback
-            };
+            console.error('❌ Error calculating gas cost:', error);
+            return this._getFallbackGasCost();
         }
+    }
+
+    // Fallback gas cost calculation
+    _getFallbackGasCost() {
+        const fallbackGasPrice = ethers.parseUnits('5', 'gwei');
+        const fallbackGasLimit = 120000;
+        const fallbackGasCostWei = fallbackGasPrice * BigInt(fallbackGasLimit);
+        const fallbackGasCostBNB = parseFloat(ethers.formatEther(fallbackGasCostWei));
+        const fallbackGasCostUSD = fallbackGasCostBNB * 567;
+
+        console.log(`⛽ Using fallback gas cost: ${fallbackGasCostBNB} BNB ($${fallbackGasCostUSD.toFixed(4)})`);
+
+        return {
+            gasLimit: fallbackGasLimit,
+            gasPrice: fallbackGasPrice,
+            gasCostWei: fallbackGasCostWei,
+            gasCostBNB: fallbackGasCostBNB,
+            gasCostUSD: fallbackGasCostUSD * 1.3 // 30% buffer even for fallback
+        };
     }
 
     async initialize() {
@@ -686,12 +757,40 @@ class ArbitrageBot extends EventEmitter {
                 const wbnbPairs = ['WBNB/USDT', 'WBNB/USDC', 'WBNB/BUSD', 'WBNB/FDUSD', 'WBNB/DAI'];
                 const allWbnbPrices = {};
 
-                for (const pair of wbnbPairs) {
-                    try {
-                        const prices = await this.priceFeed.getAllPrices(pair);
-                        allWbnbPrices[pair] = prices;
-                    } catch (error) {
-                        console.warn(`Failed to get prices for ${pair}:`, error.message);
+                // BATCH DEX SCANS TO PREVENT 413 ERRORS - Process in groups of 4-6 DEXes
+                const BATCH_SIZE = 4;
+                for (let i = 0; i < wbnbPairs.length; i += BATCH_SIZE) {
+                    const batch = wbnbPairs.slice(i, i + BATCH_SIZE);
+                    console.log(`📦 Processing batch ${Math.floor(i/BATCH_SIZE) + 1}: ${batch.join(', ')}`);
+
+                    // Use Promise.allSettled for partial failure tolerance
+                    const batchPromises = batch.map(async (pair) => {
+                        try {
+                            const prices = await this.priceFeed.getAllPrices(pair);
+                            return { pair, prices, success: true };
+                        } catch (error) {
+                            console.warn(`⚠️ Failed to get prices for ${pair}:`, error.message);
+                            return { pair, prices: null, success: false, error: error.message };
+                        }
+                    });
+
+                    const batchResults = await Promise.allSettled(batchPromises);
+
+                    // Process results and retry failed requests
+                    for (const result of batchResults) {
+                        if (result.status === 'fulfilled') {
+                            const { pair, prices, success } = result.value;
+                            if (success) {
+                                allWbnbPrices[pair] = prices;
+                            }
+                        } else {
+                            console.error(`❌ Batch promise rejected:`, result.reason);
+                        }
+                    }
+
+                    // Add backoff delay between batches to prevent rate limiting
+                    if (i + BATCH_SIZE < wbnbPairs.length) {
+                        await new Promise(resolve => setTimeout(resolve, 200));
                     }
                 }
 
@@ -877,12 +976,28 @@ class ArbitrageBot extends EventEmitter {
                                     // Calculate optimal WBNB flashloan amount (exact USD equivalent)
                                     const wbnbAmount = this._calculateOptimalWbnbFlashloan(opp);
 
-                                    // Calculate comprehensive profit analysis
+                                    // Calculate comprehensive profit analysis with BigInt validation
                                     const profitAnalysis = await this._calculateArbitrageProfit(opp, wbnbAmount, flashProvider);
 
-                                    if (!profitAnalysis.isProfitable || profitAnalysis.netProfit < 500) {
-                                        console.log(`❌ NOT PROFITABLE: Net profit $${profitAnalysis.netProfit.toFixed(2)} < $500 minimum`);
-                                        console.log(`   Total fees: $${profitAnalysis.breakdown.totalFees.toFixed(4)}`);
+                                    // Enhanced profit validation with BigInt checks
+                                    if (!profitAnalysis || profitAnalysis.netProfit <= 0n || profitAnalysis.netProfitUSD < 500) {
+                                        console.log(`❌ NOT PROFITABLE: Net profit $${profitAnalysis.netProfitUSD?.toFixed(2) || 'N/A'} < $500 minimum`);
+                                        console.log(`   Total fees: $${profitAnalysis.breakdown?.totalFees?.toFixed(4) || 'N/A'}`);
+                                        if (profitAnalysis.error) {
+                                            console.log(`   Error: ${profitAnalysis.error}`);
+                                        }
+                                        continue;
+                                    }
+
+                                    // Additional sanity checks for opportunity
+                                    if (opp.spread > 5 || opp.spread < -5) {
+                                        console.log(`❌ UNREALISTIC SPREAD: ${opp.spread.toFixed(4)}% (must be between -5% and 5%)`);
+                                        continue;
+                                    }
+
+                                    // Liquidity validation - skip if both DEXes have insufficient liquidity
+                                    if (opp.liquidity.buy === 'insufficient' && opp.liquidity.sell === 'insufficient') {
+                                        console.log(`❌ INSUFFICIENT LIQUIDITY: Both DEXes have insufficient liquidity`);
                                         continue;
                                     }
 
@@ -2487,6 +2602,45 @@ class ArbitrageBot extends EventEmitter {
         console.log('✅ Bot stopped successfully - Safety measures reset');
     }
 
+    // Create robust provider with retry logic and high limits
+    _createRobustProvider(baseProvider) {
+        // Wrap the provider with retry logic and higher limits
+        const originalRequest = baseProvider._performRequest.bind(baseProvider);
+
+        baseProvider._performRequest = async (method, params) => {
+            let lastError;
+
+            for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
+                try {
+                    // Add timeout to prevent hanging requests
+                    const timeoutPromise = new Promise((_, reject) => {
+                        setTimeout(() => reject(new Error('Request timeout')), this.requestTimeout);
+                    });
+
+                    const requestPromise = originalRequest(method, params);
+                    const result = await Promise.race([requestPromise, timeoutPromise]);
+
+                    return result;
+                } catch (error) {
+                    lastError = error;
+                    console.warn(`⚠️ Provider request attempt ${attempt}/${this.retryAttempts} failed:`, error.message);
+
+                    if (attempt < this.retryAttempts) {
+                        // Exponential backoff: 1s, 2s, 4s...
+                        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+                        console.log(`⏳ Retrying in ${delay}ms...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                }
+            }
+
+            console.error(`❌ All ${this.retryAttempts} provider attempts failed`);
+            throw lastError;
+        };
+
+        return baseProvider;
+    }
+
     // Get safety status
     getSafetyStatus() {
         return {
@@ -2496,7 +2650,10 @@ class ArbitrageBot extends EventEmitter {
             minBalanceRequired: ethers.formatEther(this.minBalanceRequired),
             maxGasPerTransaction: ethers.formatEther(this.maxGasPerTransaction),
             lastTransactionTime: this.lastTransactionTime,
-            minTimeBetweenTransactions: this.minTimeBetweenTransactions
+            minTimeBetweenTransactions: this.minTimeBetweenTransactions,
+            retryAttempts: this.retryAttempts,
+            requestTimeout: this.requestTimeout,
+            maxDexBatchSize: this.maxDexBatchSize
         };
     }
 }
