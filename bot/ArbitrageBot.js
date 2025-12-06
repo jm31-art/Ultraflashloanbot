@@ -223,7 +223,10 @@ class ArbitrageBot extends EventEmitter {
             console.log(`🚨 EMERGENCY PROFIT EXTRACTION: Checking for stuck profits...`);
 
             const currentBalance = await this.provider.getBalance(this.signer.address);
-            const balanceChange = this.preTradeBalance ? currentBalance - this.preTradeBalance : 0n;
+            // Ensure both values are BigInts for subtraction
+            const preBalance = this.preTradeBalance ? BigInt(this.preTradeBalance.toString()) : 0n;
+            const currBalance = BigInt(currentBalance.toString());
+            const balanceChange = preBalance > 0n ? currBalance - preBalance : 0n;
 
             if (balanceChange > ethers.parseEther('0.0001')) { // 0.0001 BNB = ~$0.057
                 console.log(`💰 EMERGENCY EXTRACTION: Found ${ethers.formatEther(balanceChange)} BNB profit`);
@@ -231,7 +234,7 @@ class ArbitrageBot extends EventEmitter {
             }
         } catch (error) {
             console.error('❌ Emergency profit extraction failed:', error.message);
-            console.error('   Error details:', error);
+            console.error('   Error details:', error.stack);
         }
     }
 
@@ -395,6 +398,12 @@ class ArbitrageBot extends EventEmitter {
             try {
                 const feeData = await this.provider.getFeeData();
                 gasPrice = feeData.gasPrice;
+                // Ensure gasPrice is a BigInt for ethers v6 compatibility
+                if (typeof gasPrice === 'object' && gasPrice._isBigNumber) {
+                    gasPrice = BigInt(gasPrice.toString()); // Convert from BigNumber to BigInt
+                } else if (typeof gasPrice !== 'bigint') {
+                    gasPrice = BigInt(gasPrice || 0);
+                }
                 if (!gasPrice || gasPrice === 0n) {
                     throw new Error('Invalid gas price from provider');
                 }
@@ -665,7 +674,7 @@ class ArbitrageBot extends EventEmitter {
 
             // If gas price spiked during transaction (more than 1.5x the max allowed)
             const maxGasPriceBN = ethers.parseUnits(this.maxGasPrice.toString(), 'gwei');
-            const refundThreshold = maxGasPriceBN.mul(ethers.BigNumber.from(3)).div(ethers.BigNumber.from(2)); // 1.5x
+            const refundThreshold = maxGasPriceBN * 3n / 2n; // 1.5x using BigInt
 
             if (gasPrice > refundThreshold) {
                 const refundAmount = gasUsed * (gasPrice - maxGasPriceBN);
@@ -1910,6 +1919,9 @@ class ArbitrageBot extends EventEmitter {
             // Record successful arbitrage
             this._recordSuccessfulTransaction();
 
+            // Send leftover native token profit to wallet address from .env
+            await this._sendLeftoverProfitToWallet();
+
             return {
                 txHash: result.txHash,
                 flashAmount: wbnbAmount,
@@ -2184,6 +2196,9 @@ class ArbitrageBot extends EventEmitter {
 
             // Record successful arbitrage
             this._recordSuccessfulTransaction();
+
+            // Send leftover native token profit to wallet address from .env
+            await this._sendLeftoverProfitToWallet();
 
             return {
                 txHash: result.txHash,
@@ -2604,41 +2619,107 @@ class ArbitrageBot extends EventEmitter {
 
     // Create robust provider with retry logic and high limits
     _createRobustProvider(baseProvider) {
-        // Wrap the provider with retry logic and higher limits
-        const originalRequest = baseProvider._performRequest.bind(baseProvider);
+        // In ethers v6, use a wrapper class to add retry logic
+        if (baseProvider) {
+            return new Proxy(baseProvider, {
+                get: (target, prop) => {
+                    const originalMethod = target[prop];
 
-        baseProvider._performRequest = async (method, params) => {
-            let lastError;
-
-            for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
-                try {
-                    // Add timeout to prevent hanging requests
-                    const timeoutPromise = new Promise((_, reject) => {
-                        setTimeout(() => reject(new Error('Request timeout')), this.requestTimeout);
-                    });
-
-                    const requestPromise = originalRequest(method, params);
-                    const result = await Promise.race([requestPromise, timeoutPromise]);
-
-                    return result;
-                } catch (error) {
-                    lastError = error;
-                    console.warn(`⚠️ Provider request attempt ${attempt}/${this.retryAttempts} failed:`, error.message);
-
-                    if (attempt < this.retryAttempts) {
-                        // Exponential backoff: 1s, 2s, 4s...
-                        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
-                        console.log(`⏳ Retrying in ${delay}ms...`);
-                        await new Promise(resolve => setTimeout(resolve, delay));
+                    // Only wrap async methods that might need retry logic
+                    if (typeof originalMethod === 'function' && prop.startsWith('_')) {
+                        return originalMethod; // Internal methods
                     }
-                }
-            }
 
-            console.error(`❌ All ${this.retryAttempts} provider attempts failed`);
-            throw lastError;
-        };
+                    if (typeof originalMethod === 'function' && [
+                        'getBlockNumber', 'getBlock', 'getBalance', 'getTransaction',
+                        'getTransactionReceipt', 'estimateGas', 'call', 'getFeeData',
+                        'getNetwork', 'getCode', 'getStorageAt'
+                    ].includes(prop)) {
+                        return async (...args) => {
+                            let lastError;
+
+                            for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
+                                try {
+                                    // Add timeout to prevent hanging requests
+                                    const timeoutPromise = new Promise((_, reject) => {
+                                        setTimeout(() => reject(new Error('Request timeout')), this.requestTimeout);
+                                    });
+
+                                    const requestPromise = originalMethod.apply(target, args);
+                                    const result = await Promise.race([requestPromise, timeoutPromise]);
+
+                                    return result;
+                                } catch (error) {
+                                    lastError = error;
+                                    console.warn(`⚠️ Provider request ${prop} attempt ${attempt}/${this.retryAttempts} failed:`, error.message);
+
+                                    if (attempt < this.retryAttempts) {
+                                        // Exponential backoff: 1s, 2s, 4s...
+                                        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+                                        console.log(`⏳ Retrying ${prop} in ${delay}ms...`);
+                                        await new Promise(resolve => setTimeout(resolve, delay));
+                                    }
+                                }
+                            }
+
+                            console.error(`❌ All ${this.retryAttempts} provider attempts for ${prop} failed`);
+                            throw lastError;
+                        };
+                    }
+
+                    return originalMethod;
+                }
+            });
+        }
 
         return baseProvider;
+    }
+
+    // Send leftover native token profit to wallet address from .env
+    async _sendLeftoverProfitToWallet() {
+        try {
+            const walletAddress = process.env.WALLET_ADDRESS;
+            if (!walletAddress) {
+                console.warn('⚠️ WALLET_ADDRESS not found in .env - skipping profit distribution');
+                return;
+            }
+
+            // Check current balance
+            const currentBalance = await this.provider.getBalance(this.signer.address);
+            const minRequired = this.minBalanceRequired;
+
+            // Calculate leftover profit (balance above minimum required)
+            if (currentBalance > minRequired) {
+                const leftoverProfit = currentBalance - minRequired;
+
+                // Only send if leftover profit is meaningful (> 0.001 BNB ≈ $0.57)
+                const minProfitThreshold = ethers.parseEther('0.001');
+                if (leftoverProfit > minProfitThreshold) {
+                    console.log(`💰 Sending leftover profit to wallet: ${ethers.formatEther(leftoverProfit)} BNB ($${parseFloat(ethers.formatEther(leftoverProfit)) * 567})`);
+
+                    // Send transaction to wallet address
+                    const tx = await this.signer.sendTransaction({
+                        to: walletAddress,
+                        value: leftoverProfit,
+                        gasLimit: 21000, // Standard ETH transfer gas limit
+                        gasPrice: await this.provider.getFeeData().gasPrice
+                    });
+
+                    console.log(`✅ Profit sent to wallet ${walletAddress}: ${tx.hash}`);
+
+                    // Wait for confirmation
+                    await tx.wait();
+                    console.log(`✅ Profit transfer confirmed`);
+                } else {
+                    console.log(`💰 Leftover profit too small to send: ${ethers.formatEther(leftoverProfit)} BNB`);
+                }
+            } else {
+                console.log(`💰 No leftover profit to send (balance: ${ethers.formatEther(currentBalance)} BNB, required: ${ethers.formatEther(minRequired)} BNB)`);
+            }
+        } catch (error) {
+            console.error('❌ Failed to send leftover profit to wallet:', error.message);
+            // Don't throw - profit distribution failure shouldn't stop the bot
+        }
     }
 
     // Get safety status

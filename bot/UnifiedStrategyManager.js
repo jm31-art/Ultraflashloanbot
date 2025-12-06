@@ -573,18 +573,29 @@ class UnifiedStrategyManager extends EventEmitter {
     }
 
     async _startEnabledStrategies() {
+        let loadedStrategies = 0;
+
         for (const [strategyName, config] of Object.entries(this.strategyConfigs)) {
             if (config.enabled) {
                 try {
                     await this.strategies[strategyName].initialize();
                     await this.strategies[strategyName].start();
                     this.activeStrategies.add(strategyName);
+                    loadedStrategies++;
                     console.log(`✅ Started strategy: ${strategyName}`);
                 } catch (error) {
-                    console.error(`❌ Failed to start strategy ${strategyName}:`, error);
+                    console.error(`❌ Failed to start strategy ${strategyName}:`, error.message);
+                    console.log(`⚠️ Continuing with other strategies...`);
                 }
             }
         }
+
+        // Throw error only if no strategies loaded at all
+        if (loadedStrategies === 0) {
+            throw new Error('No strategies could be loaded - check strategy configurations');
+        }
+
+        console.log(`✅ Successfully loaded ${loadedStrategies} strategies`);
     }
 
     _startRotationTimer() {

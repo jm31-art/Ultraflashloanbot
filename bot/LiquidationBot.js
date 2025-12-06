@@ -296,7 +296,7 @@ class LiquidationBot extends EventEmitter {
             // Calculate gas costs
             const gasEstimate = await this._estimateLiquidationGas(protocolName);
             const gasPrice = (await this.provider.getFeeData()).gasPrice;
-            const gasCost = gasEstimate.mul(gasPrice);
+            const gasCost = gasEstimate * gasPrice; // BigInt multiplication
 
             // Calculate flash loan fee (0.09% for Aave)
             const flashLoanFee = liquidationAmount.mul(9).div(10000);

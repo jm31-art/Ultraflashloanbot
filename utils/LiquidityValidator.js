@@ -13,9 +13,9 @@ class LiquidityValidator {
 
         // Calculate: amount * buyPrice - amount * sellPrice
         // This gives us the direct price difference
-        const boughtAmount = amountBN.mul(buyPriceBN).div(ethers.constants.WeiPerEther);
-        const soldAmount = amountBN.mul(sellPriceBN).div(ethers.constants.WeiPerEther);
-        const profit = soldAmount.sub(boughtAmount);
+        const boughtAmount = BigNumber.from(amountBN).mul(BigNumber.from(buyPriceBN)).div(ethers.constants.WeiPerEther);
+        const soldAmount = BigNumber.from(amountBN).mul(BigNumber.from(sellPriceBN)).div(ethers.constants.WeiPerEther);
+        const profit = BigNumber.from(soldAmount).sub(BigNumber.from(boughtAmount));
 
         return {
             profit: ethers.formatEther(profit),
@@ -30,7 +30,7 @@ class LiquidityValidator {
         
         // Subtract all fees
         const totalFeesBN = ethers.parseEther(fees.toString());
-        const netProfitBN = profitBN.sub(totalFeesBN);
+        const netProfitBN = BigNumber.from(profitBN).sub(BigNumber.from(totalFeesBN));
 
         return ethers.formatEther(netProfitBN);
     }

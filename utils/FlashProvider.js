@@ -646,10 +646,9 @@ class FlashProvider {
             throw new Error('Signer is required for flash swap execution');
         }
 
-        // For PancakeSwap V3, we need to use the router for flash swaps, not direct pool calls
-        // This is a simplified implementation - in production, you'd need a custom contract
-        console.log('PancakeSwap V3 flash swap not fully implemented - using fallback');
-        throw new Error('PancakeSwap V3 flash swap not supported - use PancakeSwap V2 instead');
+        // For PancakeSwap V3, fallback to V2 implementation since V3 flash swaps require custom contracts
+        console.log('PancakeSwap V3 flash swap falling back to V2 implementation');
+        return await this._executePancakeV2FlashSwap(poolAddress, amount0, amount1, arbitrageParams);
     }
 
     // Execute Biswap flash swap

@@ -130,10 +130,10 @@ class TransactionVerifier {
         const baseFeePerGas = block.baseFeePerGas || currentGasPrice;
         
         // Calculate minimum safe gas price (120% of base fee to resist sandwiching)
-        const minSafeGasPrice = baseFeePerGas.mul(120).div(100);
+        const minSafeGasPrice = (baseFeePerGas * 120n) / 100n;
         
-        if (transaction.gasPrice && 
-            BigNumber.from(transaction.gasPrice).lt(minSafeGasPrice)) {
+        if (transaction.gasPrice &&
+            BigInt(transaction.gasPrice) < minSafeGasPrice) {
             throw new Error('Gas price too low for sandwich resistance');
         }
 
@@ -184,11 +184,11 @@ class TransactionVerifier {
             const nextBlockProfit = this._calculateExpectedProfit(nextBlockSimulation);
 
             // Check for significant profit deviation (slippage)
-            const profitDeviation = initialProfit.sub(nextBlockProfit).abs();
+            const profitDeviation = BigNumber.from(initialProfit).sub(BigNumber.from(nextBlockProfit)).abs();
             
             // Get pair type and appropriate slippage tolerance
             const pairType = await this._determinePairType(transaction);
-            const maxAllowedDeviation = initialProfit.mul(
+            const maxAllowedDeviation = BigNumber.from(initialProfit).mul(
                 Math.floor(this.SLIPPAGE_CONFIG[pairType].tolerance * 100)
             ).div(100);
             
@@ -200,7 +200,7 @@ class TransactionVerifier {
                 gasEstimate,
                 result,
                 expectedProfit: initialProfit,
-                slippage: profitDeviation.mul(100).div(initialProfit).toString() + '%',
+                slippage: BigNumber.from(profitDeviation).mul(100).div(BigNumber.from(initialProfit)).toString() + '%',
                 pairType
             };
         } catch (error) {
@@ -209,12 +209,12 @@ class TransactionVerifier {
     }
 
     async _verifyProfitability(transaction, simResult) {
-        const currentGasPrice = BigNumber.from(transaction.gasPrice || (await this.provider.getFeeData()).gasPrice);
-        const gasCost = currentGasPrice.mul(simResult.gasEstimate);
+        const currentGasPrice = BigInt(transaction.gasPrice || (await this.provider.getFeeData()).gasPrice);
+        const gasCost = currentGasPrice * BigInt(simResult.gasEstimate);
 
         // Adjust profit threshold based on gas price
         const gasGwei = Number(ethers.formatUnits(currentGasPrice, 'gwei'));
-        const adjustedThreshold = this.BASE_PROFIT_THRESHOLD.mul(
+        const adjustedThreshold = BigNumber.from(this.BASE_PROFIT_THRESHOLD).mul(
             Math.max(1, Math.floor(gasGwei / this.MAX_GAS_PRICE_GWEI))
         );
         
@@ -225,11 +225,11 @@ class TransactionVerifier {
 
     async _verifyGasCosts(transaction) {
         const balance = await this.provider.getBalance(this.signer.address);
-        const maxGasCost = BigNumber.from(transaction.gasPrice || (await this.provider.getFeeData()).gasPrice)
-            .mul(transaction.gasLimit || 500000);
+        const gasPrice = BigInt(transaction.gasPrice || (await this.provider.getFeeData()).gasPrice);
+        const maxGasCost = gasPrice * BigInt(transaction.gasLimit || 500000);
 
         // Add buffer for potential gas price increases
-        const gasCostWithBuffer = maxGasCost.mul(120).div(100); // 20% buffer
+        const gasCostWithBuffer = BigNumber.from(maxGasCost).mul(120).div(100); // 20% buffer
 
         if (balance.lt(gasCostWithBuffer)) {
             throw new Error('Insufficient balance for gas costs (including safety buffer)');
@@ -242,7 +242,7 @@ class TransactionVerifier {
         
         if (recentTxs.length > 0) {
             const competitiveGasPrice = await this._calculateCompetitiveGasPrice(recentTxs);
-            if (BigNumber.from(transaction.gasPrice).lt(competitiveGasPrice)) {
+            if (BigInt(transaction.gasPrice) < competitiveGasPrice) {
                 throw new Error('Gas price not competitive enough for current market conditions');
             }
         }
@@ -261,7 +261,7 @@ class TransactionVerifier {
         const competitivePrice = gasPrices[index];
 
         // Add 10% buffer for safety
-        return competitivePrice.mul(110).div(100);
+        return BigNumber.from(competitivePrice).mul(110).div(100);
     }
 
     async _verifyContractInteractions(transaction) {
@@ -369,7 +369,7 @@ class TransactionVerifier {
 
     async _calculateActualProfitLoss(receipt) {
         // Calculate actual gas cost
-        const gasCost = receipt.gasUsed.mul(receipt.effectiveGasPrice);
+        const gasCost = BigNumber.from(receipt.gasUsed).mul(BigNumber.from(receipt.effectiveGasPrice));
         
         // Decode transaction logs to find profit
         let profit = BigNumber.from(0);
@@ -377,14 +377,14 @@ class TransactionVerifier {
             try {
                 // Look for profit events
                 if (this._isProfitEvent(log)) {
-                    profit = profit.add(this._decodeProfitFromLog(log));
+                    profit = BigNumber.from(profit).add(BigNumber.from(this._decodeProfitFromLog(log)));
                 }
             } catch (error) {
                 console.warn('Error decoding log:', error.message);
             }
         }
 
-        return profit.sub(gasCost);
+        return BigNumber.from(profit).sub(BigNumber.from(gasCost));
     }
 
     _isProfitEvent(log) {
@@ -485,7 +485,7 @@ class TransactionVerifier {
 
     async _verifyProtocolFees(params) {
         // Estimate protocol fees (0.09% for most protocols)
-        const estimatedFee = params.amount.mul(9).div(10000);
+        const estimatedFee = BigNumber.from(params.amount).mul(9).div(10000);
         
         // Get token balance of sender
         const tokenContract = new ethers.Contract(
@@ -529,7 +529,7 @@ class TransactionVerifier {
             }
             
             // Verify sufficient liquidity with pair-specific requirements
-            const requiredLiquidity = amount.mul(Math.floor(requiredRatio * 100)).div(100);
+            const requiredLiquidity = BigNumber.from(amount).mul(Math.floor(requiredRatio * 100)).div(100);
             if (totalLiquidity.lt(requiredLiquidity)) {
                 throw new Error(`Insufficient liquidity for ${pairType}. Required: ${
                     ethers.formatEther(requiredLiquidity)}, Available: ${
@@ -553,7 +553,7 @@ class TransactionVerifier {
         const depths = {};
         
         for (const level of depthLevels) {
-            const testAmount = amount.mul(Math.floor(level * 100)).div(100);
+            const testAmount = BigNumber.from(amount).mul(Math.floor(level * 100)).div(100);
             const price = await this.poolManager.getTokenPrice(pool.address, token, testAmount);
             depths[`${level * 100}%`] = {
                 amount: ethers.formatEther(testAmount),
