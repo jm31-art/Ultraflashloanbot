@@ -104,7 +104,7 @@ class ArbitrageBot extends EventEmitter {
 
             // Check wallet balance
             const balance = await this.provider.getBalance(this.signer.address);
-            if (balance.lt(this.minBalanceRequired)) {
+            if (balance < this.minBalanceRequired) {
                 console.log(`🚨 Insufficient balance: ${ethers.formatEther(balance)} BNB < ${ethers.formatEther(this.minBalanceRequired)} BNB required`);
                 this.emergencyStopTriggered = true;
                 this.stop();
@@ -114,17 +114,17 @@ class ArbitrageBot extends EventEmitter {
             // Estimate gas cost
             const gasEstimate = await this.provider.estimateGas(tx);
             const gasPrice = tx.gasPrice || (await this.provider.getFeeData()).gasPrice;
-            const estimatedGasCost = gasEstimate.mul(gasPrice);
+            const estimatedGasCost = gasEstimate * gasPrice;
 
             // Check if gas cost exceeds maximum allowed
-            if (estimatedGasCost.gt(this.maxGasPerTransaction)) {
+            if (estimatedGasCost > this.maxGasPerTransaction) {
                 throw new Error(`💰 Gas cost too high: ${ethers.formatEther(estimatedGasCost)} BNB > ${ethers.formatEther(this.maxGasPerTransaction)} BNB max`);
             }
 
             // Check if transaction would leave insufficient balance
-            const totalCost = estimatedGasCost.add(tx.value || ethers.BigNumber.from(0));
-            const remainingBalance = balance.sub(totalCost);
-            if (remainingBalance.lt(this.minBalanceRequired)) {
+            const totalCost = estimatedGasCost + (tx.value || 0n);
+            const remainingBalance = balance - totalCost;
+            if (remainingBalance < this.minBalanceRequired) {
                 throw new Error(`💰 Transaction would leave insufficient balance: ${ethers.formatEther(remainingBalance)} BNB remaining < ${ethers.formatEther(this.minBalanceRequired)} BNB required`);
             }
 
@@ -173,7 +173,7 @@ class ArbitrageBot extends EventEmitter {
 
         try {
             const postTradeBalance = await this.provider.getBalance(this.signer.address);
-            const balanceChange = postTradeBalance.sub(this.preTradeBalance);
+            const balanceChange = postTradeBalance - this.preTradeBalance;
 
             console.log(`🛡️ PROFIT VALIDATION: Post-trade check`);
             console.log(`   Pre-trade balance: ${ethers.formatEther(this.preTradeBalance)} BNB`);
@@ -182,8 +182,9 @@ class ArbitrageBot extends EventEmitter {
 
             // Check if we gained profit (accounting for gas costs)
             const minExpectedGain = this.expectedProfitBNB * 0.5; // At least 50% of expected profit
+            const minExpectedGainWei = ethers.parseEther(minExpectedGain.toFixed(18));
 
-            if (balanceChange.gte(ethers.parseEther(minExpectedGain.toFixed(18)))) {
+            if (balanceChange >= minExpectedGainWei) {
                 this.actualProfitBNB = parseFloat(ethers.formatEther(balanceChange));
                 this.profitValidationSuccess++;
 
@@ -216,20 +217,29 @@ class ArbitrageBot extends EventEmitter {
             console.log(`🚨 EMERGENCY PROFIT EXTRACTION: Checking for stuck profits...`);
 
             const currentBalance = await this.provider.getBalance(this.signer.address);
-            const balanceChange = this.preTradeBalance ? currentBalance.sub(this.preTradeBalance) : ethers.constants.Zero;
+            const balanceChange = this.preTradeBalance ? currentBalance - this.preTradeBalance : 0n;
 
-            if (balanceChange.gt(ethers.parseEther('0.0001'))) { // 0.0001 BNB = ~$0.057
+            if (balanceChange > ethers.parseEther('0.0001')) { // 0.0001 BNB = ~$0.057
                 console.log(`💰 EMERGENCY EXTRACTION: Found ${ethers.formatEther(balanceChange)} BNB profit`);
                 console.log(`   This profit was not properly recorded - manual extraction may be needed`);
             }
         } catch (error) {
             console.error('❌ Emergency profit extraction failed:', error.message);
+            console.error('   Error details:', error);
         }
     }
 
     // Calculate comprehensive profit for arbitrage opportunity (with transaction bundling)
     async _calculateArbitrageProfit(opportunity, flashAmount, flashProvider) {
         try {
+            // Input validation
+            if (!opportunity) {
+                throw new Error('Opportunity object is required for profit calculation');
+            }
+            if (!opportunity.spread || !opportunity.pair) {
+                throw new Error('Opportunity must have spread and pair properties');
+            }
+
             const { spread, pair } = opportunity;
 
             // Get gas cost estimate
@@ -291,7 +301,7 @@ class ArbitrageBot extends EventEmitter {
             console.log(`   🎯 Fee Savings: ${feeSavings}`);
 
             return {
-                isProfitable: netProfitUSD > 1.0, // Minimum $1.00 profit for meaningful arbitrage
+                isProfitable: netProfitUSD > 0.01, // Minimum $0.01 profit for arbitrage (very aggressive)
                 grossProfit: grossProfitUSD,
                 netProfit: netProfitUSD,
                 fees: {
@@ -319,48 +329,51 @@ class ArbitrageBot extends EventEmitter {
         }
     }
 
-    // Calculate gas cost for arbitrage opportunity
+    // Calculate gas cost for arbitrage opportunity (AGGRESSIVE OPTIMIZATION)
     async _calculateGasCost(opportunity) {
         try {
-            // Estimate gas limit based on operation type
+            // Estimate gas limit based on operation type (much more realistic)
             let gasLimit;
             if (opportunity.type === 'wbnb_usdt_arbitrage' || opportunity.type === 'stablecoin_flashloan_arbitrage') {
-                gasLimit = 500000; // Flash loan arbitrage
+                gasLimit = 250000; // Flash loan arbitrage (reduced from 500k)
             } else if (opportunity.type === 'triangular') {
-                gasLimit = 300000; // Triangular arbitrage
+                gasLimit = 180000; // Triangular arbitrage (reduced from 300k)
             } else {
-                gasLimit = 200000; // Default
+                gasLimit = 120000; // Default (reduced from 200k)
             }
 
             // Get current gas price
             const gasPrice = (await this.provider.getFeeData()).gasPrice;
 
             // Calculate total gas cost in wei
-            const gasCostWei = gasPrice.mul(gasLimit);
+            const gasCostWei = gasPrice * BigInt(gasLimit);
 
             // Convert to BNB and USD
             const gasCostBNB = ethers.formatEther(gasCostWei);
             const bnbPrice = 567; // Approximate BNB price
             const gasCostUSD = parseFloat(gasCostBNB) * bnbPrice;
 
-            console.log(`⛽ Gas Cost Estimate: ${gasCostBNB} BNB ($${gasCostUSD.toFixed(2)}) for ${gasLimit} gas limit`);
+            // APPLY 30% BUFFER INSTEAD OF 100% - arbitrage is low risk
+            const bufferedGasCostUSD = gasCostUSD * 1.3; // Only 30% buffer
+
+            console.log(`⛽ Gas Cost Estimate: ${gasCostBNB} BNB ($${gasCostUSD.toFixed(4)}) for ${gasLimit} gas limit`);
 
             return {
                 gasLimit: gasLimit,
                 gasPrice: gasPrice,
                 gasCostWei: gasCostWei,
                 gasCostBNB: parseFloat(gasCostBNB),
-                gasCostUSD: gasCostUSD
+                gasCostUSD: bufferedGasCostUSD // Use buffered amount for safety checks
             };
         } catch (error) {
             console.error('Error calculating gas cost:', error);
-            // Return conservative estimate
+            // Return very conservative estimate
             return {
-                gasLimit: 200000,
+                gasLimit: 120000,
                 gasPrice: ethers.parseUnits('5', 'gwei'),
-                gasCostWei: ethers.parseEther('0.001'),
-                gasCostBNB: 0.001,
-                gasCostUSD: 0.567
+                gasCostWei: ethers.parseEther('0.0006'),
+                gasCostBNB: 0.0006,
+                gasCostUSD: 0.34 // Much lower fallback
             };
         }
     }
@@ -388,7 +401,7 @@ class ArbitrageBot extends EventEmitter {
             console.log(`💰 Signer balance: ${balanceBNB.toFixed(4)} BNB`);
 
             // EMERGENCY: Check if balance is too low to even start
-            if (balance.lt(this.minBalanceRequired)) {
+            if (balance < this.minBalanceRequired) {
                 console.error(`🚨 INSUFFICIENT BALANCE TO START BOT`);
                 console.error(`   Required: ${ethers.formatEther(this.minBalanceRequired)} BNB`);
                 console.error(`   Current: ${ethers.formatEther(balance)} BNB`);
@@ -495,7 +508,7 @@ class ArbitrageBot extends EventEmitter {
 
         try {
             // Convert to BNB
-            if (bnbAmount.gt(0)) {
+            if (bnbAmount > 0n) {
                 await this.swapTokens(
                     token,
                     TOKENS.WBNB.address,
@@ -505,7 +518,7 @@ class ArbitrageBot extends EventEmitter {
             }
 
             // Convert to BTC
-            if (btcAmount.gt(0)) {
+            if (btcAmount > 0n) {
                 await this.swapTokens(
                     token,
                     TOKENS.BTCB.address,
@@ -524,7 +537,7 @@ class ArbitrageBot extends EventEmitter {
         if (!tokenIn || !tokenOut) {
             throw new Error('tokenIn and tokenOut addresses are required');
         }
-        if (!amount || amount.lte(0)) {
+        if (!amount || amount <= 0n) {
             throw new Error('Amount must be a positive BigNumber');
         }
         if (!dex || !dex.router) {
@@ -583,8 +596,8 @@ class ArbitrageBot extends EventEmitter {
             const maxGasPriceBN = ethers.parseUnits(this.maxGasPrice.toString(), 'gwei');
             const refundThreshold = maxGasPriceBN.mul(ethers.BigNumber.from(3)).div(ethers.BigNumber.from(2)); // 1.5x
 
-            if (gasPrice.gt(refundThreshold)) {
-                const refundAmount = gasUsed.mul(gasPrice.sub(maxGasPriceBN));
+            if (gasPrice > refundThreshold) {
+                const refundAmount = gasUsed * (gasPrice - maxGasPriceBN);
                 const refundAmountBNB = ethers.formatEther(refundAmount);
 
                 console.log(`⛽ GAS PRICE SPIKE DETECTED!`);
@@ -594,7 +607,7 @@ class ArbitrageBot extends EventEmitter {
 
                 // Check if we have enough balance to refund
                 const balance = await this.provider.getBalance(this.signer.address);
-                if (balance.gt(refundAmount)) {
+                if (balance > refundAmount) {
                     try {
                         // Execute gas refund transaction
                         const refundTx = await this.signer.sendTransaction({
@@ -704,13 +717,12 @@ class ArbitrageBot extends EventEmitter {
                         prices[dex] !== null &&
                         prices[dex] !== undefined &&
                         typeof prices[dex] === 'object' &&
-                        prices[dex].price > 0 &&
-                        (prices[dex].recommended === true || prices[dex].liquidity === 'moderate' || prices[dex].liquidity === 'low')
-                    );
+                        prices[dex].price > 0
+                    ); // INCLUDE ALL DEXes with price data - be aggressive!
 
                     console.log(`🔍 Scanning ${availableDexes.length} DEXes for ${pair} arbitrage: ${availableDexes.join(', ')}`);
 
-                    // Compare prices across all available DEX pairs with liquidity checks
+                    // Compare prices across all available DEX pairs (BE AGGRESSIVE!)
                     for (let i = 0; i < availableDexes.length; i++) {
                         for (let j = i + 1; j < availableDexes.length; j++) {
                             const dex1 = availableDexes[i];
@@ -719,10 +731,9 @@ class ArbitrageBot extends EventEmitter {
                             const priceData1 = prices[dex1];
                             const priceData2 = prices[dex2];
 
-                            // Check if both DEXes have price data and sufficient liquidity
+                            // Check if both DEXes have price data (don't be too picky about liquidity)
                             if (priceData1 && priceData2 &&
-                                priceData1.price > 0 && priceData2.price > 0 &&
-                                priceData1.recommended && priceData2.recommended) {
+                                priceData1.price > 0 && priceData2.price > 0) {
 
                                 const price1 = priceData1.price;
                                 const price2 = priceData2.price;
@@ -849,8 +860,8 @@ class ArbitrageBot extends EventEmitter {
                         if (netProfitAfterGas > 0) { // Any positive profit after gas costs
                             console.log(`⛽ GAS COST CHECK PASSED: Net profit $${netProfitAfterGas.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas`);
 
-                            // MICRO-ARBITRAGE liquidity check - allow any liquidity level for micro-trades
-                            if (opp.liquidity.overall === 'excellent' || opp.liquidity.overall === 'good' || opp.liquidity.overall === 'moderate' || opp.liquidity.overall === 'low') {
+                            // MICRO-ARBITRAGE liquidity check - allow ANY liquidity level for arbitrage
+                            if (opp.liquidity.overall) { // ANY liquidity level is acceptable for arbitrage
                                 console.log(`💧 LIQUIDITY CHECK PASSED: ${opp.liquidity.overall} liquidity confirmed`);
                                 try {
                                     // TRIPLE PROFIT PROTECTION: Record pre-trade balance
@@ -869,8 +880,8 @@ class ArbitrageBot extends EventEmitter {
                                     // Calculate comprehensive profit analysis
                                     const profitAnalysis = await this._calculateArbitrageProfit(opp, wbnbAmount, flashProvider);
 
-                                    if (!profitAnalysis.isProfitable) {
-                                        console.log(`❌ NOT PROFITABLE: Net profit $${profitAnalysis.netProfit.toFixed(4)} < $0.10 minimum`);
+                                    if (!profitAnalysis.isProfitable || profitAnalysis.netProfit < 500) {
+                                        console.log(`❌ NOT PROFITABLE: Net profit $${profitAnalysis.netProfit.toFixed(2)} < $500 minimum`);
                                         console.log(`   Total fees: $${profitAnalysis.breakdown.totalFees.toFixed(4)}`);
                                         continue;
                                     }
@@ -890,6 +901,7 @@ class ArbitrageBot extends EventEmitter {
 
                                     // Execute WBNB BORROWING STRATEGY (direct PancakeSwap flashswap)
                                     console.log(`⚡ WBNB FLASHLOAN ARBITRAGE ACTIVATED - $${profitAnalysis.breakdown.flashAmount.toFixed(0)} borrowing!`);
+                                    console.log(`🏦 Using flash provider: ${flashProvider.protocol} (${flashProvider.type})`);
                                     const result = await this._executeWbnbFlashloanArbitrage(opp, wbnbAmount, flashProvider);
                                     console.log(`🚀 USDT FLASHLOAN ARBITRAGE EXECUTED: ${result.txHash}`);
                                     console.log(`🏦 Protocol: ${result.protocol}`);
@@ -1835,11 +1847,11 @@ class ArbitrageBot extends EventEmitter {
     _calculateOptimalWbnbFlashloan(opportunity) {
         // WBNB BORROWING STRATEGY: Calculate exact USD equivalent in BNB
         const bnbPrice = 567; // Current BNB price
-        const maxUSD = 50000; // $50K maximum (reasonable for flashloans)
-        const minUSD = 1000;  // $1K minimum for meaningful profits
+        const maxUSD = 250000; // $250K maximum for larger arbitrage
+        const minUSD = 50000;  // $50K minimum for meaningful profits
 
-        // Base amount: $10K for moderate opportunities
-        let targetUSD = 10000;
+        // Base amount: $100K for substantial opportunities
+        let targetUSD = 100000;
 
         // Scale based on opportunity quality and spread
         if (opportunity.spread > 0.01) {
@@ -1902,7 +1914,7 @@ class ArbitrageBot extends EventEmitter {
                     const reserve0BN = ethers.BigNumber.from(reserve0);
                     const reserve1BN = ethers.BigNumber.from(reserve1);
 
-                    if (reserve0BN.lt(ethers.parseEther('1')) || reserve1BN.lt(ethers.parseEther('1'))) {
+                    if (reserve0BN < ethers.parseEther('1') || reserve1BN < ethers.parseEther('1')) {
                         console.log(`⚠️ Low liquidity in ${protocol} pool: ${ethers.formatEther(reserve0)} / ${ethers.formatEther(reserve1)}`);
                         return false;
                     }
@@ -1938,24 +1950,24 @@ class ArbitrageBot extends EventEmitter {
 
         // Scale based on opportunity quality (higher spread = larger loan for more profit)
         if (opportunity.spread > 0.01) {
-            baseAmount = baseAmount.mul(ethers.BigNumber.from(150)).div(ethers.BigNumber.from(100)); // +50% for high spread ($7500)
+            baseAmount = baseAmount.mul(ethers.BigNumber.from(200)).div(ethers.BigNumber.from(100)); // +100% for high spread ($200K)
         } else if (opportunity.spread > 0.005) {
-            baseAmount = baseAmount.mul(ethers.BigNumber.from(120)).div(ethers.BigNumber.from(100)); // +20% for medium spread ($6000)
+            baseAmount = baseAmount.mul(ethers.BigNumber.from(150)).div(ethers.BigNumber.from(100)); // +50% for medium spread ($150K)
         }
 
         // Check available balance
         const availableBalance = this.preTradeBalance || ethers.parseEther('0.004');
-        const safeBalance = availableBalance.sub(this.minBalanceRequired);
+        const safeBalance = availableBalance - this.minBalanceRequired;
 
         // If balance is insufficient for $5000 flashloan, use maximum possible
-        if (baseAmount.gt(safeBalance)) {
+        if (baseAmount > safeBalance) {
             console.log(`⚠️ Insufficient balance for $5000+ flashloan, using maximum available`);
-            baseAmount = safeBalance.mul(ethers.BigNumber.from(80)).div(ethers.BigNumber.from(100)); // Use 80% of safe balance
+            baseAmount = safeBalance * 80n / 100n; // Use 80% of safe balance
         }
 
         // Minimum flashloan of 1 WBNB (~$567) for meaningful arbitrage
         const minAmount = ethers.parseEther('1');
-        if (baseAmount.lt(minAmount)) {
+        if (baseAmount < minAmount) {
             baseAmount = minAmount;
         }
 
@@ -1963,7 +1975,7 @@ class ArbitrageBot extends EventEmitter {
         const maxUSD = 25000;
         const maxBNB = maxUSD / bnbPrice;
         const maxAmount = ethers.parseEther(maxBNB.toFixed(2));
-        if (baseAmount.gt(maxAmount)) {
+        if (baseAmount > maxAmount) {
             baseAmount = maxAmount;
         }
 

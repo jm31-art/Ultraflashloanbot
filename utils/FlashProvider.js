@@ -104,12 +104,10 @@ class FlashProvider {
 
     async estimateFlashCost(amount, protocol) {
         // Return 0 for Balancer since it has no fees
-        if (protocol === 'Balancer') return ethers.constants.Zero;
+        if (protocol === 'Balancer') return 0n;
 
         const feeRate = await this.getDynamicFee(protocol);
-        const fee = ethers.BigNumber.from(Math.floor(feeRate * 10000))
-            .mul(amount)
-            .div(10000);
+        const fee = BigInt(Math.floor(feeRate * 10000)) * amount / 10000n;
         return fee;
     }
 
@@ -477,8 +475,9 @@ class FlashProvider {
                 case 'UniswapV3':
                     return await this._executeUniswapV3FlashSwap(poolAddress, token0Amount, token1Amount, arbitrageParams);
                 case 'PancakeV3':
-                case 'PancakeSwap':
                     return await this._executePancakeV3FlashSwap(poolAddress, token0Amount, token1Amount, arbitrageParams);
+                case 'PancakeSwap':
+                    return await this._executePancakeV2FlashSwap(poolAddress, token0Amount, token1Amount, arbitrageParams);
                 case 'Biswap':
                     return await this._executeBiswapFlashSwap(poolAddress, token0Amount, token1Amount, arbitrageParams);
                 default:
@@ -601,8 +600,8 @@ class FlashProvider {
         }
     }
 
-    // Execute PancakeSwap V3 flash swap
-    async _executePancakeV3FlashSwap(poolAddress, amount0, amount1, arbitrageParams) {
+    // Execute PancakeSwap V2 flash swap
+    async _executePancakeV2FlashSwap(poolAddress, amount0, amount1, arbitrageParams) {
         if (!this.signer) {
             throw new Error('Signer is required for flash swap execution');
         }
@@ -636,9 +635,21 @@ class FlashProvider {
                 token1
             };
         } catch (error) {
-            console.error('PancakeSwap V3 flash swap failed:', error.message);
+            console.error('PancakeSwap V2 flash swap failed:', error.message);
             throw error;
         }
+    }
+
+    // Execute PancakeSwap V3 flash swap
+    async _executePancakeV3FlashSwap(poolAddress, amount0, amount1, arbitrageParams) {
+        if (!this.signer) {
+            throw new Error('Signer is required for flash swap execution');
+        }
+
+        // For PancakeSwap V3, we need to use the router for flash swaps, not direct pool calls
+        // This is a simplified implementation - in production, you'd need a custom contract
+        console.log('PancakeSwap V3 flash swap not fully implemented - using fallback');
+        throw new Error('PancakeSwap V3 flash swap not supported - use PancakeSwap V2 instead');
     }
 
     // Execute Biswap flash swap

@@ -24,7 +24,7 @@ class PythonArbitrageCalculator {
         }
 
         return new Promise((resolve, reject) => {
-            const python = spawn(this.pythonCommand, [this.pythonScript, '--amount', startAmountBNB.toString()], {
+            const python = spawn(this.pythonCommand, [this.pythonScript, '--once'], {
                 cwd: path.dirname(this.pythonScript),
                 stdio: ['pipe', 'pipe', 'pipe']
             });

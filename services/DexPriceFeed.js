@@ -12,6 +12,10 @@ class DexPriceFeed {
         this.cacheTimeout = 30000; // 30 seconds cache
         this.moralisInitialized = false;
 
+        // RATE LIMITING: Prevent API overload and 413 errors
+        this.lastApiCall = 0;
+        this.minApiInterval = 500; // Minimum 500ms between API calls
+
         // DEX Router ABIs for price queries
         this.routerAbi = [
             'function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)',
@@ -60,20 +64,25 @@ class DexPriceFeed {
 
             const prices = {};
 
-            // Get prices from Moralis API (primary source for real-time DEX data)
+            // Get prices from Moralis API (PRIMARY source for real-time DEX data)
             if (this.moralisInitialized) {
                 try {
                     const moralisPrices = await this._getMoralisDexPrices(token0Address, token1Address, pair);
                     Object.assign(prices, moralisPrices);
+                    console.log(`✅ Moralis API provided ${Object.keys(moralisPrices).length} DEXes for ${pair}`);
                 } catch (error) {
-                    console.warn('Moralis price fetch failed, falling back to on-chain queries:', error.message);
+                    console.warn('Moralis price fetch failed, will still use on-chain as backup:', error.message);
                 }
             }
 
-            // Get prices from on-chain DEX queries with liquidity checks (fallback/backup)
-            if (Object.keys(prices).length === 0) {
-                const dexPrices = await this._getDexPricesWithLiquidity(token0Address, token1Address);
-                Object.assign(prices, dexPrices);
+            // Get prices from on-chain DEX queries (ALWAYS run as backup/supplement)
+            // This ensures we have data even if Moralis fails
+            const dexPrices = await this._getDexPricesWithLiquidity(token0Address, token1Address);
+            // Only add on-chain prices for DEXes not already covered by Moralis
+            for (const [dexName, dexData] of Object.entries(dexPrices)) {
+                if (!prices[dexName] && dexData) {
+                    prices[dexName] = dexData;
+                }
             }
 
             // Get prices from external APIs (final fallback)
@@ -110,52 +119,47 @@ class DexPriceFeed {
         const [token0, token1] = pair.split('/');
 
         try {
-            // Fetch PancakeSwap prices from Moralis
-            const pancakePrices = await this._getMoralisDexPrice(token0Address, token1Address, 'pancakeswapv2');
-            if (pancakePrices) {
-                prices.pancakeswapv2 = {
-                    price: pancakePrices.price,
-                    liquidity: pancakePrices.liquidity || 'high',
-                    priceImpact: 0.001, // Low impact for major DEX
-                    recommended: true
-                };
-                prices.pancakeswap = prices.pancakeswapv2; // Alias for compatibility
+            // THROTTLE API CALLS: Only fetch from 2 major DEXes to prevent 413 errors
+            // Prioritize PancakeSwap V2 and Uniswap (most reliable)
+
+            // Fetch PancakeSwap prices from Moralis (PRIMARY)
+            try {
+                const pancakePrices = await this._getMoralisDexPrice(token0Address, token1Address, 'pancakeswapv2');
+                if (pancakePrices) {
+                    prices.pancakeswapv2 = {
+                        price: pancakePrices.price,
+                        liquidity: pancakePrices.liquidity || 'high',
+                        priceImpact: 0.001, // Low impact for major DEX
+                        recommended: true
+                    };
+                    prices.pancakeswap = prices.pancakeswapv2; // Alias for compatibility
+                }
+            } catch (error) {
+                console.warn('PancakeSwap Moralis fetch failed, skipping');
             }
 
-            // Fetch PancakeSwap V3 prices
-            const pancakeV3Prices = await this._getMoralisDexPrice(token0Address, token1Address, 'pancakeswapv3');
-            if (pancakeV3Prices) {
-                prices.pancakeswapv3 = {
-                    price: pancakeV3Prices.price,
-                    liquidity: pancakeV3Prices.liquidity || 'excellent',
-                    priceImpact: 0.0005, // Very low impact for V3
-                    recommended: true
-                };
+            // Add small delay to prevent rate limiting
+            await new Promise(resolve => setTimeout(resolve, 200));
+
+            // Fetch Uniswap V2 prices (SECONDARY - less critical)
+            try {
+                const uniswapPrices = await this._getMoralisDexPrice(token0Address, token1Address, 'uniswapv2');
+                if (uniswapPrices) {
+                    prices.uniswap = {
+                        price: uniswapPrices.price,
+                        liquidity: uniswapPrices.liquidity || 'moderate',
+                        priceImpact: 0.003, // Higher impact
+                        recommended: true
+                    };
+                }
+            } catch (error) {
+                console.warn('Uniswap Moralis fetch failed, skipping');
             }
 
-            // Fetch Biswap prices
-            const biswapPrices = await this._getMoralisDexPrice(token0Address, token1Address, 'biswap');
-            if (biswapPrices) {
-                prices.biswap = {
-                    price: biswapPrices.price,
-                    liquidity: biswapPrices.liquidity || 'good',
-                    priceImpact: 0.002, // Moderate impact
-                    recommended: true
-                };
-            }
+            // SKIP PancakeSwap V3 and Biswap to reduce API load and prevent 413 errors
+            // These will be covered by on-chain queries if needed
 
-            // Fetch Uniswap V2 prices (if available on BSC)
-            const uniswapPrices = await this._getMoralisDexPrice(token0Address, token1Address, 'uniswapv2');
-            if (uniswapPrices) {
-                prices.uniswap = {
-                    price: uniswapPrices.price,
-                    liquidity: uniswapPrices.liquidity || 'moderate',
-                    priceImpact: 0.003, // Higher impact
-                    recommended: true
-                };
-            }
-
-            console.log(`✅ Moralis API fetched prices for ${pair}: ${Object.keys(prices).length} DEXes`);
+            console.log(`✅ Moralis API fetched prices for ${pair}: ${Object.keys(prices).length} DEXes (throttled)`);
             return prices;
 
         } catch (error) {
@@ -166,6 +170,14 @@ class DexPriceFeed {
 
     async _getMoralisDexPrice(token0Address, token1Address, dexName) {
         try {
+            // RATE LIMITING: Ensure minimum interval between API calls
+            const now = Date.now();
+            const timeSinceLastCall = now - this.lastApiCall;
+            if (timeSinceLastCall < this.minApiInterval) {
+                await new Promise(resolve => setTimeout(resolve, this.minApiInterval - timeSinceLastCall));
+            }
+            this.lastApiCall = Date.now();
+
             // Use Moralis EvmApi to get token prices from specific DEX
             const response = await Moralis.EvmApi.token.getTokenPrice({
                 address: token0Address,
@@ -295,23 +307,23 @@ class DexPriceFeed {
 
             const avgPriceImpact = successfulTests > 0 ? totalPriceImpact / successfulTests : 100;
 
-            // Determine liquidity level (more lenient for arbitrage)
+            // Determine liquidity level (VERY lenient for arbitrage - we want to trade!)
             let level, recommended;
             if (avgPriceImpact < 0.5) {
                 level = 'excellent';
                 recommended = true;
-            } else if (avgPriceImpact < 1.0) {
+            } else if (avgPriceImpact < 2.0) {
                 level = 'good';
                 recommended = true;
-            } else if (avgPriceImpact < 3.0) {
+            } else if (avgPriceImpact < 10.0) {
                 level = 'moderate';
                 recommended = true;
-            } else if (avgPriceImpact < 8.0) {
+            } else if (avgPriceImpact < 25.0) {
                 level = 'low';
-                recommended = true; // Still allow for arbitrage
+                recommended = true; // Allow for arbitrage even with higher impact
             } else {
                 level = 'insufficient';
-                recommended = false; // Only reject extreme cases
+                recommended = false; // Only reject extreme cases (>25% impact)
             }
 
             return {

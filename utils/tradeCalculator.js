@@ -66,8 +66,8 @@ async function calculateTotalFees(flashloanArb, token, amount) {
     
     // Estimate gas fees (can be adjusted based on network conditions)
     const gasPrice = await ethers.provider.getGasPrice();
-    const estimatedGas = ethers.BigNumber.from(500000); // Estimated gas used
-    const gasFee = gasPrice.mul(estimatedGas);
+    const estimatedGas = 500000n; // Estimated gas used
+    const gasFee = gasPrice * estimatedGas;
     
     // Add DEX fees (usually 0.3% per swap)
     const dexFees = amount.mul(6).div(1000); // 0.6% for two swaps
