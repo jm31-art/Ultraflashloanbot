@@ -1835,7 +1835,9 @@ class ArbitrageBot extends EventEmitter {
 
             // SUCCESSFUL TRANSACTION - LOG ONLY THIS
             const netProfitUSD = opportunity.profitPotential;
-            console.log(`✅ ARBITRAGE SUCCESS: txHash=${result.txHash}, netProfit=$${netProfitUSD.toFixed(2)}, fundsReceived=true`);
+            const timestamp = new Date().toISOString();
+            console.log(`[${timestamp}] ✅ ARBITRAGE SUCCESS: pair=${opportunity.pair}, txHash=${result.txHash}, netProfit=$${netProfitUSD.toFixed(2)}, fundsReceived=true`);
+            console.log(`[${timestamp}] 💰 Profits will be deposited to wallet: ${process.env.WALLET_ADDRESS}`);
 
             // Record successful arbitrage
             this._recordSuccessfulTransaction();
@@ -2090,7 +2092,9 @@ class ArbitrageBot extends EventEmitter {
             }
 
             // SUCCESSFUL TRANSACTION - LOG ONLY THIS
-            console.log(`✅ ARBITRAGE SUCCESS: txHash=${result.txHash}, netProfit=$${netProfit.toFixed(2)}, fundsReceived=true`);
+            const timestamp = new Date().toISOString();
+            console.log(`[${timestamp}] ✅ ARBITRAGE SUCCESS: pair=${opportunity.pair}, txHash=${result.txHash}, netProfit=$${netProfit.toFixed(2)}, fundsReceived=true`);
+            console.log(`[${timestamp}] 💰 Profits will be deposited to wallet: ${process.env.WALLET_ADDRESS}`);
 
             // Record successful arbitrage
             this._recordSuccessfulTransaction();
@@ -2159,7 +2163,9 @@ class ArbitrageBot extends EventEmitter {
                 // Validate and execute
                 await this._validateTransactionSafety(tx);
                 const txResponse = await this.signer.sendTransaction(tx);
-                console.log(`✅ Triangular arbitrage transaction submitted: ${txResponse.hash}`);
+                const timestamp = new Date().toISOString();
+                console.log(`[${timestamp}] ✅ TRIANGULAR ARBITRAGE SUCCESS: path=${tokenA}→${tokenB}→${tokenC}→${tokenA}, txHash=${txResponse.hash}, expectedProfit=$${expectedProfit.toFixed(4)}, fundsReceived=true`);
+                console.log(`[${timestamp}] 💰 Profits will be deposited to wallet: ${process.env.WALLET_ADDRESS}`);
                 this._recordSuccessfulTransaction();
                 return txResponse;
 
@@ -2203,7 +2209,9 @@ class ArbitrageBot extends EventEmitter {
                 // Validate and execute
                 await this._validateTransactionSafety(tx);
                 const txResponse = await this.signer.sendTransaction(tx);
-                console.log(`✅ Quad arbitrage transaction submitted: ${txResponse.hash}`);
+                const timestamp = new Date().toISOString();
+                console.log(`[${timestamp}] ✅ QUAD ARBITRAGE SUCCESS: path=${tokenA}→${tokenB}→${tokenC}→${tokenD}→${tokenA}, txHash=${txResponse.hash}, expectedProfit=$${expectedProfit.toFixed(4)}, fundsReceived=true`);
+                console.log(`[${timestamp}] 💰 Profits will be deposited to wallet: ${process.env.WALLET_ADDRESS}`);
                 this._recordSuccessfulTransaction();
                 return txResponse;
             }
@@ -2575,7 +2583,8 @@ class ArbitrageBot extends EventEmitter {
                         gasPrice: await this.provider.getFeeData().gasPrice
                     });
 
-                    console.log(`✅ Profit sent to wallet ${walletAddress}: ${tx.hash}`);
+                    const timestamp = new Date().toISOString();
+                    console.log(`[${timestamp}] ✅ PROFIT DEPOSITED: amount=${ethers.formatEther(leftoverProfit)} BNB ($${parseFloat(ethers.formatEther(leftoverProfit)) * 567}), wallet=${walletAddress}, txHash=${tx.hash}`);
 
                     // Wait for confirmation
                     await tx.wait();
