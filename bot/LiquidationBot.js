@@ -1,7 +1,9 @@
 require('dotenv').config();
 const { EventEmitter } = require('events');
 const { ethers, getAddress } = require('ethers');
-const { LENDING_PROTOCOLS, TOKENS } = require('../config/protocols');
+const PROTOCOLS = require('../config/protocols');
+const LENDING_PROTOCOLS = PROTOCOLS.LENDING_PROTOCOLS;
+const TOKENS = PROTOCOLS.TOKENS;
 const PriceFeed = require('../services/PriceFeed');
 const ProfitCalculator = require('../utils/ProfitCalculator');
 const TransactionVerifier = require('../utils/TransactionVerifier');
@@ -67,72 +69,81 @@ class LiquidationBot extends EventEmitter {
 
     async _initializeLendingContracts() {
         // Initialize Aave V3
-        if (LENDING_PROTOCOLS.AAVE) {
-            if (!LENDING_PROTOCOLS.AAVE.pool || typeof LENDING_PROTOCOLS.AAVE.pool !== "string") {
-                throw new Error("Invalid Aave pool address: " + LENDING_PROTOCOLS.AAVE.pool);
-            }
+        if (LENDING_PROTOCOLS.AAVE && LENDING_PROTOCOLS.AAVE.pool) {
+            if (typeof LENDING_PROTOCOLS.AAVE.pool !== "string") {
+                console.warn("⚠️ Skipping Aave - invalid pool address type");
+            } else {
+                try {
+                    LENDING_PROTOCOLS.AAVE.pool = getAddress(LENDING_PROTOCOLS.AAVE.pool);
+                } catch (e) {
+                    console.warn("⚠️ Non-checksummed Aave pool address:", LENDING_PROTOCOLS.AAVE.pool);
+                }
 
-            try {
-                LENDING_PROTOCOLS.AAVE.pool = getAddress(LENDING_PROTOCOLS.AAVE.pool);
-            } catch (e) {
-                console.warn("⚠️ Non-checksummed Aave pool address:", LENDING_PROTOCOLS.AAVE.pool);
+                const aaveAbi = [
+                    "function getUserAccountData(address user) view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)",
+                    "function liquidationCall(address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken)"
+                ];
+                this.lendingContracts.AAVE = new ethers.Contract(
+                    LENDING_PROTOCOLS.AAVE.pool,
+                    aaveAbi,
+                    this.provider
+                );
+                console.log("✅ Aave V3 initialized");
             }
-
-            const aaveAbi = [
-                "function getUserAccountData(address user) view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)",
-                "function liquidationCall(address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken)"
-            ];
-            this.lendingContracts.AAVE = new ethers.Contract(
-                LENDING_PROTOCOLS.AAVE.pool,
-                aaveAbi,
-                this.provider
-            );
+        } else {
+            console.log("ℹ️ Aave V3 not configured - skipping initialization");
         }
 
-        // Initialize Compound V3
-        if (LENDING_PROTOCOLS.COMPOUND) {
-            if (!LENDING_PROTOCOLS.COMPOUND.comet || typeof LENDING_PROTOCOLS.COMPOUND.comet !== "string") {
-                throw new Error("Invalid Compound comet address: " + LENDING_PROTOCOLS.COMPOUND.comet);
-            }
+        // Initialize Compound V3 (skip if not properly configured)
+        if (LENDING_PROTOCOLS.COMPOUND && LENDING_PROTOCOLS.COMPOUND.comet) {
+            if (typeof LENDING_PROTOCOLS.COMPOUND.comet !== "string") {
+                console.warn("⚠️ Skipping Compound - invalid comet address type");
+            } else {
+                try {
+                    LENDING_PROTOCOLS.COMPOUND.comet = getAddress(LENDING_PROTOCOLS.COMPOUND.comet);
+                } catch (e) {
+                    console.warn("⚠️ Non-checksummed Compound comet address:", LENDING_PROTOCOLS.COMPOUND.comet);
+                }
 
-            try {
-                LENDING_PROTOCOLS.COMPOUND.comet = getAddress(LENDING_PROTOCOLS.COMPOUND.comet);
-            } catch (e) {
-                console.warn("⚠️ Non-checksummed Compound comet address:", LENDING_PROTOCOLS.COMPOUND.comet);
+                const compoundAbi = [
+                    "function getHealthFactor(address account) view returns (uint256)",
+                    "function liquidateBorrow(address borrower, uint256 repayAmount, address cTokenCollateral) returns (uint256)"
+                ];
+                this.lendingContracts.COMPOUND = new ethers.Contract(
+                    LENDING_PROTOCOLS.COMPOUND.comet,
+                    compoundAbi,
+                    this.provider
+                );
+                console.log("✅ Compound V3 initialized");
             }
-
-            const compoundAbi = [
-                "function getHealthFactor(address account) view returns (uint256)",
-                "function liquidateBorrow(address borrower, uint256 repayAmount, address cTokenCollateral) returns (uint256)"
-            ];
-            this.lendingContracts.COMPOUND = new ethers.Contract(
-                LENDING_PROTOCOLS.COMPOUND.comet,
-                compoundAbi,
-                this.provider
-            );
+        } else {
+            console.log("ℹ️ Compound V3 not configured - skipping initialization");
         }
 
         // Initialize Venus Protocol
-        if (LENDING_PROTOCOLS.VENUS) {
-            if (!LENDING_PROTOCOLS.VENUS.comptroller || typeof LENDING_PROTOCOLS.VENUS.comptroller !== "string") {
-                throw new Error("Invalid Venus comptroller address: " + LENDING_PROTOCOLS.VENUS.comptroller);
-            }
+        if (LENDING_PROTOCOLS.VENUS && LENDING_PROTOCOLS.VENUS.comptroller) {
+            if (typeof LENDING_PROTOCOLS.VENUS.comptroller !== "string") {
+                console.warn("⚠️ Skipping Venus - invalid comptroller address type");
+            } else {
+                try {
+                    LENDING_PROTOCOLS.VENUS.comptroller = getAddress(LENDING_PROTOCOLS.VENUS.comptroller);
+                } catch (e) {
+                    console.warn("⚠️ Non-checksummed Venus comptroller address:", LENDING_PROTOCOLS.VENUS.comptroller);
+                }
 
-            try {
-                LENDING_PROTOCOLS.VENUS.comptroller = getAddress(LENDING_PROTOCOLS.VENUS.comptroller);
-            } catch (e) {
-                console.warn("⚠️ Non-checksummed Venus comptroller address:", LENDING_PROTOCOLS.VENUS.comptroller);
+                const venusAbi = [
+                    "function getAccountLiquidity(address account) view returns (uint256, uint256, uint256)",
+                    "function liquidateBorrow(address borrower, address underlyingBorrow, address underlyingCollateral, uint256 repayAmount) returns (uint256)"
+                ];
+                this.lendingContracts.VENUS = new ethers.Contract(
+                    LENDING_PROTOCOLS.VENUS.comptroller,
+                    venusAbi,
+                    this.provider
+                );
+                console.log("✅ Venus Protocol initialized");
             }
-
-            const venusAbi = [
-                "function getAccountLiquidity(address account) view returns (uint256, uint256, uint256)",
-                "function liquidateBorrow(address borrower, address underlyingBorrow, address underlyingCollateral, uint256 repayAmount) returns (uint256)"
-            ];
-            this.lendingContracts.VENUS = new ethers.Contract(
-                LENDING_PROTOCOLS.VENUS.comptroller,
-                venusAbi,
-                this.provider
-            );
+        } else {
+            console.log("ℹ️ Venus Protocol not configured - skipping initialization");
         }
     }
 
