@@ -28,7 +28,7 @@ const PROTOCOLS = {
         BISWAP: {
             name: 'Biswap',
             router: '0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8',
-            factory: '0x858E3312ed3A876947EA49d572A7C42DE08af7EE0',
+            factory: '0x858E3312ED3A876947EA49D572A7C42DE08AF7EE0',
             fee: 0.001, // 0.1%
             supportsFlashSwap: true
         },
