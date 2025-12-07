@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { EventEmitter } = require('events');
 const { ethers } = require('ethers');
 const { TOKENS } = require('../config/dex');
@@ -573,26 +574,44 @@ class UnifiedStrategyManager extends EventEmitter {
     }
 
     async _startEnabledStrategies() {
+        if (!this.provider) {
+            throw new Error("Unified Strategy Manager has no provider available");
+        }
+
         let loadedStrategies = 0;
+        const failedStrategies = [];
 
         for (const [strategyName, config] of Object.entries(this.strategyConfigs)) {
             if (config.enabled) {
                 try {
+                    console.log(`🔄 Initializing strategy: ${strategyName}`);
                     await this.strategies[strategyName].initialize();
+
+                    console.log(`🚀 Starting strategy: ${strategyName}`);
                     await this.strategies[strategyName].start();
+
                     this.activeStrategies.add(strategyName);
                     loadedStrategies++;
-                    console.log(`✅ Started strategy: ${strategyName}`);
+                    console.log(`✅ Successfully started strategy: ${strategyName}`);
                 } catch (error) {
                     console.error(`❌ Failed to start strategy ${strategyName}:`, error.message);
-                    console.log(`⚠️ Continuing with other strategies...`);
+                    console.log(`⚠️ Strategy ${strategyName} disabled - continuing with other strategies`);
+                    failedStrategies.push(strategyName);
+
+                    // Mark strategy as disabled to prevent future attempts
+                    config.enabled = false;
                 }
             }
         }
 
+        // Log failed strategies for debugging
+        if (failedStrategies.length > 0) {
+            console.log(`⚠️ Failed strategies (${failedStrategies.length}): ${failedStrategies.join(', ')}`);
+        }
+
         // Throw error only if no strategies loaded at all
         if (loadedStrategies === 0) {
-            throw new Error('No strategies could be loaded - check strategy configurations');
+            throw new Error('No strategies could be loaded - check strategy configurations and dependencies');
         }
 
         console.log(`✅ Successfully loaded ${loadedStrategies} strategies`);

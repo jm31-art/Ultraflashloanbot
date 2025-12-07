@@ -1,5 +1,6 @@
+require('dotenv').config();
 const { EventEmitter } = require('events');
-const { ethers } = require('ethers');
+const { ethers, getAddress } = require('ethers');
 const { LENDING_PROTOCOLS, TOKENS } = require('../config/protocols');
 const PriceFeed = require('../services/PriceFeed');
 const ProfitCalculator = require('../utils/ProfitCalculator');
@@ -67,6 +68,16 @@ class LiquidationBot extends EventEmitter {
     async _initializeLendingContracts() {
         // Initialize Aave V3
         if (LENDING_PROTOCOLS.AAVE) {
+            if (!LENDING_PROTOCOLS.AAVE.pool || typeof LENDING_PROTOCOLS.AAVE.pool !== "string") {
+                throw new Error("Invalid Aave pool address: " + LENDING_PROTOCOLS.AAVE.pool);
+            }
+
+            try {
+                LENDING_PROTOCOLS.AAVE.pool = getAddress(LENDING_PROTOCOLS.AAVE.pool);
+            } catch (e) {
+                console.warn("⚠️ Non-checksummed Aave pool address:", LENDING_PROTOCOLS.AAVE.pool);
+            }
+
             const aaveAbi = [
                 "function getUserAccountData(address user) view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)",
                 "function liquidationCall(address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken)"
@@ -74,12 +85,22 @@ class LiquidationBot extends EventEmitter {
             this.lendingContracts.AAVE = new ethers.Contract(
                 LENDING_PROTOCOLS.AAVE.pool,
                 aaveAbi,
-                this.signer
+                this.provider
             );
         }
 
         // Initialize Compound V3
         if (LENDING_PROTOCOLS.COMPOUND) {
+            if (!LENDING_PROTOCOLS.COMPOUND.comet || typeof LENDING_PROTOCOLS.COMPOUND.comet !== "string") {
+                throw new Error("Invalid Compound comet address: " + LENDING_PROTOCOLS.COMPOUND.comet);
+            }
+
+            try {
+                LENDING_PROTOCOLS.COMPOUND.comet = getAddress(LENDING_PROTOCOLS.COMPOUND.comet);
+            } catch (e) {
+                console.warn("⚠️ Non-checksummed Compound comet address:", LENDING_PROTOCOLS.COMPOUND.comet);
+            }
+
             const compoundAbi = [
                 "function getHealthFactor(address account) view returns (uint256)",
                 "function liquidateBorrow(address borrower, uint256 repayAmount, address cTokenCollateral) returns (uint256)"
@@ -87,12 +108,22 @@ class LiquidationBot extends EventEmitter {
             this.lendingContracts.COMPOUND = new ethers.Contract(
                 LENDING_PROTOCOLS.COMPOUND.comet,
                 compoundAbi,
-                this.signer
+                this.provider
             );
         }
 
         // Initialize Venus Protocol
         if (LENDING_PROTOCOLS.VENUS) {
+            if (!LENDING_PROTOCOLS.VENUS.comptroller || typeof LENDING_PROTOCOLS.VENUS.comptroller !== "string") {
+                throw new Error("Invalid Venus comptroller address: " + LENDING_PROTOCOLS.VENUS.comptroller);
+            }
+
+            try {
+                LENDING_PROTOCOLS.VENUS.comptroller = getAddress(LENDING_PROTOCOLS.VENUS.comptroller);
+            } catch (e) {
+                console.warn("⚠️ Non-checksummed Venus comptroller address:", LENDING_PROTOCOLS.VENUS.comptroller);
+            }
+
             const venusAbi = [
                 "function getAccountLiquidity(address account) view returns (uint256, uint256, uint256)",
                 "function liquidateBorrow(address borrower, address underlyingBorrow, address underlyingCollateral, uint256 repayAmount) returns (uint256)"
@@ -100,7 +131,7 @@ class LiquidationBot extends EventEmitter {
             this.lendingContracts.VENUS = new ethers.Contract(
                 LENDING_PROTOCOLS.VENUS.comptroller,
                 venusAbi,
-                this.signer
+                this.provider
             );
         }
     }
@@ -390,7 +421,7 @@ class LiquidationBot extends EventEmitter {
         const minProfit = opportunity.expectedProfitUSD * 0.9;
 
         return await contract.populateTransaction.executeLiquidation(
-            this.lendingContracts[protocolName].address,
+            this.lendingContracts[protocolName]?.target || this.lendingContracts[protocolName]?.address,
             opportunity.user,
             opportunity.debtAsset,
             opportunity.collateralAsset,

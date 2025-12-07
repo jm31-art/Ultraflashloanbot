@@ -203,10 +203,9 @@ class FlashProvider {
             if (a.priority !== b.priority) {
                 return a.priority - b.priority; // Lower priority number = higher priority
             }
-            return a.fee.gt(b.fee) ? 1 : -1; // Then sort by fee
+            return a.fee > b.fee ? 1 : -1; // Then sort by fee (BigInt comparison)
         });
 
-        console.log(`🏦 Selected flash provider: ${activeProviders[0]?.protocol} (Priority: ${activeProviders[0]?.priority})`);
         return activeProviders[0]; // Return the highest priority provider
     }
 
@@ -230,7 +229,6 @@ class FlashProvider {
                 fee: feeRate
             };
         } catch (error) {
-            console.warn(`Error checking liquidity for ${protocol}:`, error.message);
             return {
                 hasLiquidity: false,
                 maxAmount: 0,
@@ -304,7 +302,6 @@ class FlashProvider {
 
             return fee;
         } catch (error) {
-            console.warn(`Failed to fetch dynamic fee for ${protocol}, using fallback:`, error.message);
             return this.fallbackFees[protocol] || 0.001;
         }
     }
@@ -319,7 +316,6 @@ class FlashProvider {
             // Convert from basis points to decimal (e.g., 500 -> 0.0005)
             return fee / 1000000; // Uniswap V3 fees are in basis points (1/100th of 1%)
         } catch (error) {
-            console.warn('Error fetching Uniswap V3 fee:', error.message);
             return this.fallbackFees.UniswapV3;
         }
     }
@@ -332,7 +328,6 @@ class FlashProvider {
             const fee = await pool.fee();
             return fee / 1000000;
         } catch (error) {
-            console.warn('Error fetching PancakeSwap V3 fee:', error.message);
             return this.fallbackFees.PancakeV3;
         }
     }
@@ -342,7 +337,6 @@ class FlashProvider {
             // PancakeSwap V2 uses fixed 0.2% fee (similar to Uniswap V2)
             return 0.002; // 0.2%
         } catch (error) {
-            console.warn('Error fetching PancakeSwap V2 fee:', error.message);
             return this.fallbackFees.PancakeSwap;
         }
     }
@@ -352,7 +346,6 @@ class FlashProvider {
             // Biswap uses competitive 0.1% fee for flashswaps
             return 0.001; // 0.1%
         } catch (error) {
-            console.warn('Error fetching Biswap fee:', error.message);
             return this.fallbackFees.Biswap;
         }
     }
@@ -384,10 +377,8 @@ class FlashProvider {
                 }
             }
         } catch (error) {
-            console.warn('Error fetching DODO fee:', error.message);
         }
 
-        console.log('Using DODO fallback fee');
         return this.fallbackFees.DODO;
     }
 
@@ -401,7 +392,6 @@ class FlashProvider {
             // Curve fees are typically in wei, convert to decimal
             return parseFloat(ethers.formatEther(fee));
         } catch (error) {
-            console.warn('Error fetching Curve fee:', error.message);
             return this.fallbackFees.Curve;
         }
     }
@@ -414,9 +404,7 @@ class FlashProvider {
 
             // Get borrow rate (this is an approximation for flash loan fee)
             const borrowRate = await comptroller.borrowRatePerBlock().catch(e => {
-                console.warn('Venus borrowRatePerBlock failed, using supply rate');
                 return comptroller.supplyRatePerBlock().catch(e2 => {
-                    console.warn('Venus supply rate also failed');
                     return null;
                 });
             });
@@ -429,10 +417,8 @@ class FlashProvider {
                 return Math.min(flashFee, 0.01); // Cap at 1%
             }
         } catch (error) {
-            console.warn('Error fetching Venus fee:', error.message);
         }
 
-        console.log('Using Venus fallback fee');
         return this.fallbackFees.Venus;
     }
 
@@ -443,7 +429,6 @@ class FlashProvider {
             // For now, use a conservative estimate
             return 0.0005; // 0.05% - conservative estimate
         } catch (error) {
-            console.warn('Error fetching 1inch fee:', error.message);
             return this.fallbackFees['1inch'];
         }
     }
