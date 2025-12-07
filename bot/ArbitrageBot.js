@@ -2533,13 +2533,19 @@ class ArbitrageBot extends EventEmitter {
         console.log('✅ Bot stopped successfully - Safety measures reset');
     }
 
-    _createRobustProvider(rpcUrl) {
-        if (!rpcUrl || typeof rpcUrl !== "string") {
-            console.error("❌ Invalid RPC URL:", rpcUrl);
+    _createRobustProvider(providerOrRpcUrl) {
+        // If already a provider object, return it directly
+        if (providerOrRpcUrl && typeof providerOrRpcUrl === 'object' && providerOrRpcUrl.getBlockNumber) {
+            return providerOrRpcUrl;
+        }
+
+        // Otherwise, treat as RPC URL string
+        if (!providerOrRpcUrl || typeof providerOrRpcUrl !== "string") {
+            console.error("❌ Invalid RPC URL:", providerOrRpcUrl);
             throw new Error("RPC URL must be a string");
         }
 
-        rpcUrl = rpcUrl.toString().trim();
+        const rpcUrl = providerOrRpcUrl.toString().trim();
         const provider = new ethers.JsonRpcProvider(rpcUrl);
 
         // Test the provider
