@@ -42,6 +42,14 @@ class LiquidationBot extends EventEmitter {
         this.maxSlippage = 0.02; // 2% max slippage
         this.emergencyStop = false;
 
+        // TOKEN FILTERING: Filter out invalid tokens to prevent crashes
+        this.tokenList = Object.values(TOKENS).filter(t => t && ethers.isAddress(t.address));
+        if (this.tokenList.length === 0) {
+            console.warn("⚠️ No valid tokens found for liquidation scanning");
+        } else {
+            console.log(`✅ Filtered ${this.tokenList.length} valid tokens for liquidation scanning`);
+        }
+
         this.emit('initialized');
     }
 
@@ -68,30 +76,26 @@ class LiquidationBot extends EventEmitter {
     }
 
     async _initializeLendingContracts() {
-        // Initialize Aave V3
-        if (LENDING_PROTOCOLS.AAVE && LENDING_PROTOCOLS.AAVE.pool) {
-            if (typeof LENDING_PROTOCOLS.AAVE.pool !== "string") {
-                console.warn("⚠️ Skipping Aave - invalid pool address type");
-            } else {
-                try {
-                    LENDING_PROTOCOLS.AAVE.pool = getAddress(LENDING_PROTOCOLS.AAVE.pool);
-                } catch (e) {
-                    console.warn("⚠️ Non-checksummed Aave pool address:", LENDING_PROTOCOLS.AAVE.pool);
-                }
-
+        // Initialize Aave V3 with proper address validation
+        const AAVE_LENDING_POOL = LENDING_PROTOCOLS.AAVE?.pool || LENDING_PROTOCOLS.AAVE?.lendingPool;
+        if (!AAVE_LENDING_POOL || !ethers.isAddress(AAVE_LENDING_POOL)) {
+            console.warn("⚠️ AAVE lending pool address missing or invalid - skipping AAVE");
+        } else {
+            try {
+                const checksummedAddress = getAddress(AAVE_LENDING_POOL);
                 const aaveAbi = [
                     "function getUserAccountData(address user) view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)",
                     "function liquidationCall(address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken)"
                 ];
                 this.lendingContracts.AAVE = new ethers.Contract(
-                    LENDING_PROTOCOLS.AAVE.pool,
+                    checksummedAddress,
                     aaveAbi,
                     this.provider
                 );
                 console.log("✅ Aave V3 initialized");
+            } catch (e) {
+                console.warn("⚠️ Failed to initialize AAVE contract:", e.message);
             }
-        } else {
-            console.log("ℹ️ Aave V3 not configured - skipping initialization");
         }
 
         // Initialize Compound V3 (skip if not properly configured)

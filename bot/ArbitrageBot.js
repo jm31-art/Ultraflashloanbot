@@ -708,6 +708,17 @@ class ArbitrageBot extends EventEmitter {
 
         while (this.isRunning) {
             try {
+                // PROVIDER SAFETY CHECK: Ensure provider is ready before executing cycles
+                if (!this.provider) {
+                    console.warn("🚨 Provider not ready, attempting to initialize...");
+                    await this._createRobustProvider();
+                    if (!this.provider) {
+                        console.warn("🚨 Provider not ready, retrying in 2s");
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        continue;
+                    }
+                }
+
                 // Get current gas price with caching
                 const now = Date.now();
                 if (!cachedGasPrice || now - lastGasCheck > GAS_CHECK_INTERVAL) {
@@ -2545,26 +2556,28 @@ class ArbitrageBot extends EventEmitter {
 
     async _createRobustProvider() {
         try {
-            const rpc = String(process.env.RPC_URL || "").trim();
-            if (!rpc.startsWith("http")) {
-                console.error("❌ INVALID RPC URL:", rpc);
-                return null;
+            if (!process.env.RPC_URL || typeof process.env.RPC_URL !== "string") {
+                throw new Error("RPC_URL missing or invalid in .env");
             }
 
-            const provider = new JsonRpcProvider(rpc);
+            // Trim URL to avoid accidental spaces
+            const rpcUrl = process.env.RPC_URL.trim();
 
-            const net = await provider.getNetwork().catch(() => null);
-            if (!net || !net.chainId) {
-                console.error("❌ Provider network check failed");
-                return null;
-            }
+            // Ethers v6 provider creation
+            this.provider = new ethers.JsonRpcProvider(rpcUrl);
 
-            console.log(`✅ Provider initialized on chainId ${net.chainId}`);
-            this.provider = provider;
-            return provider;
+            // Test connection with multiple methods
+            const network = await this.provider.getNetwork();
+            const blockNumber = await this.provider.getBlockNumber();
+            const feeData = await this.provider.getFeeData();
+
+            console.log(`✅ Provider initialized on chainId ${network.chainId}, block: ${blockNumber}`);
+
+            return this.provider;
 
         } catch (err) {
-            console.error("❌ Provider creation error:", err);
+            console.error("❌ Failed to create provider:", err);
+            this.provider = null;
             return null;
         }
     }
