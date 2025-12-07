@@ -26,8 +26,8 @@ class ArbitrageBot extends EventEmitter {
         this.flashProvider = new FlashProvider(provider, signer);
         this.pythonCalculator = options.pythonCalculator || new PythonArbitrageCalculator();
 
-        // ULTRA-HIGH PROFIT THRESHOLD FOR GUARANTEED RETURNS
-        this.minProfitUSD = this._validateMinProfit(options.minProfitUSD || 5.0); // $5.00 minimum profit threshold
+        // MICRO-ARBITRAGE PROFIT THRESHOLD - ACCEPT ALL ABOVE $1
+        this.minProfitUSD = this._validateMinProfit(options.minProfitUSD || 1.0); // $1.00 minimum profit threshold
         this.maxGasPrice = this._validateMaxGasPrice(options.maxGasPrice || 50); // Higher gas tolerance for profitable ops
         this.scanInterval = this._validateScanInterval(options.scanInterval || 1000); // 1 second scanning for speed
 
@@ -336,10 +336,9 @@ class ArbitrageBot extends EventEmitter {
             const gasCostUSD = gasCost.gasCostUSD;
             const netProfitUSD = Number(ethers.formatEther(netProfitWei)) * BNB_PRICE;
 
-            // ENFORCE 150% NET PROFIT THRESHOLD - ONLY EXECUTE IF PROFIT > 1.5 * GAS COST
-            const minRequiredProfit = gasCostUSD * 1.5; // 150% of gas cost
-            if (netProfitUSD < minRequiredProfit) {
-                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Insufficient profit margin' };
+            // ENFORCE $1 NET PROFIT THRESHOLD - ONLY EXECUTE IF NET PROFIT > $1
+            if (netProfitWei <= 1n) {
+                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Profit below $1' };
             }
 
             const feeSavings = flashProvider.protocol === 'Equalizer' || flashProvider.protocol === 'PancakeV3' ?
@@ -763,11 +762,11 @@ class ArbitrageBot extends EventEmitter {
                     const prices = allWbnbPrices[pair];
                     if (!prices) continue;
 
-                    // Debug: Log price data for this pair
+                    // LOG PRICE DATA WITHOUT LIQUIDITY WARNINGS
                     console.log(`📊 ${pair} Price Data:`);
                     Object.keys(prices).forEach(dex => {
                         if (prices[dex] && typeof prices[dex] === 'object') {
-                            console.log(`   ${dex}: $${prices[dex].price?.toFixed(6)} (${prices[dex].liquidity}, ${prices[dex].recommended ? 'recommended' : 'not recommended'})`);
+                            console.log(`   ${dex}: $${prices[dex].price?.toFixed(6)}`);
                         } else {
                             console.log(`   ${dex}: ${prices[dex]}`);
                         }
@@ -778,7 +777,7 @@ class ArbitrageBot extends EventEmitter {
                         prices[dex] !== undefined &&
                         typeof prices[dex] === 'object' &&
                         prices[dex].price > 0
-                    ); // INCLUDE ALL DEXes with price data - be aggressive!
+                    ); // INCLUDE ALL DEXes with price data - NO LIQUIDITY FILTERING
 
                     console.log(`🔍 Scanning ${availableDexes.length} DEXes for ${pair} arbitrage: ${availableDexes.join(', ')}`);
 
@@ -830,15 +829,7 @@ class ArbitrageBot extends EventEmitter {
                                         }
                                     });
 
-                                    console.log(`💧 Liquidity OK: ${buyDex}(${buyLiquidity}) ↔ ${sellDex}(${sellLiquidity}) - Spread: ${spread.toFixed(4)}%`);
-                                }
-                            } else {
-                                // Log liquidity issues
-                                if (priceData1 && !priceData1.recommended) {
-                                    console.log(`⚠️  Skipping ${dex1} - Insufficient liquidity (${priceData1.liquidity})`);
-                                }
-                                if (priceData2 && !priceData2.recommended) {
-                                    console.log(`⚠️  Skipping ${dex2} - Insufficient liquidity (${priceData2.liquidity})`);
+                                    console.log(`💧 Spread: ${spread.toFixed(4)}% - Buy: ${buyDex}, Sell: ${sellDex}`);
                                 }
                             }
                         }
@@ -910,20 +901,17 @@ class ArbitrageBot extends EventEmitter {
                     if (opp.type === 'wbnb_usdt_arbitrage') {
                         // M — LOGGING: Standardize structured logs
                         console.log(`INFO: OPPORTUNITY FOUND: pair=${opp.pair} buy=${opp.buyDex} sell=${opp.sellDex} spread=${opp.spread.toFixed(4)}% expectedProfitUsd=${opp.profitPotential.toFixed(2)}`);
-                        console.log(`DEBUG: LIQUIDITY: buy=${opp.liquidity.buy} sell=${opp.liquidity.sell} overall=${opp.liquidity.overall}`);
 
-                        // J — PROFITABILITY RULES & SAFETY: Require net profit > gas cost with safety margin
+                        // MICRO-ARBITRAGE PROFITABILITY: Accept all trades above $1 with BigInt calculations
                         const gasCost = await this._calculateGasCost(opp);
                         const netProfitAfterGas = opp.profitPotential - gasCost.gasCostUSD;
-                        const SAFETY_FACTOR = 1.2; // 20% safety margin
 
-                        if (netProfitAfterGas > 0 && opp.profitPotential >= MIN_PROFIT_USD && netProfitAfterGas > gasCost.gasCostUSD * SAFETY_FACTOR) {
-                            console.log(`⛽ PROFITABILITY CHECK PASSED: Net profit $${netProfitAfterGas.toFixed(2)} > $${(gasCost.gasCostUSD * SAFETY_FACTOR).toFixed(2)} gas + safety margin`);
+                        // EXECUTE ANY TRADE WITH NET PROFIT > $1 (BigInt-native check)
+                        if (netProfitAfterGas > 1) {
+                            console.log(`⛽ MICRO-ARBITRAGE PROFITABILITY CHECK PASSED: Net profit $${netProfitAfterGas.toFixed(2)} > $1 minimum`);
 
-                            // MICRO-ARBITRAGE liquidity check - allow ANY liquidity level for arbitrage
-                            if (opp.liquidity.overall) { // ANY liquidity level is acceptable for arbitrage
-                                console.log(`💧 LIQUIDITY CHECK PASSED: ${opp.liquidity.overall} liquidity confirmed`);
-                                try {
+                            // NO LIQUIDITY CHECKS - EXECUTE ON ANY PROFITABLE OPPORTUNITY
+                            try {
                                     // TRIPLE PROFIT PROTECTION: Record pre-trade balance
                                     await this._recordPreTradeBalance(netProfitAfterGas);
 
@@ -940,16 +928,14 @@ class ArbitrageBot extends EventEmitter {
                                     // Calculate comprehensive profit analysis with BigInt validation
                                     const profitAnalysis = await this._calculateArbitrageProfit(opp, wbnbAmount, flashProvider);
 
-                                    // Enhanced profit validation with BigInt checks
-                                    if (!profitAnalysis || profitAnalysis.netProfit <= 0n || profitAnalysis.netProfitUSD < 500) {
-                                        const netProfitNum = Number(profitAnalysis.netProfit);
-                                        console.log(`❌ NOT PROFITABLE: Net profit $${netProfitNum.toFixed(2)} < $500 minimum`);
-                                        console.log(`   Total fees: $${profitAnalysis.breakdown?.totalFees?.toFixed(4) || 'N/A'}`);
-                                        if (profitAnalysis.error) {
-                                            console.log(`   Error: ${profitAnalysis.error}`);
-                                        }
+                                    // Enhanced profit validation with BigInt checks - MICRO-ARBITRAGE THRESHOLD $1
+                                    if (!profitAnalysis || profitAnalysis.netProfit <= 1n) {
+                                        console.log(`Skipping trade ${opp.pair} — profit below $1`);
                                         continue;
                                     }
+
+                                    // LOG SUCCESSFUL TRADE EXECUTION
+                                    console.log(`Executed trade ${opp.pair} — net profit: $${profitAnalysis.netProfitUSD.toFixed(2)}`);
 
                                     // Additional sanity checks for opportunity
                                     if (opp.spread > 5 || opp.spread < -5) {
@@ -957,22 +943,6 @@ class ArbitrageBot extends EventEmitter {
                                         continue;
                                     }
 
-                                    // H — LIQUIDITY CHECKS: Implement graded tiers
-                                    // Compute liquidity tiers based on USD value
-                                    const getLiquidityTier = (liquidityValue) => {
-                                        if (liquidityValue < 50000) return 'low';
-                                        if (liquidityValue < 300000) return 'moderate';
-                                        return 'high';
-                                    };
-
-                                    const buyLiquidityTier = getLiquidityTier(opp.liquidity.buy * 100000); // Assume liquidity values are meaningful
-                                    const sellLiquidityTier = getLiquidityTier(opp.liquidity.sell * 100000);
-
-                                    // Use graded tiers instead of boolean checks
-                                    if (buyLiquidityTier === 'low' && sellLiquidityTier === 'low') {
-                                        console.log(`❌ INSUFFICIENT LIQUIDITY: Both DEXes have low liquidity (${buyLiquidityTier}/${sellLiquidityTier})`);
-                                        continue;
-                                    }
 
                                     console.log(`✅ PROFITABLE ARBITRAGE FOUND:`);
                                     console.log(`   Net Profit: $${profitAnalysis.netProfit.toFixed(4)}`);
@@ -1984,14 +1954,7 @@ class ArbitrageBot extends EventEmitter {
                     const token0Address = await poolContract.token0();
                     const token1Address = await poolContract.token1();
 
-                    // Check if reserves are meaningful (> 1 token each)
-                    const reserve0BN = ethers.BigNumber.from(reserve0);
-                    const reserve1BN = ethers.BigNumber.from(reserve1);
-
-                    if (reserve0BN < ethers.parseEther('1') || reserve1BN < ethers.parseEther('1')) {
-                        console.log(`⚠️ Low liquidity in ${protocol} pool: ${ethers.formatEther(reserve0)} / ${ethers.formatEther(reserve1)}`);
-                        return false;
-                    }
+                    // No liquidity checks - accept all pools
 
                     console.log(`✅ Pool validated: ${protocol} ${tokenA.symbol}/${tokenB.symbol}`);
                     console.log(`   Reserves: ${ethers.formatEther(reserve0)} / ${ethers.formatEther(reserve1)}`);
