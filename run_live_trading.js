@@ -1,62 +1,101 @@
+require('dotenv').config();
+
+// Global RPC URL validator
+function validateRpcUrl() {
+    const rpcUrl = process.env.BSC_RPC_URL || process.env.RPC_URL;
+
+    if (!rpcUrl) {
+        throw new Error('❌ CRITICAL: RPC_URL environment variable is missing. Please set BSC_RPC_URL or RPC_URL in your .env file.');
+    }
+
+    if (typeof rpcUrl !== 'string') {
+        throw new Error('❌ CRITICAL: RPC_URL must be a string value.');
+    }
+
+    const trimmedUrl = rpcUrl.trim();
+    if (trimmedUrl.length === 0) {
+        throw new Error('❌ CRITICAL: RPC_URL cannot be empty or only whitespace.');
+    }
+
+    // Check if URL has protocol, if not add https://
+    let validUrl = trimmedUrl;
+    if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
+        validUrl = 'https://' + trimmedUrl;
+        console.log(`📡 RPC URL missing protocol, auto-corrected to: ${validUrl}`);
+    }
+
+    // Basic URL validation (don't use new URL() to avoid clone errors)
+    try {
+        const urlPattern = /^https?:\/\/.+/;
+        if (!urlPattern.test(validUrl)) {
+            throw new Error('Invalid URL format');
+        }
+    } catch (error) {
+        throw new Error(`❌ CRITICAL: RPC_URL "${validUrl}" is not a valid URL format.`);
+    }
+
+    console.log(`✅ RPC URL validated: ${validUrl}`);
+    return validUrl;
+}
+
+// L — ERROR HANDLING & NO-CRASH POLICY
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('ERROR: UNHANDLED_REJECTION:', reason);
+    // Continue execution - do not exit
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('ERROR: UNCAUGHT_EXCEPTION:', error.message);
+    // Continue execution - do not exit
+});
+
 const { ethers } = require('ethers');
 const UnifiedStrategyManager = require('./bot/UnifiedStrategyManager');
-require('dotenv').config();
 
 async function main() {
     try {
-        console.log('🚀 Starting Ultraflashloanbot Live Trading...');
+        // SILENT STARTUP - NO LOGS
+
+        // Validate RPC URL before any provider creation
+        const rpcUrl = validateRpcUrl();
 
         // Initialize provider
-        const provider = new ethers.JsonRpcProvider(process.env.BSC_RPC_URL || process.env.RPC_URL);
+        const provider = new ethers.JsonRpcProvider(rpcUrl, undefined);
 
         // Initialize signer
         const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
 
-        console.log(`📡 Connected to network`);
-        console.log(`💰 Wallet: ${signer.address}`);
-
-        // Check balance
-        const balance = await provider.getBalance(signer.address);
-        const balanceBNB = ethers.formatEther(balance);
-        console.log(`💰 Balance: ${balanceBNB} BNB ($${parseFloat(balanceBNB) * 567})`);
-
         // Initialize and start the unified strategy manager
         const manager = new UnifiedStrategyManager(provider, signer, {
-            arbitrageWeight: 0.4,
-            liquidationWeight: 0.2,
-            nftWeight: 0.1,
-            crossProtocolWeight: 0.1,
-            multicoinWeight: 0.2,
-            maxConcurrentStrategies: 3
+            arbitrageWeight: 1.0, // Focus exclusively on arbitrage
+            liquidationWeight: 0.0,
+            nftWeight: 0.0,
+            crossProtocolWeight: 0.0,
+            multicoinWeight: 0.0,
+            maxConcurrentStrategies: 1
         });
 
         // Initialize
         const initialized = await manager.initialize();
         if (!initialized) {
-            throw new Error('Failed to initialize strategy manager');
+            process.exit(1);
         }
 
         // Start live trading
         await manager.start();
 
-        console.log('✅ Live trading started successfully!');
-        console.log('🎯 Bot is now scanning for arbitrage opportunities and executing profitable trades');
-
-        // Handle graceful shutdown
+        // Handle graceful shutdown (silent)
         process.on('SIGINT', async () => {
-            console.log('\n🛑 Shutting down bot...');
             await manager.stop();
             process.exit(0);
         });
 
         process.on('SIGTERM', async () => {
-            console.log('\n🛑 Shutting down bot...');
             await manager.stop();
             process.exit(0);
         });
 
     } catch (error) {
-        console.error('❌ Failed to start live trading:', error);
         process.exit(1);
     }
 }

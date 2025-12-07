@@ -1,6 +1,6 @@
 const { ethers } = require('ethers');
 const axios = require('axios');
-const Moralis = require('moralis').default;
+const { initMoralis, Moralis } = require('../utils/moralisSingleton');
 const { DEX_CONFIGS, TOKENS } = require('../config/dex');
 
 class DexPriceFeed {
@@ -33,9 +33,7 @@ class DexPriceFeed {
                 return;
             }
 
-            await Moralis.start({
-                apiKey: process.env.MORALIS_API_KEY
-            });
+            await initMoralis(process.env.MORALIS_API_KEY);
 
             this.moralisInitialized = true;
             console.log('✅ Moralis API initialized for live DEX prices');
@@ -418,6 +416,133 @@ class DexPriceFeed {
 
         // Final fallback
         return this._getFallbackPrice(pair).price;
+    }
+
+    // Estimate gas cost for a swap transaction
+    async estimateGas(dexName, tokenIn, tokenOut, amountIn, slippage = 0.005) {
+        try {
+            const dexKey = dexName.toUpperCase();
+            const dexConfig = DEX_CONFIGS[dexKey];
+
+            if (!dexConfig) {
+                throw new Error(`DEX ${dexName} not configured`);
+            }
+
+            // Create router contract
+            const router = new ethers.Contract(
+                dexConfig.router,
+                [
+                    'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)',
+                    'function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)'
+                ],
+                this.provider
+            );
+
+            // Get expected output amount
+            const path = [tokenIn, tokenOut];
+            const amountsOut = await router.getAmountsOut(amountIn, path);
+            const expectedOut = amountsOut[amountsOut.length - 1];
+
+            // Apply slippage protection
+            const minAmountOut = expectedOut * BigInt(Math.floor((1 - slippage) * 1000)) / BigInt(1000);
+            const deadline = Math.floor(Date.now() / 1000) + 300;
+
+            // Estimate gas for the swap
+            const gasEstimate = await router.swapExactTokensForTokens.estimateGas(
+                amountIn,
+                minAmountOut,
+                path,
+                ethers.constants.AddressZero, // Use zero address for estimation
+                deadline
+            );
+
+            return gasEstimate;
+        } catch (error) {
+            console.error(`Gas estimation failed for ${dexName}:`, error.message);
+            // Return fallback gas estimate
+            return BigInt(200000); // Conservative fallback
+        }
+    }
+
+    // Execute a swap transaction
+    async swap(dexName, tokenIn, tokenOut, amountIn, minAmountOut, signer, options = {}) {
+        try {
+            const dexKey = dexName.toUpperCase();
+            const dexConfig = DEX_CONFIGS[dexKey];
+
+            if (!dexConfig) {
+                throw new Error(`DEX ${dexName} not configured`);
+            }
+
+            // Create router contract
+            const router = new ethers.Contract(
+                dexConfig.router,
+                ['function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)'],
+                signer
+            );
+
+            const path = [tokenIn, tokenOut];
+            const deadline = Math.floor(Date.now() / 1000) + 300;
+
+            // Execute the swap
+            const tx = await router.swapExactTokensForTokens(
+                amountIn,
+                minAmountOut,
+                path,
+                signer.address,
+                deadline,
+                {
+                    gasLimit: options.gasLimit || 500000,
+                    gasPrice: options.gasPrice,
+                    ...options
+                }
+            );
+
+            return await tx.wait();
+        } catch (error) {
+            console.error(`Swap failed on ${dexName}:`, error.message);
+            throw error;
+        }
+    }
+
+    // Build swap transaction data without executing
+    async buildSwapTx(dexName, tokenIn, tokenOut, amountIn, minAmountOut, toAddress, options = {}) {
+        try {
+            const dexKey = dexName.toUpperCase();
+            const dexConfig = DEX_CONFIGS[dexKey];
+
+            if (!dexConfig) {
+                throw new Error(`DEX ${dexName} not configured`);
+            }
+
+            const path = [tokenIn, tokenOut];
+            const deadline = Math.floor(Date.now() / 1000) + 300;
+
+            // Encode the function call
+            const routerInterface = new ethers.Interface([
+                'function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)'
+            ]);
+
+            const txData = routerInterface.encodeFunctionData('swapExactTokensForTokens', [
+                amountIn,
+                minAmountOut,
+                path,
+                toAddress,
+                deadline
+            ]);
+
+            return {
+                to: dexConfig.router,
+                data: txData,
+                value: 0,
+                gasLimit: options.gasLimit || 500000,
+                gasPrice: options.gasPrice,
+                ...options
+            };
+        } catch (error) {
+            console.error(`Failed to build swap tx for ${dexName}:`, error.message);
+            throw error;
+        }
     }
 
     clearCache() {

@@ -51,13 +51,13 @@ class SettlementManager extends EventEmitter {
         try {
             // Calculate actual profit/loss
             const profitLoss = await this._calculateProfitLoss(receipt);
-            
-            // Calculate gas costs
-            const gasCost = receipt.gasUsed.mul(receipt.effectiveGasPrice);
-            
+
+            // Calculate gas costs using BigInt arithmetic
+            const gasCost = receipt.gasUsed * receipt.effectiveGasPrice;
+
             // Get block timestamp
             const block = await this.provider.getBlock(receipt.blockNumber);
-            
+
             // Update settlement status
             this.completedSettlements.set(txHash, {
                 timestamp: block.timestamp,
@@ -69,7 +69,7 @@ class SettlementManager extends EventEmitter {
             });
 
             this.pendingSettlements.delete(txHash);
-            
+
             // Emit settlement complete event
             this.emit('settlementComplete', {
                 txHash,
@@ -83,24 +83,24 @@ class SettlementManager extends EventEmitter {
     }
 
     async _calculateProfitLoss(receipt) {
-        let profit = BigNumber.from(0);
-        
+        let profit = 0n;
+
         // Decode logs to find profit events
         for (const log of receipt.logs) {
             try {
                 if (this._isProfitEvent(log)) {
-                    profit = profit.add(this._decodeProfitFromLog(log));
+                    profit = profit + BigInt(this._decodeProfitFromLog(log));
                 }
             } catch (error) {
                 console.warn('Error decoding profit log:', error.message);
             }
         }
 
-        // Calculate gas cost
-        const gasCost = receipt.gasUsed.mul(receipt.effectiveGasPrice);
-        
+        // Calculate gas cost using BigInt arithmetic
+        const gasCost = receipt.gasUsed * receipt.effectiveGasPrice;
+
         // Return profit minus gas cost
-        return profit.sub(gasCost);
+        return profit - gasCost;
     }
 
     _isProfitEvent(log) {
@@ -178,14 +178,14 @@ class SettlementManager extends EventEmitter {
 
     getSettlementStats() {
         const completed = this.getCompletedSettlements();
-        
-        // Calculate total profit/loss
+
+        // Calculate total profit/loss using BigInt
         const totalProfitLoss = completed.reduce((total, [_, settlement]) => {
             if (settlement.profitLoss) {
-                return total.add(BigNumber.from(settlement.profitLoss));
+                return total + BigInt(settlement.profitLoss);
             }
             return total;
-        }, BigNumber.from(0));
+        }, 0n);
 
         // Calculate success rate
         const successCount = completed.filter(([_, s]) => s.status === 'completed').length;
