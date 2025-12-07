@@ -418,8 +418,8 @@ class DexPriceFeed {
         return this._getFallbackPrice(pair).price;
     }
 
-    // Estimate gas cost for a swap transaction
-    async estimateGas(dexName, tokenIn, tokenOut, amountIn, slippage = 0.005) {
+    // Estimate gas cost for a swap transaction with dynamic slippage
+    async estimateGas(dexName, tokenIn, tokenOut, amountIn, slippage = null) {
         try {
             const dexKey = dexName.toUpperCase();
             const dexConfig = DEX_CONFIGS[dexKey];
@@ -443,6 +443,12 @@ class DexPriceFeed {
             const amountsOut = await router.getAmountsOut(amountIn, path);
             const expectedOut = amountsOut[amountsOut.length - 1];
 
+            // Use dynamic slippage if not provided
+            if (slippage === null) {
+                const gasPrice = await this.provider.getFeeData().gasPrice;
+                slippage = this._calculateDynamicSlippage({ spread: 0.005 }, gasPrice);
+            }
+
             // Apply slippage protection
             const minAmountOut = expectedOut * BigInt(Math.floor((1 - slippage) * 1000)) / BigInt(1000);
             const deadline = Math.floor(Date.now() / 1000) + 300;
@@ -462,6 +468,36 @@ class DexPriceFeed {
             // Return fallback gas estimate
             return BigInt(200000); // Conservative fallback
         }
+    }
+
+    // Calculate dynamic slippage based on market conditions
+    _calculateDynamicSlippage(opportunity, gasPrice) {
+        // Default slippage config (can be made configurable)
+        const slippageConfig = {
+            minSlippage: 0.003, // 0.3% minimum
+            maxSlippage: 0.008, // 0.8% maximum
+            defaultSlippage: 0.005 // 0.5% default
+        };
+
+        let slippage = slippageConfig.defaultSlippage;
+
+        // Adjust based on spread - higher spread allows lower slippage
+        if (opportunity.spread > 0.01) {
+            slippage = Math.max(slippageConfig.minSlippage, slippage * 0.8); // Reduce slippage for high spreads
+        } else if (opportunity.spread < 0.001) {
+            slippage = Math.min(slippageConfig.maxSlippage, slippage * 1.5); // Increase slippage for low spreads
+        }
+
+        // Adjust based on gas price - higher gas price allows higher slippage
+        const gasPriceGwei = parseFloat(ethers.formatUnits(gasPrice, 'gwei'));
+        if (gasPriceGwei > 10) {
+            slippage = Math.min(slippageConfig.maxSlippage, slippage * 1.2); // Increase slippage for high gas
+        }
+
+        // Ensure within bounds
+        slippage = Math.max(slippageConfig.minSlippage, Math.min(slippageConfig.maxSlippage, slippage));
+
+        return slippage;
     }
 
     // Execute a swap transaction

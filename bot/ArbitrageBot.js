@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { EventEmitter } = require('events');
-const { ethers, getAddress } = require('ethers');
+const { ethers, getAddress, JsonRpcProvider } = require('ethers');
 const { DEX_CONFIGS, TOKENS, TRADING_PAIRS } = require('../config/dex');
 const PriceFeed = require('../services/PriceFeed');
 const DexPriceFeed = require('../services/DexPriceFeed');
@@ -64,6 +64,14 @@ class ArbitrageBot extends EventEmitter {
         this.maxDexBatchSize = options.maxDexBatchSize || 4; // Limit DEX batch size
         this.requestTimeout = options.requestTimeout || 15000; // 15 second timeout
         this.retryAttempts = options.retryAttempts || 3; // Retry failed requests
+
+        // DYNAMIC SLIPPAGE CONTROL
+        this.slippageConfig = {
+            minSlippage: 0.003, // 0.3% minimum
+            maxSlippage: 0.008, // 0.8% maximum
+            defaultSlippage: 0.005, // 0.5% default
+            dynamicAdjustment: true // Enable dynamic adjustment based on market conditions
+        };
     }
 
     _validateMinProfit(minProfit) {
@@ -660,9 +668,13 @@ class ArbitrageBot extends EventEmitter {
     async start() {
         if (this.isRunning) return;
 
-        // PROVIDER VALIDATION: Ensure provider is properly initialized
         if (!this.provider) {
-            throw new Error("Provider failed to initialize");
+            console.error("❌ Provider is NULL — rebuilding provider...");
+            await this._createRobustProvider();
+            if (!this.provider) {
+                console.error("❌ FATAL: Provider still null — cannot start arbitrage");
+                return;
+            }
         }
 
         // Test provider connection
@@ -917,15 +929,9 @@ class ArbitrageBot extends EventEmitter {
                                     // Calculate comprehensive profit analysis with BigInt validation
                                     const profitAnalysis = await this._calculateArbitrageProfit(opp, wbnbAmount, flashProvider);
 
-                                    // F — profitAnalysis.netProfit errors: Fix .toFixed() calls
-                                    const netProfitNum = Number(profitAnalysis.netProfit);
-                                    if (!isFinite(netProfitNum)) {
-                                        console.log(`❌ NOT PROFITABLE: netProfit is not numeric`);
-                                        continue;
-                                    }
-
                                     // Enhanced profit validation with BigInt checks
                                     if (!profitAnalysis || profitAnalysis.netProfit <= 0n || profitAnalysis.netProfitUSD < 500) {
+                                        const netProfitNum = Number(profitAnalysis.netProfit);
                                         console.log(`❌ NOT PROFITABLE: Net profit $${netProfitNum.toFixed(2)} < $500 minimum`);
                                         console.log(`   Total fees: $${profitAnalysis.breakdown?.totalFees?.toFixed(4) || 'N/A'}`);
                                         if (profitAnalysis.error) {
@@ -2287,8 +2293,10 @@ class ArbitrageBot extends EventEmitter {
         const amountsOut = await router.getAmountsOut(amountIn, path);
         const expectedOut = amountsOut[amountsOut.length - 1];
 
-        // Apply slippage protection (0.5%)
-        const minAmountOut = expectedOut.mul(ethers.BigNumber.from(995)).div(ethers.BigNumber.from(1000));
+        // Apply dynamic slippage protection
+        const dynamicSlippage = this._calculateDynamicSlippage({ spread: 0.005 }, await this.provider.getFeeData().gasPrice);
+        const slippageBps = Math.floor((1 - dynamicSlippage) * 1000);
+        const minAmountOut = expectedOut.mul(ethers.BigNumber.from(slippageBps)).div(ethers.BigNumber.from(1000));
 
         const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
 
@@ -2349,8 +2357,10 @@ class ArbitrageBot extends EventEmitter {
         const amountsOut = await router.getAmountsOut(amountIn, path);
         const expectedOut = amountsOut[amountsOut.length - 1];
 
-        // Apply slippage protection (0.5%)
-        const minAmountOut = expectedOut.mul(ethers.BigNumber.from(995)).div(ethers.BigNumber.from(1000));
+        // Apply dynamic slippage protection
+        const dynamicSlippage = this._calculateDynamicSlippage({ spread: 0.005 }, await this.provider.getFeeData().gasPrice);
+        const slippageBps = Math.floor((1 - dynamicSlippage) * 1000);
+        const minAmountOut = expectedOut.mul(ethers.BigNumber.from(slippageBps)).div(ethers.BigNumber.from(1000));
 
         const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
 
@@ -2533,28 +2543,30 @@ class ArbitrageBot extends EventEmitter {
         console.log('✅ Bot stopped successfully - Safety measures reset');
     }
 
-    _createRobustProvider(providerOrRpcUrl) {
-        // If already a provider object, return it directly
-        if (providerOrRpcUrl && typeof providerOrRpcUrl === 'object' && providerOrRpcUrl.getBlockNumber) {
-            return providerOrRpcUrl;
+    async _createRobustProvider() {
+        try {
+            const rpc = String(process.env.RPC_URL || "").trim();
+            if (!rpc.startsWith("http")) {
+                console.error("❌ INVALID RPC URL:", rpc);
+                return null;
+            }
+
+            const provider = new JsonRpcProvider(rpc);
+
+            const net = await provider.getNetwork().catch(() => null);
+            if (!net || !net.chainId) {
+                console.error("❌ Provider network check failed");
+                return null;
+            }
+
+            console.log(`✅ Provider initialized on chainId ${net.chainId}`);
+            this.provider = provider;
+            return provider;
+
+        } catch (err) {
+            console.error("❌ Provider creation error:", err);
+            return null;
         }
-
-        // Otherwise, treat as RPC URL string
-        if (!providerOrRpcUrl || typeof providerOrRpcUrl !== "string") {
-            console.error("❌ Invalid RPC URL:", providerOrRpcUrl);
-            throw new Error("RPC URL must be a string");
-        }
-
-        const rpcUrl = providerOrRpcUrl.toString().trim();
-        const provider = new ethers.JsonRpcProvider(rpcUrl);
-
-        // Test the provider
-        return provider.getBlockNumber()
-            .then(() => provider)
-            .catch(err => {
-                console.error("❌ Provider failed:", err);
-                throw new Error("RPC provider failed self-test");
-            });
     }
 
     // Send leftover native token profit to wallet address from .env
@@ -2604,6 +2616,35 @@ class ArbitrageBot extends EventEmitter {
         }
     }
 
+    // Calculate dynamic slippage based on market conditions
+    _calculateDynamicSlippage(opportunity, gasPrice) {
+        if (!this.slippageConfig.dynamicAdjustment) {
+            return this.slippageConfig.defaultSlippage;
+        }
+
+        let slippage = this.slippageConfig.defaultSlippage;
+
+        // Adjust based on spread - higher spread allows lower slippage
+        if (opportunity.spread > 0.01) {
+            slippage = Math.max(this.slippageConfig.minSlippage, slippage * 0.8); // Reduce slippage for high spreads
+        } else if (opportunity.spread < 0.001) {
+            slippage = Math.min(this.slippageConfig.maxSlippage, slippage * 1.5); // Increase slippage for low spreads
+        }
+
+        // Adjust based on gas price - higher gas price allows higher slippage
+        const gasPriceGwei = parseFloat(ethers.formatUnits(gasPrice, 'gwei'));
+        if (gasPriceGwei > 10) {
+            slippage = Math.min(this.slippageConfig.maxSlippage, slippage * 1.2); // Increase slippage for high gas
+        }
+
+        // Ensure within bounds
+        slippage = Math.max(this.slippageConfig.minSlippage, Math.min(this.slippageConfig.maxSlippage, slippage));
+
+        console.log(`🎯 Dynamic slippage calculated: ${(slippage * 100).toFixed(2)}% (spread: ${opportunity.spread.toFixed(4)}, gas: ${gasPriceGwei.toFixed(1)} gwei)`);
+
+        return slippage;
+    }
+
     // Get safety status
     getSafetyStatus() {
         return {
@@ -2616,7 +2657,8 @@ class ArbitrageBot extends EventEmitter {
             minTimeBetweenTransactions: this.minTimeBetweenTransactions,
             retryAttempts: this.retryAttempts,
             requestTimeout: this.requestTimeout,
-            maxDexBatchSize: this.maxDexBatchSize
+            maxDexBatchSize: this.maxDexBatchSize,
+            slippageConfig: this.slippageConfig
         };
     }
 }
