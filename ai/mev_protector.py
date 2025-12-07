@@ -30,11 +30,89 @@ class MEVProtectorAI:
         self.is_initialized = False
 
         # Model file paths
-        self.gas_model_path = os.path.join(os.path.dirname(__file__), 'models', 'gas_price_predictor.pkl')
-        self.mev_model_path = os.path.join(os.path.dirname(__file__), 'models', 'mev_detector.pkl')
+        self.models_dir = os.path.join(os.path.dirname(__file__), 'models')
+        self.gas_model_path = os.path.join(self.models_dir, 'gas_price_predictor.pkl')
+        self.mev_model_path = os.path.join(self.models_dir, 'mev_detector.pkl')
+        self.manifest_path = os.path.join(self.models_dir, 'manifest.json')
 
         # Create models directory if it doesn't exist
-        os.makedirs(os.path.join(os.path.dirname(__file__), 'models'), exist_ok=True)
+        os.makedirs(self.models_dir, exist_ok=True)
+
+    def _compute_sha256(self, path):
+        """Compute SHA256 checksum of a file in a streaming manner."""
+        import hashlib
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _is_within_models_dir(self, path):
+        """Ensure the provided path is inside the dedicated models directory."""
+        try:
+            return os.path.commonpath([os.path.realpath(path), os.path.realpath(self.models_dir)]) == os.path.realpath(self.models_dir)
+        except Exception:
+            return False
+
+    def _load_manifest(self):
+        """Load the manifest (allowlist) of approved model checksums.
+
+        The manifest is expected to be a JSON mapping of "filename" -> "sha256".
+        If the manifest is missing or invalid, an empty dict is returned.
+        """
+        if not os.path.exists(self.manifest_path):
+            return {}
+        try:
+            with open(self.manifest_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"ERROR loading model manifest: {e}")
+            return {}
+
+    def _update_manifest_entry(self, model_name, sha256_value):
+        """Update or create the manifest entry for a model and save to disk."""
+        manifest = self._load_manifest()
+        manifest[model_name] = sha256_value
+        try:
+            with open(self.manifest_path, 'w') as f:
+                json.dump(manifest, f, indent=2)
+            # Restrict permissions to owner read/write only
+            try:
+                os.chmod(self.manifest_path, 0o600)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"ERROR saving model manifest: {e}")
+
+    def load_secure_model(self, model_path, model_name):
+        """Validate model artifact against manifest before deserialization.
+
+        This performs three checks in order:
+        1) File exists and is within the configured models directory.
+        2) The manifest contains a SHA256 checksum for the model.
+        3) The computed checksum matches the manifest entry.
+
+        Only after these checks succeed will the model be deserialized.
+        """
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+
+        if not self._is_within_models_dir(model_path):
+            raise PermissionError("Model path is outside of allowed models directory")
+
+        manifest = self._load_manifest()
+        expected = manifest.get(model_name)
+        if not expected:
+            raise ValueError(f"No manifest entry for model: {model_name}")
+
+        actual = self._compute_sha256(model_path)
+        if actual != expected:
+            raise ValueError(f"Model checksum mismatch for {model_name}: expected {expected}, got {actual}")
+
+        # At this point the artifact provenance and integrity have been verified.
+        print(f"Verified model {model_name} checksum {actual}")
+        # Safe to deserialize
+        return joblib.load(model_path)
 
     def initialize(self):
         """Initialize AI models and training data"""
@@ -43,7 +121,7 @@ class MEVProtectorAI:
 
             # Load or train gas price prediction model
             if os.path.exists(self.gas_model_path):
-                self.gas_price_model = joblib.load(self.gas_model_path)
+                self.gas_price_model = self.load_secure_model(self.gas_model_path, os.path.basename(self.gas_model_path))
                 print("OK Loaded existing gas price prediction model")
             else:
                 self._train_gas_price_model()
@@ -51,7 +129,7 @@ class MEVProtectorAI:
 
             # Load or train MEV detection model
             if os.path.exists(self.mev_model_path):
-                self.mev_detector = joblib.load(self.mev_model_path)
+                self.mev_detector = self.load_secure_model(self.mev_model_path, os.path.basename(self.mev_model_path))
                 print("OK Loaded existing MEV detection model")
             else:
                 self._train_mev_detector()
@@ -99,6 +177,12 @@ class MEVProtectorAI:
 
         # Save model
         joblib.dump(self.gas_price_model, self.gas_model_path)
+        try:
+            sha = self._compute_sha256(self.gas_model_path)
+            self._update_manifest_entry(os.path.basename(self.gas_model_path), sha)
+            print(f"Saved gas model and updated manifest with sha256 {sha}")
+        except Exception as e:
+            print(f"Warning: failed to update manifest for gas model: {e}")
 
     def _train_mev_detector(self):
         """Train MEV detection model using transaction pattern analysis"""
@@ -142,6 +226,12 @@ class MEVProtectorAI:
 
         # Save model
         joblib.dump(self.mev_detector, self.mev_model_path)
+        try:
+            sha = self._compute_sha256(self.mev_model_path)
+            self._update_manifest_entry(os.path.basename(self.mev_model_path), sha)
+            print(f"Saved MEV detector model and updated manifest with sha256 {sha}")
+        except Exception as e:
+            print(f"Warning: failed to update manifest for MEV model: {e}")
 
     def predict_gas_price(self, features):
         """Predict optimal gas price using AI model"""
