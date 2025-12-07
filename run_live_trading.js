@@ -101,8 +101,3 @@ async function main() {
 }
 
 main();
-        process.exit(1);
-    }
-}
-
-main();
