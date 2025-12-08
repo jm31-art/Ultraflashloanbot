@@ -992,13 +992,12 @@ class ArbitrageBot extends EventEmitter {
                                     await this._emergencyProfitExtraction();
                                     this.recordTrade(false);
                                 }
-                            } else {
-                                console.log(`⚠️  FLASHLOAN REJECTED - Requires at least moderate liquidity, got ${opp.liquidity.overall}`);
-                            }
                         } else {
                             console.log(`⛽ GAS COST TOO HIGH: Net profit $${netProfitAfterGas.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas - Skipped`);
                         }
-                    } else if (opp.type === 'triangular') {
+                    }
+
+                    if (opp.type === 'triangular') {
                         console.log(`🔄 Found triangular arbitrage opportunity:`);
                         console.log(`Path: ${opp.path.join(' -> ')}`);
                         console.log(`Expected profit: ${opp.expectedProfit.toFixed(4)}%`);
@@ -1108,10 +1107,12 @@ class ArbitrageBot extends EventEmitter {
                         }
                     }
                 }
+    
+                }
 
-            } catch (error) {
-                console.error('Error in arbitrage loop:', error);
-            }
+                catch (error) {
+                    console.error('Error in arbitrage loop:', error);
+                }
 
             // Wait before next scan
             await new Promise(resolve => setTimeout(resolve, this.scanInterval));
