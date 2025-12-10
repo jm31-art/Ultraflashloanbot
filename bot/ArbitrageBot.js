@@ -85,7 +85,7 @@ class ArbitrageBot extends EventEmitter {
         };
 
         // EXTREME NON-REVERT MODE CONFIGURATION
-        this.extremeMode = false;
+        this.extremeMode = true;
         this.extremeGasBudgetUSD = 1.51;
         this.extremeMaxTrades = 2;
         this.extremeExecutedTrades = 0;
