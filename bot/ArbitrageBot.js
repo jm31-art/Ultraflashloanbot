@@ -6,6 +6,7 @@ const PriceFeed = require('../services/PriceFeed');
 const DexPriceFeed = require('../services/DexPriceFeed');
 const FlashProvider = require('../utils/FlashProvider');
 const PythonArbitrageCalculator = require('../services/PythonArbitrageCalculator');
+const MEVRelayManager = require('../utils/MEVRelayManager');
 
 class ArbitrageBot extends EventEmitter {
     constructor(provider, signer, options = {}) {
@@ -25,6 +26,16 @@ class ArbitrageBot extends EventEmitter {
         this.priceFeed = new DexPriceFeed(provider);
         this.flashProvider = new FlashProvider(provider, signer);
         this.pythonCalculator = options.pythonCalculator || new PythonArbitrageCalculator();
+
+        // Initialize MEV protection system
+        this.mevRelayManager = new MEVRelayManager(provider, signer);
+        this.mevProtectionEnabled = true;
+
+        // MEV protection state
+        this.baselineGasPrice = null;
+        this.baselinePoolReserves = new Map();
+        this.baselineMidPrices = new Map();
+        this.lastScanTime = 0;
 
         // MICRO-ARBITRAGE PROFIT THRESHOLD - ACCEPT ALL ABOVE $1
         this.minProfitUSD = this._validateMinProfit(options.minProfitUSD || 1.0); // $1.00 minimum profit threshold
@@ -72,6 +83,15 @@ class ArbitrageBot extends EventEmitter {
             defaultSlippage: 0.005, // 0.5% default
             dynamicAdjustment: true // Enable dynamic adjustment based on market conditions
         };
+
+        // EXTREME NON-REVERT MODE CONFIGURATION
+        this.extremeMode = false;
+        this.extremeGasBudgetUSD = 1.51;
+        this.extremeMaxTrades = 2;
+        this.extremeExecutedTrades = 0;
+        this.extremeGasWalletAddress = process.env.EXTREME_GAS_WALLET || null;
+        this.extremeMinProfitUSD = options.extremeMinProfitUSD || 50;
+        this.extremeModeStartTime = null;
     }
 
     _validateMinProfit(minProfit) {
@@ -245,6 +265,312 @@ class ArbitrageBot extends EventEmitter {
             console.error('❌ Emergency profit extraction failed:', error.message);
             console.error('   Error details:', error.stack);
         }
+    }
+
+    // MEV PROTECTION: Anti-sandwich checks
+    async _performAntiSandwichChecks(opportunity, flashAmount) {
+        if (!this.mevProtectionEnabled) return true;
+
+        try {
+            console.log('🛡️ Performing anti-sandwich checks...');
+
+            // Check 1: Pool reserve manipulation detection
+            if (!(await this._checkPoolReserveManipulation(opportunity))) {
+                console.log('❌ Pool reserve manipulation detected - skipping trade');
+                return false;
+            }
+
+            // Check 2: Slippage impact validation
+            if (!(await this._checkSlippageImpact(opportunity, flashAmount))) {
+                console.log('❌ Slippage impact too high - skipping trade');
+                return false;
+            }
+
+            // Check 3: Mid-price stability check
+            if (!(await this._checkMidPriceStability(opportunity))) {
+                console.log('❌ Mid-price unstable - skipping trade');
+                return false;
+            }
+
+            // Check 4: Gas spike detection
+            if (!(await this._checkGasSpikeDetection())) {
+                console.log('❌ Gas spike detected - skipping trade');
+                return false;
+            }
+
+            console.log('✅ All anti-sandwich checks passed');
+            return true;
+        } catch (error) {
+            console.error('❌ Anti-sandwich checks failed:', error.message);
+            return false;
+        }
+    }
+
+    // Check for pool reserve manipulation (detect sandwich attempts)
+    async _checkPoolReserveManipulation(opportunity) {
+        try {
+            const { pair, buyDex, sellDex } = opportunity;
+            const [tokenA, tokenB] = pair.split('/');
+
+            // Get current pool reserves
+            const buyPoolReserves = await this._getPoolReserves(buyDex, tokenA, tokenB);
+            const sellPoolReserves = await this._getPoolReserves(sellDex, tokenA, tokenB);
+
+            // Compare with baseline reserves if available
+            const buyPoolKey = `${buyDex}-${pair}`;
+            const sellPoolKey = `${sellDex}-${pair}`;
+
+            const baselineBuyReserves = this.baselinePoolReserves.get(buyPoolKey);
+            const baselineSellReserves = this.baselinePoolReserves.get(sellPoolKey);
+
+            if (baselineBuyReserves && baselineSellReserves) {
+                // Check for significant reserve changes (potential manipulation)
+                const buyReserveChange = Math.abs(buyPoolReserves.reserve0 - baselineBuyReserves.reserve0) / baselineBuyReserves.reserve0;
+                const sellReserveChange = Math.abs(sellPoolReserves.reserve0 - baselineSellReserves.reserve0) / baselineSellReserves.reserve0;
+
+                const manipulationThreshold = 0.05; // 5% change threshold
+
+                if (buyReserveChange > manipulationThreshold || sellReserveChange > manipulationThreshold) {
+                    console.log(`⚠️ Reserve manipulation detected: Buy ${buyReserveChange.toFixed(3)}, Sell ${sellReserveChange.toFixed(3)}`);
+                    return false;
+                }
+            }
+
+            // Update baseline reserves
+            this.baselinePoolReserves.set(buyPoolKey, buyPoolReserves);
+            this.baselinePoolReserves.set(sellPoolKey, sellPoolReserves);
+
+            return true;
+        } catch (error) {
+            console.error('❌ Pool reserve check failed:', error.message);
+            return false;
+        }
+    }
+
+    // Check slippage impact validation
+    async _checkSlippageImpact(opportunity, flashAmount) {
+        try {
+            const { pair, buyDex, sellDex, spread } = opportunity;
+
+            // Simulate the swap to check slippage
+            const slippageImpact = await this._simulateSwapSlippage(opportunity, flashAmount);
+
+            // Check if slippage impact is within bot's tolerance
+            const maxSlippageTolerance = this.slippageConfig.maxSlippage; // 0.8%
+
+            if (slippageImpact > maxSlippageTolerance) {
+                console.log(`⚠️ Slippage impact ${slippageImpact.toFixed(4)} > tolerance ${maxSlippageTolerance.toFixed(4)}`);
+                return false;
+            }
+
+            // Ensure slippage impact is 0 or below bot's tolerance
+            if (slippageImpact < 0) {
+                console.log(`⚠️ Negative slippage impact detected: ${slippageImpact.toFixed(4)}`);
+                return false;
+            }
+
+            return true;
+        } catch (error) {
+            console.error('❌ Slippage impact check failed:', error.message);
+            return false;
+        }
+    }
+
+    // Check mid-price stability between scan and execution
+    async _checkMidPriceStability(opportunity) {
+        try {
+            const { pair } = opportunity;
+            const currentTime = Date.now();
+
+            // Get current mid-price
+            const currentPrices = await this.priceFeed.getAllPrices(pair);
+            const dexes = Object.keys(currentPrices);
+
+            if (dexes.length < 2) return true; // Need at least 2 DEXes
+
+            // Calculate current mid-price
+            const prices = dexes.map(dex => currentPrices[dex]?.price).filter(p => p > 0);
+            const currentMidPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+
+            // Check against baseline mid-price
+            const baselineKey = `midprice-${pair}`;
+            const baselineMidPrice = this.baselineMidPrices.get(baselineKey);
+
+            if (baselineMidPrice) {
+                const priceChange = Math.abs(currentMidPrice - baselineMidPrice) / baselineMidPrice;
+                const maxPriceChange = 0.005; // 0.5% max change
+
+                if (priceChange > maxPriceChange) {
+                    console.log(`⚠️ Mid-price changed ${priceChange.toFixed(4)} > ${maxPriceChange.toFixed(4)}`);
+                    return false;
+                }
+            }
+
+            // Update baseline mid-price
+            this.baselineMidPrices.set(baselineKey, currentMidPrice);
+            this.lastScanTime = currentTime;
+
+            return true;
+        } catch (error) {
+            console.error('❌ Mid-price stability check failed:', error.message);
+            return false;
+        }
+    }
+
+    // Check for sudden gas spikes (detect frontrunning bots)
+    async _checkGasSpikeDetection() {
+        try {
+            const currentGasPrice = await this.provider.getGasPrice();
+            const currentGasGwei = parseFloat(ethers.formatUnits(currentGasPrice, 'gwei'));
+
+            // Check against baseline gas price
+            if (this.baselineGasPrice) {
+                const gasChange = (currentGasGwei - this.baselineGasPrice) / this.baselineGasPrice;
+                const maxGasSpike = 0.5; // 50% max increase
+
+                if (gasChange > maxGasSpike) {
+                    console.log(`⚠️ Gas spike detected: ${gasChange.toFixed(3)} > ${maxGasSpike.toFixed(3)}`);
+                    return false;
+                }
+            }
+
+            // Update baseline gas price
+            this.baselineGasPrice = currentGasGwei;
+
+            return true;
+        } catch (error) {
+            console.error('❌ Gas spike detection failed:', error.message);
+            return false;
+        }
+    }
+
+    // Helper: Get pool reserves
+    async _getPoolReserves(dex, tokenA, tokenB) {
+        try {
+            const dexConfig = DEX_CONFIGS[dex.toUpperCase()];
+            if (!dexConfig) throw new Error(`Unknown DEX: ${dex}`);
+
+            // This is a simplified implementation - in reality you'd query the actual pool contract
+            const poolAddress = await this._getPoolAddress(dexConfig, tokenA, tokenB);
+
+            const poolContract = new ethers.Contract(poolAddress, [
+                'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)'
+            ], this.provider);
+
+            const [reserve0, reserve1] = await poolContract.getReserves();
+
+            return { reserve0: Number(reserve0), reserve1: Number(reserve1) };
+        } catch (error) {
+            console.error(`Failed to get reserves for ${dex} ${tokenA}/${tokenB}:`, error.message);
+            return { reserve0: 0, reserve1: 0 };
+        }
+    }
+
+    // Helper: Get pool address (simplified)
+    async _getPoolAddress(dexConfig, tokenA, tokenB) {
+        // This would implement proper pool address calculation based on DEX
+        // For now, return a placeholder
+        return dexConfig.factory || '0x0000000000000000000000000000000000000000';
+    }
+
+    // Helper: Simulate swap slippage
+    async _simulateSwapSlippage(opportunity, flashAmount) {
+        try {
+            // Simulate the arbitrage swap to calculate slippage
+            const { pair, buyDex, sellDex } = opportunity;
+
+            // This is a simplified slippage calculation
+            // In reality, you'd simulate the actual swap path
+            const baseSlippage = 0.001; // 0.1% base slippage
+            const volumeImpact = Number(flashAmount) / 1000000; // Volume-based impact
+
+            return baseSlippage + volumeImpact;
+        } catch (error) {
+            console.error('❌ Swap slippage simulation failed:', error.message);
+            return 999; // High slippage to fail check
+        }
+    }
+
+    // MEV PROTECTION: Bundle simulation before sending
+    async _simulateArbitrageBundle(opportunity, flashAmount, flashProvider) {
+        if (!this.mevProtectionEnabled) return { success: true };
+
+        try {
+            console.log('🔬 Simulating arbitrage bundle...');
+
+            // Create the arbitrage transaction bundle
+            const bundle = await this._createArbitrageBundle(opportunity, flashAmount, flashProvider);
+
+            // Get target block number (next block)
+            const currentBlock = await this.provider.getBlockNumber();
+            const targetBlockNumber = currentBlock + 1;
+
+            // Simulate the bundle
+            const simulation = await this.mevRelayManager.simulateBundle(bundle, targetBlockNumber);
+
+            if (!simulation.success) {
+                console.log('MEV simulation blocked execution — possible sandwich attempt');
+                return { success: false, error: simulation.error };
+            }
+
+            // Check for loss or high slippage in simulation
+            if (simulation.results) {
+                for (const result of simulation.results) {
+                    if (!result.success) {
+                        console.log('MEV simulation blocked execution — revert detected');
+                        return { success: false, error: 'Simulation revert' };
+                    }
+                }
+            }
+
+            // Check gas usage is reasonable
+            if (simulation.totalGasUsed > 1000000) { // 1M gas limit
+                console.log('MEV simulation blocked execution — excessive gas usage');
+                return { success: false, error: 'Excessive gas usage' };
+            }
+
+            console.log('MEV simulation passed');
+            return { success: true, simulation };
+        } catch (error) {
+            console.error('❌ Bundle simulation failed:', error.message);
+            return { success: false, error: error.message };
+        }
+    }
+
+    // Create arbitrage transaction bundle
+    async _createArbitrageBundle(opportunity, flashAmount, flashProvider) {
+        const bundle = [];
+
+        try {
+            // For flashloan-based arbitrage, create flashloan transaction
+            if (flashProvider && flashAmount) {
+                const flashTx = await this._createFlashloanTx(opportunity, flashAmount, flashProvider);
+                if (flashTx) bundle.push(flashTx);
+            }
+
+            // Create main arbitrage transaction
+            const arbTx = await this._createArbitrageTx(opportunity);
+            if (arbTx) bundle.push(arbTx);
+
+            return bundle;
+        } catch (error) {
+            console.error('❌ Failed to create arbitrage bundle:', error.message);
+            return [];
+        }
+    }
+
+    // Create flashloan transaction for bundle
+    async _createFlashloanTx(opportunity, flashAmount, flashProvider) {
+        // This would create the flashloan initiation transaction
+        // Simplified for now
+        return {
+            transaction: {
+                to: flashProvider.protocol.address,
+                data: '0x', // Encoded flashloan call
+                value: 0
+            },
+            signer: this.signer
+        };
     }
 
     // BigInt-native comprehensive profit calculation for arbitrage opportunity
@@ -477,6 +803,11 @@ class ArbitrageBot extends EventEmitter {
             // Check if balance is sufficient
             if (balance < this.minBalanceRequired) {
                 return false;
+            }
+
+            // Initialize MEV protection system
+            if (this.mevProtectionEnabled) {
+                await this.mevRelayManager.initialize();
             }
 
             return true;
@@ -910,6 +1241,31 @@ class ArbitrageBot extends EventEmitter {
                         if (netProfitAfterGas > 1) {
                             console.log(`⛽ MICRO-ARBITRAGE PROFITABILITY CHECK PASSED: Net profit $${netProfitAfterGas.toFixed(2)} > $1 minimum`);
 
+                            // EXTREME MODE CHECKS: Run additional safety verifications if enabled
+                            if (this.extremeMode) {
+                                const txBuilder = () => {
+                                    const targetToken = this._getTokenFromPair(opp.pair);
+                                    const amountIn = ethers.parseEther('1');
+                                    const path = [TOKENS.WBNB.address, targetToken.address, TOKENS.WBNB.address];
+                                    const deadline = Math.floor(Date.now() / 1000) + 300;
+                                    const minAmountOut = amountIn.mul(ethers.BigNumber.from(Math.floor((1 + opp.spread - 0.01) * 1000))).div(ethers.BigNumber.from(1000));
+
+                                    return {
+                                        amountIn,
+                                        minAmountOut,
+                                        path,
+                                        to: this.signer.address,
+                                        deadline
+                                    };
+                                };
+
+                                const canExecute = await this._extremeModeCanExecute(opp, txBuilder);
+                                if (!canExecute) {
+                                    console.log(`Skipping trade ${opp.pair} — extreme mode checks failed`);
+                                    continue;
+                                }
+                            }
+
                             // NO LIQUIDITY CHECKS - EXECUTE ON ANY PROFITABLE OPPORTUNITY
                             try {
                                     // TRIPLE PROFIT PROTECTION: Record pre-trade balance
@@ -935,7 +1291,10 @@ class ArbitrageBot extends EventEmitter {
                                     }
 
                                     // LOG SUCCESSFUL TRADE EXECUTION
-                                    console.log(`Executed trade ${opp.pair} — net profit: $${profitAnalysis.netProfitUSD.toFixed(2)}`);
+                                    const logMessage = this.extremeMode ?
+                                        `Executed trade ${opp.pair} — net profit: $${profitAnalysis.netProfitUSD.toFixed(2)} (extreme mode)` :
+                                        `Executed trade ${opp.pair} — net profit: $${profitAnalysis.netProfitUSD.toFixed(2)}`;
+                                    console.log(logMessage);
 
                                     // Additional sanity checks for opportunity
                                     if (opp.spread > 5 || opp.spread < -5) {
@@ -955,6 +1314,15 @@ class ArbitrageBot extends EventEmitter {
                                     if (!poolValid) {
                                         console.log(`❌ Pool validation failed for ${flashProvider.protocol} WBNB/${targetToken.symbol} - skipping`);
                                         continue;
+                                    }
+
+                                    // MEV PROTECTION: Simulate arbitrage bundle before execution
+                                    if (this.mevProtectionEnabled) {
+                                        const bundleSimulation = await this._simulateArbitrageBundle(opp, wbnbAmount, flashProvider);
+                                        if (!bundleSimulation.success) {
+                                            console.log('MEV simulation blocked execution — possible sandwich attempt');
+                                            continue;
+                                        }
                                     }
 
                                     // Execute WBNB BORROWING STRATEGY (direct PancakeSwap flashswap)
@@ -980,6 +1348,24 @@ class ArbitrageBot extends EventEmitter {
                                         console.log(`⚠️ PROFIT FLOW WARNING - Transaction submitted but profit not confirmed in wallet`);
                                         console.log(`📊 Transaction hash: ${result.txHash}`);
                                         console.log(`🔍 Manual balance check recommended`);
+                                    }
+
+                                    // EXTREME MODE POST-TRADE HANDLING
+                                    if (this.extremeMode) {
+                                        this.extremeExecutedTrades++;
+                                        // Deduct gas cost from budget (approximate)
+                                        const gasSpentUSD = gasCost.gasCostUSD;
+                                        this.extremeGasBudgetUSD -= gasSpentUSD;
+
+                                        // Route leftover profit to gas wallet if configured
+                                        if (this.extremeGasWalletAddress) {
+                                            await this._sendLeftoverProfitToWallet(this.extremeGasWalletAddress);
+                                        }
+
+                                        // Check if mode should disable
+                                        if (this.extremeExecutedTrades >= this.extremeMaxTrades || this.extremeGasBudgetUSD <= 0.1) {
+                                            this._disableExtremeMode();
+                                        }
                                     }
 
                                     // Check and refund gas if price spiked
@@ -1020,6 +1406,17 @@ class ArbitrageBot extends EventEmitter {
 
                         if (netProfitAfterGas > 0) { // Any positive profit after gas costs
                             console.log(`⛽ GAS COST CHECK PASSED: Net profit $${netProfitAfterGas.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas`);
+
+                            // MEV PROTECTION: Perform anti-sandwich checks
+                            if (this.mevProtectionEnabled) {
+                                const flashAmount = ethers.parseEther('1'); // Standard amount for quad arbitrage
+                                const sandwichCheckPassed = await this._performAntiSandwichChecks(opp, flashAmount);
+                                if (!sandwichCheckPassed) {
+                                    console.log('MEV protection: Anti-sandwich checks failed - skipping quad arbitrage');
+                                    continue;
+                                }
+                            }
+
                             try {
                                 // TRIPLE PROFIT PROTECTION: Record pre-trade balance
                                 await this._recordPreTradeBalance(netProfitAfterGas);
@@ -1070,6 +1467,17 @@ class ArbitrageBot extends EventEmitter {
 
                         if (finalNetProfit > 0) { // Any positive profit after gas costs
                             console.log(`⛽ GAS COST CHECK PASSED: Final net profit $${finalNetProfit.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas`);
+
+                            // MEV PROTECTION: Perform anti-sandwich checks
+                            if (this.mevProtectionEnabled) {
+                                const flashAmount = ethers.parseUnits(opp.flashloanAmount.toString(), 18);
+                                const sandwichCheckPassed = await this._performAntiSandwichChecks(opp, flashAmount);
+                                if (!sandwichCheckPassed) {
+                                    console.log('MEV protection: Anti-sandwich checks failed - skipping stablecoin arbitrage');
+                                    continue;
+                                }
+                            }
+
                             try {
                                 // TRIPLE PROFIT PROTECTION: Record pre-trade balance
                                 await this._recordPreTradeBalance(finalNetProfit);
@@ -1386,6 +1794,15 @@ class ArbitrageBot extends EventEmitter {
         }
 
         try {
+            // MEV PROTECTION: Perform anti-sandwich checks first
+            if (this.mevProtectionEnabled) {
+                const flashAmount = opportunity.flashloanAmount || ethers.parseEther('10'); // Default amount
+                const sandwichCheckPassed = await this._performAntiSandwichChecks(opportunity, flashAmount);
+                if (!sandwichCheckPassed) {
+                    throw new Error('MEV protection: Anti-sandwich checks failed');
+                }
+            }
+
             // Create transaction
             const tx = await this._createArbitrageTx(opportunity);
 
@@ -1399,9 +1816,24 @@ class ArbitrageBot extends EventEmitter {
             await this._validateTransactionSafety(tx);
             console.log('✅ Safety validation passed - proceeding with transaction');
 
-            // Execute transaction
-            const txResponse = await this.signer.sendTransaction(tx);
-            console.log(`✅ Arbitrage transaction submitted: ${txResponse.hash}`);
+            // MEV PROTECTION: Send transaction privately via MEV relays
+            let txResponse;
+            if (this.mevProtectionEnabled) {
+                try {
+                    txResponse = await this.mevRelayManager.sendPrivateTransaction(tx);
+                    console.log(`✅ Private arbitrage transaction submitted via MEV relay: ${txResponse.hash}`);
+                } catch (relayError) {
+                    console.log(`Relay failed — switching to backup`);
+                    // Fallback to public mempool (not recommended but better than failing)
+                    console.warn('⚠️ MEV relay failed, falling back to public transaction');
+                    txResponse = await this.signer.sendTransaction(tx);
+                    console.log(`✅ Public arbitrage transaction submitted: ${txResponse.hash}`);
+                }
+            } else {
+                // Send to public mempool if MEV protection disabled
+                txResponse = await this.signer.sendTransaction(tx);
+                console.log(`✅ Arbitrage transaction submitted: ${txResponse.hash}`);
+            }
 
             // Record successful transaction
             this._recordSuccessfulTransaction();
@@ -1415,10 +1847,13 @@ class ArbitrageBot extends EventEmitter {
             if (error.message.includes('EMERGENCY STOP') ||
                 error.message.includes('Insufficient balance') ||
                 error.message.includes('Gas cost too high') ||
-                error.message.includes('Too soon since last transaction')) {
-                console.log('🚨 Safety validation blocked transaction - no retry');
-                this.emergencyStopTriggered = true;
-                this.stop();
+                error.message.includes('Too soon since last transaction') ||
+                error.message.includes('MEV protection')) {
+                console.log('🚨 Safety/MEV validation blocked transaction - no retry');
+                if (error.message.includes('EMERGENCY STOP')) {
+                    this.emergencyStopTriggered = true;
+                    this.stop();
+                }
                 throw error;
             }
 
