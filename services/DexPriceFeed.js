@@ -33,10 +33,16 @@ class DexPriceFeed {
                 return;
             }
 
+            // Check if already initialized globally
+            if (global.__MORALIS_STARTED__) {
+                this.moralisInitialized = true;
+                return; // Already initialized, don't log again
+            }
+
             await initMoralis(process.env.MORALIS_API_KEY);
 
             this.moralisInitialized = true;
-            console.log('✅ Moralis API initialized for live DEX prices');
+            // Only log once globally
         } catch (error) {
             console.warn('Failed to initialize Moralis:', error.message);
             this.moralisInitialized = false;
@@ -117,47 +123,62 @@ class DexPriceFeed {
         const [token0, token1] = pair.split('/');
 
         try {
-            // THROTTLE API CALLS: Only fetch from 2 major DEXes to prevent 413 errors
-            // Prioritize PancakeSwap V2 and Uniswap (most reliable)
+            // BSC MAIN DEXes - use correct exchange identifiers for Moralis
+            const dexesToTry = [
+                { name: 'pancakeswap', alias: 'pancakeswap' }, // Main PancakeSwap on BSC
+                { name: 'biswap', alias: 'biswap' } // BiSwap on BSC
+            ];
 
-            // Fetch PancakeSwap prices from Moralis (PRIMARY)
-            try {
-                const pancakePrices = await this._getMoralisDexPrice(token0Address, token1Address, 'pancakeswapv2');
-                if (pancakePrices) {
-                    prices.pancakeswapv2 = {
-                        price: pancakePrices.price,
-                        liquidity: pancakePrices.liquidity || 'high',
-                        priceImpact: 0.001, // Low impact for major DEX
-                        recommended: true
-                    };
-                    prices.pancakeswap = prices.pancakeswapv2; // Alias for compatibility
+            for (const dex of dexesToTry) {
+                // Implement retry logic for throttling
+                let attempts = 0;
+                const maxAttempts = 3;
+
+                while (attempts < maxAttempts) {
+                    try {
+                        const dexPrices = await this._getMoralisDexPrice(token0Address, token1Address, dex.name);
+                        if (dexPrices) {
+                            prices[dex.alias] = {
+                                price: dexPrices.price,
+                                liquidity: dexPrices.liquidity || 'high',
+                                priceImpact: dex.alias === 'pancakeswap' ? 0.001 : 0.002,
+                                recommended: true
+                            };
+
+                            // Add alias for compatibility
+                            if (dex.alias === 'pancakeswap') {
+                                prices.pancakeswapv2 = prices[dex.alias];
+                            }
+
+                            console.log(`✅ Moralis fetched ${dex.alias} price for ${pair}: ${dexPrices.price.toFixed(6)}`);
+                            break; // Success, exit retry loop
+                        } else {
+                            console.warn(`⚠️ Moralis returned no data for ${dex.name} on ${pair} (attempt ${attempts + 1})`);
+                            break; // No data, don't retry
+                        }
+                    } catch (error) {
+                        attempts++;
+                        if (error.message.includes('rate limit') || error.message.includes('429') || error.message.includes('throttle')) {
+                            console.warn(`⚠️ Moralis rate limited for ${dex.name}, retrying in ${200 * attempts}ms (attempt ${attempts}/${maxAttempts})`);
+                            await new Promise(resolve => setTimeout(resolve, 200 * attempts));
+                        } else {
+                            console.warn(`⚠️ Moralis error for ${dex.name}: ${error.message}`);
+                            break; // Non-rate-limit error, don't retry
+                        }
+                    }
                 }
-            } catch (error) {
-                console.warn('PancakeSwap Moralis fetch failed, skipping');
+
+                // Small delay between different DEXes
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
 
-            // Add small delay to prevent rate limiting
-            await new Promise(resolve => setTimeout(resolve, 200));
-
-            // Fetch Uniswap V2 prices (SECONDARY - less critical)
-            try {
-                const uniswapPrices = await this._getMoralisDexPrice(token0Address, token1Address, 'uniswapv2');
-                if (uniswapPrices) {
-                    prices.uniswap = {
-                        price: uniswapPrices.price,
-                        liquidity: uniswapPrices.liquidity || 'moderate',
-                        priceImpact: 0.003, // Higher impact
-                        recommended: true
-                    };
-                }
-            } catch (error) {
-                console.warn('Uniswap Moralis fetch failed, skipping');
+            const fetchedCount = Object.keys(prices).length;
+            if (fetchedCount > 0) {
+                console.log(`✅ Moralis API fetched prices for ${pair}: ${fetchedCount} DEXes`);
+            } else {
+                console.warn(`⚠️ Moralis API returned 0 DEXes for ${pair} - relying on on-chain data`);
             }
 
-            // SKIP PancakeSwap V3 and Biswap to reduce API load and prevent 413 errors
-            // These will be covered by on-chain queries if needed
-
-            console.log(`✅ Moralis API fetched prices for ${pair}: ${Object.keys(prices).length} DEXes (throttled)`);
             return prices;
 
         } catch (error) {

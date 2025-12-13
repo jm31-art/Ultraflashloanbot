@@ -302,13 +302,29 @@ class ArbitrageBot extends EventEmitter {
      */
     async calculateArbitrageProfit(opportunity) {
         try {
-            const { path, expectedProfit, amountIn } = opportunity;
-            const [tokenA, tokenB, tokenC] = path;
+            const { path, path_symbols, expectedProfit, amountIn } = opportunity;
 
-            // Get token addresses
-            const tokenAAddress = TOKENS[tokenA].address;
-            const tokenBAddress = TOKENS[tokenB].address;
-            const tokenCAddress = TOKENS[tokenC].address;
+            // Validate opportunity data
+            if (!path || !Array.isArray(path) || path.length !== 3) {
+                console.error('❌ Invalid path in opportunity:', path);
+                return null;
+            }
+
+            if (!amountIn || isNaN(amountIn) || amountIn <= 0) {
+                console.error('❌ Invalid amountIn in opportunity:', amountIn);
+                return null;
+            }
+
+            // Python now returns addresses directly, but we also get symbols for logging
+            const [tokenAAddress, tokenBAddress, tokenCAddress] = path;
+            const pathSymbols = path_symbols || ['Unknown', 'Unknown', 'Unknown'];
+
+            // Validate addresses
+            if (!tokenAAddress || !tokenBAddress || !tokenCAddress ||
+                !ethers.isAddress(tokenAAddress) || !ethers.isAddress(tokenBAddress) || !ethers.isAddress(tokenCAddress)) {
+                console.error('❌ Invalid token addresses in path:', path);
+                return null;
+            }
 
             // Get router
             const router = await this.getRouterContract('PANCAKESWAP');
@@ -316,24 +332,82 @@ class ArbitrageBot extends EventEmitter {
             // Calculate amounts for triangular arbitrage
             const amountInWei = ethers.parseEther(amountIn.toString());
 
-            // Get amounts out for each leg
-            const amountsOut1 = await router.getAmountsOut(amountInWei, [tokenAAddress, tokenBAddress]);
-            const amountsOut2 = await router.getAmountsOut(amountsOut1[1], [tokenBAddress, tokenCAddress]);
-            const amountsOut3 = await router.getAmountsOut(amountsOut2[1], [tokenCAddress, tokenAAddress]);
+            // Validate first swap: A -> B
+            let amountsOut1;
+            try {
+                amountsOut1 = await router.getAmountsOut(amountInWei, [tokenAAddress, tokenBAddress]);
+                if (!amountsOut1 || amountsOut1.length < 2 || !amountsOut1[1]) {
+                    console.error('❌ Invalid amountsOut1 for A->B swap');
+                    return null;
+                }
+            } catch (error) {
+                console.error('❌ Failed to get amounts for A->B swap:', error.message);
+                return null;
+            }
+
+            // Validate second swap: B -> C
+            let amountsOut2;
+            try {
+                amountsOut2 = await router.getAmountsOut(amountsOut1[1], [tokenBAddress, tokenCAddress]);
+                if (!amountsOut2 || amountsOut2.length < 2 || !amountsOut2[1]) {
+                    console.error('❌ Invalid amountsOut2 for B->C swap');
+                    return null;
+                }
+            } catch (error) {
+                console.error('❌ Failed to get amounts for B->C swap:', error.message);
+                return null;
+            }
+
+            // Validate third swap: C -> A (back to original token)
+            let amountsOut3;
+            try {
+                amountsOut3 = await router.getAmountsOut(amountsOut2[1], [tokenCAddress, tokenAAddress]);
+                if (!amountsOut3 || amountsOut3.length < 2 || !amountsOut3[1]) {
+                    console.error('❌ Invalid amountsOut3 for C->A swap');
+                    return null;
+                }
+            } catch (error) {
+                console.error('❌ Failed to get amounts for C->A swap:', error.message);
+                return null;
+            }
 
             const finalAmount = amountsOut3[1];
+
+            // Validate final amount
+            if (!finalAmount || finalAmount <= 0n) {
+                console.error('❌ Invalid final amount:', finalAmount);
+                return null;
+            }
+
             const profit = finalAmount - amountInWei;
+
+            // Only positive profit is arbitrage
+            if (profit <= 0n) {
+                console.log(`⚠️ No profit in triangular arbitrage: ${ethers.formatEther(profit)} ${tokenA}`);
+                return null;
+            }
+
             const profitUSD = parseFloat(ethers.formatEther(profit)) * 567; // Approximate BNB price
+
+            console.log(`💰 Triangular arbitrage calculation: ${pathSymbols.join('→')}`);
+            console.log(`   Input: ${amountIn} ${pathSymbols[0]} (${ethers.formatEther(amountInWei)} wei)`);
+            console.log(`   Output: ${ethers.formatEther(finalAmount)} ${pathSymbols[0]}`);
+            console.log(`   Profit: ${ethers.formatEther(profit)} ${pathSymbols[0]} ($${profitUSD.toFixed(4)})`);
 
             return {
                 profitWei: profit,
                 profitUSD: profitUSD,
                 finalAmount: finalAmount,
-                path: [tokenAAddress, tokenBAddress, tokenCAddress, tokenAAddress]
+                path: [tokenAAddress, tokenBAddress, tokenCAddress, tokenAAddress],
+                intermediateAmounts: {
+                    afterFirstSwap: amountsOut1[1],
+                    afterSecondSwap: amountsOut2[1]
+                }
             };
 
         } catch (error) {
             console.error('❌ Profit calculation failed:', error.message);
+            console.error('   Opportunity:', JSON.stringify(opportunity, null, 2));
             return null;
         }
     }
@@ -343,12 +417,25 @@ class ArbitrageBot extends EventEmitter {
      */
     async executeTriangularArbitrage(opportunity) {
         try {
-            console.log(`🔄 Executing triangular arbitrage: ${opportunity.path.join(' -> ')}`);
+            const pathSymbols = opportunity.path_symbols || opportunity.path.map(addr => {
+                // Try to find symbol for address
+                for (const [symbol, token] of Object.entries(TOKENS)) {
+                    if (token.address.toLowerCase() === addr.toLowerCase()) return symbol;
+                }
+                return addr.substring(0, 6) + '...';
+            });
+
+            console.log(`🔄 Executing triangular arbitrage: ${pathSymbols.join(' → ')}`);
 
             // Calculate profit
             const profitCalc = await this.calculateArbitrageProfit(opportunity);
-            if (!profitCalc || profitCalc.profitUSD < this.minProfitUSD) {
-                console.log(`⚠️ Profit too low: $${profitCalc?.profitUSD?.toFixed(2) || 0} < $${this.minProfitUSD}`);
+            if (!profitCalc) {
+                console.log(`⚠️ Could not calculate profit for this opportunity`);
+                return null;
+            }
+
+            if (profitCalc.profitUSD < this.minProfitUSD) {
+                console.log(`⚠️ Profit too low: $${profitCalc.profitUSD.toFixed(2)} < $${this.minProfitUSD} minimum`);
                 return null;
             }
 
@@ -362,9 +449,11 @@ class ArbitrageBot extends EventEmitter {
             );
 
             if (!isSafe) {
-                console.log(`⚠️ Trade not safe due to slippage`);
+                console.log(`⚠️ Trade not safe due to slippage - skipping execution`);
                 return null;
             }
+
+            console.log(`✅ All validations passed - executing triangular arbitrage`);
 
             // Execute the trade
             const result = await this.executeTrade(
@@ -376,12 +465,13 @@ class ArbitrageBot extends EventEmitter {
                 profitCalc.path
             );
 
-            console.log(`💰 Triangular arbitrage profit: $${profitCalc.profitUSD.toFixed(2)}`);
+            console.log(`💰 Triangular arbitrage completed: $${profitCalc.profitUSD.toFixed(2)} profit`);
+            console.log(`📊 Transaction: ${result.txHash}`);
 
             return result;
 
         } catch (error) {
-            console.error('❌ Triangular arbitrage failed:', error.message);
+            console.error('❌ Triangular arbitrage execution failed:', error.message);
             throw error;
         }
     }
@@ -426,7 +516,21 @@ class ArbitrageBot extends EventEmitter {
 
                         if (result.success) {
                             const realPricesUsed = result.used_real_prices ? 'real' : 'fallback';
-                            console.log(`🐍 Python calculator found ${result.opportunities.length} opportunities (using ${realPricesUsed} prices)`);
+
+                            // Only log profitable opportunities
+                            const profitableOpportunities = result.opportunities.filter(opp =>
+                                opp.profit_percentage && opp.profit_percentage > 0.1
+                            );
+
+                            if (profitableOpportunities.length > 0) {
+                                console.log(`🐍 Found ${profitableOpportunities.length} profitable arbitrage opportunities (using ${realPricesUsed} prices):`);
+                                profitableOpportunities.forEach((opp, index) => {
+                                    console.log(`   ${index + 1}. ${opp.path.join('→')} | Profit: ${opp.profit_percentage.toFixed(4)}% | $${opp.profit_amount?.toFixed(4) || 'N/A'}`);
+                                });
+                            } else {
+                                console.log(`🐍 No profitable arbitrage opportunities found (using ${realPricesUsed} prices)`);
+                            }
+
                             resolve(result);
                         } else {
                             console.warn(`⚠️ Python calculator failed: ${result.error}`);

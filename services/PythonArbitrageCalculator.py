@@ -111,19 +111,21 @@ class ArbitrageCalculator:
 
             profit_percentage = ((final_amount - amount_in) / amount_in) * 100
 
-            # Only return profitable opportunities (> 0.1%)
-            if profit_percentage > 0.1:
+            # Only return profitable opportunities (> 0.5% for meaningful arbitrage)
+            if profit_percentage > 0.5:
                 return {
-                    'path': path,
-                    'token_in': token_a,
+                    'path': [self.TOKENS[token_a], self.TOKENS[token_b], self.TOKENS[token_c]],  # Return addresses, not symbols
+                    'path_symbols': path,  # Keep symbols for logging
+                    'token_in': self.TOKENS[token_a],
                     'amount_in': amount_in,
                     'expected_out': final_amount,
                     'profit_percentage': profit_percentage,
                     'profit_amount': final_amount - amount_in,
-                    'dexes': ['pancakeswap', 'pancakeswap', 'pancakeswap'],  # Default DEXes
+                    'dexes': ['pancakeswap', 'pancakeswap', 'pancakeswap'],
                     'estimated_gas': 250000,
                     'priority': 'high' if profit_percentage > 1.0 else 'medium',
-                    'type': 'triangular'
+                    'type': 'triangular',
+                    'timestamp': datetime.utcnow().isoformat() + 'Z'
                 }
 
             return None
