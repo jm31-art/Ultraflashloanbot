@@ -113,19 +113,16 @@ class ArbitrageCalculator:
 
             # Only return profitable opportunities (> 0.5% for meaningful arbitrage)
             if profit_percentage > 0.5:
+                # Convert amounts to Wei (multiply by 10^18 for BSC tokens)
+                amount_in_wei = str(int(amount_in * (10 ** 18)))
+                expected_profit_wei = str(int((final_amount - amount_in) * (10 ** 18)))
+
                 return {
-                    'path': [self.TOKENS[token_a], self.TOKENS[token_b], self.TOKENS[token_c]],  # Return addresses, not symbols
-                    'path_symbols': path,  # Keep symbols for logging
-                    'token_in': self.TOKENS[token_a],
-                    'amount_in': amount_in,
-                    'expected_out': final_amount,
-                    'profit_percentage': profit_percentage,
-                    'profit_amount': final_amount - amount_in,
-                    'dexes': ['pancakeswap', 'pancakeswap', 'pancakeswap'],
-                    'estimated_gas': 250000,
-                    'priority': 'high' if profit_percentage > 1.0 else 'medium',
-                    'type': 'triangular',
-                    'timestamp': datetime.utcnow().isoformat() + 'Z'
+                    'path': [self.TOKENS[token_a], self.TOKENS[token_b], self.TOKENS[token_c]],  # Array of token addresses
+                    'amountIn': amount_in_wei,  # String in Wei
+                    'expectedProfit': expected_profit_wei,  # String in Wei
+                    'router': 'PANCAKESWAP',  # String router name
+                    'timestamp': int(time.time())  # Unix timestamp
                 }
 
             return None
