@@ -387,12 +387,18 @@ class ArbitrageBot extends EventEmitter {
     }
 
     /**
-     * Run Python arbitrage calculator
+     * Run Python arbitrage calculator with real price data
      */
     async runPythonCalculator(amountIn = 1.0) {
-        return new Promise((resolve, reject) => {
+        return new Promise(async (resolve, reject) => {
             try {
-                const pythonProcess = spawn('python3', [this.pythonCalculatorPath, amountIn.toString()], {
+                // Fetch real-time price data from DexPriceFeed
+                const priceData = await this._getRealTimePrices();
+
+                // Prepare price data for Python script
+                const priceJson = JSON.stringify(priceData);
+
+                const pythonProcess = spawn('python3', [this.pythonCalculatorPath, amountIn.toString(), priceJson], {
                     stdio: ['pipe', 'pipe', 'pipe']
                 });
 
@@ -419,7 +425,8 @@ class ArbitrageBot extends EventEmitter {
                         const result = JSON.parse(stdout.trim());
 
                         if (result.success) {
-                            console.log(`🐍 Python calculator found ${result.opportunities.length} opportunities`);
+                            const realPricesUsed = result.used_real_prices ? 'real' : 'fallback';
+                            console.log(`🐍 Python calculator found ${result.opportunities.length} opportunities (using ${realPricesUsed} prices)`);
                             resolve(result);
                         } else {
                             console.warn(`⚠️ Python calculator failed: ${result.error}`);
@@ -455,6 +462,50 @@ class ArbitrageBot extends EventEmitter {
                 });
             }
         });
+    }
+
+    /**
+     * Get real-time prices for arbitrage calculation
+     */
+    async _getRealTimePrices() {
+        try {
+            // Import DexPriceFeed dynamically to avoid circular dependencies
+            const DexPriceFeed = require('../services/DexPriceFeed');
+            const priceFeed = new DexPriceFeed(this.provider);
+
+            const prices = {};
+
+            // Get prices for all token pairs used in triangular arbitrage
+            const pairs = [
+                'WBNB/USDT', 'WBNB/BTCB', 'USDT/BTCB',
+                'USDT/WBNB', 'BTCB/WBNB', 'BTCB/USDT'
+            ];
+
+            for (const pair of pairs) {
+                try {
+                    const pairPrices = await priceFeed.getAllPrices(pair);
+                    if (pairPrices && Object.keys(pairPrices).length > 0) {
+                        prices[pair] = pairPrices;
+                    }
+                } catch (error) {
+                    console.warn(`⚠️ Failed to get prices for ${pair}:`, error.message);
+                }
+            }
+
+            return {
+                prices: prices,
+                timestamp: Date.now(),
+                source: 'dex_price_feed'
+            };
+
+        } catch (error) {
+            console.warn('⚠️ Failed to fetch real-time prices, using empty data:', error.message);
+            return {
+                prices: {},
+                timestamp: Date.now(),
+                source: 'fallback'
+            };
+        }
     }
 
     /**

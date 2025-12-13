@@ -43,19 +43,25 @@ class ArbitrageCalculator:
             ['BTCB', 'USDT', 'WBNB']
         ]
 
-    def calculate_opportunities(self, amount_in: float = 1.0) -> Dict[str, Any]:
+    def calculate_opportunities(self, amount_in: float = 1.0, price_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Calculate triangular arbitrage opportunities
+        Args:
+            amount_in: Amount to start arbitrage with
+            price_data: Real-time price data from Node.js (optional)
         Returns JSON with opportunities and any errors
         """
         try:
             opportunities = []
             errors = []
 
+            # Use provided price data or fallback to hardcoded rates
+            exchange_rates = self._get_exchange_rates(price_data)
+
             # Calculate opportunities for each path
             for path in self.TRIANGULAR_PATHS:
                 try:
-                    opportunity = self._calculate_path_profit(path, amount_in)
+                    opportunity = self._calculate_path_profit(path, amount_in, exchange_rates)
                     if opportunity:
                         opportunities.append(opportunity)
                 except Exception as e:
@@ -74,7 +80,8 @@ class ArbitrageCalculator:
                 'opportunities': opportunities,
                 'errors': errors,
                 'total_opportunities': len(opportunities),
-                'total_errors': len(errors)
+                'total_errors': len(errors),
+                'used_real_prices': price_data is not None
             }
 
         except Exception as e:
@@ -86,7 +93,7 @@ class ArbitrageCalculator:
                 'errors': [{'type': 'general_error', 'error': str(e)}]
             }
 
-    def _calculate_path_profit(self, path: List[str], amount_in: float) -> Optional[Dict[str, Any]]:
+    def _calculate_path_profit(self, path: List[str], amount_in: float, exchange_rates: Dict[str, float]) -> Optional[Dict[str, Any]]:
         """
         Calculate profit for a specific triangular arbitrage path
         """
@@ -96,15 +103,11 @@ class ArbitrageCalculator:
 
             token_a, token_b, token_c = path
 
-            # Simulate exchange rates (in production, fetch from DEX APIs)
-            # These are example rates - replace with real DEX price fetching
-            rates = self._get_exchange_rates()
-
-            # Calculate the arbitrage
+            # Calculate the arbitrage using provided exchange rates
             # Start with amount_in of token_a
-            amount_b = amount_in * rates.get(f'{token_a}_{token_b}', 1.0)
-            amount_c = amount_b * rates.get(f'{token_b}_{token_c}', 1.0)
-            final_amount = amount_c * rates.get(f'{token_c}_{token_a}', 1.0)
+            amount_b = amount_in * exchange_rates.get(f'{token_a}_{token_b}', 1.0)
+            amount_c = amount_b * exchange_rates.get(f'{token_b}_{token_c}', 1.0)
+            final_amount = amount_c * exchange_rates.get(f'{token_c}_{token_a}', 1.0)
 
             profit_percentage = ((final_amount - amount_in) / amount_in) * 100
 
@@ -119,7 +122,8 @@ class ArbitrageCalculator:
                     'profit_amount': final_amount - amount_in,
                     'dexes': ['pancakeswap', 'pancakeswap', 'pancakeswap'],  # Default DEXes
                     'estimated_gas': 250000,
-                    'priority': 'high' if profit_percentage > 1.0 else 'medium'
+                    'priority': 'high' if profit_percentage > 1.0 else 'medium',
+                    'type': 'triangular'
                 }
 
             return None
@@ -128,12 +132,36 @@ class ArbitrageCalculator:
             logging.error(f"Error calculating path {path}: {e}")
             return None
 
-    def _get_exchange_rates(self) -> Dict[str, float]:
+    def _get_exchange_rates(self, price_data: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
         """
         Get exchange rates between token pairs
-        In production, fetch from DEX APIs or on-chain data
+        Uses real price data when available, otherwise falls back to hardcoded rates
         """
-        # Example rates - replace with real data fetching
+        if price_data and 'prices' in price_data:
+            # Use real price data from Node.js
+            rates = {}
+            prices = price_data['prices']
+
+            # Extract rates from price data
+            for pair_key, pair_data in prices.items():
+                if isinstance(pair_data, dict) and 'price' in pair_data:
+                    # pair_key format: "TOKEN1/TOKEN2"
+                    if '/' in pair_key:
+                        token1, token2 = pair_key.split('/')
+                        rate_key = f'{token1}_{token2}'
+                        rates[rate_key] = pair_data['price']
+
+                        # Also add reverse rate
+                        reverse_key = f'{token2}_{token1}'
+                        rates[reverse_key] = 1.0 / pair_data['price'] if pair_data['price'] > 0 else 1.0
+
+            # If we got some real rates, use them
+            if rates:
+                print(f"Using {len(rates)} real exchange rates from Node.js", file=sys.stderr)
+                return rates
+
+        # Fallback to hardcoded rates
+        print("Using fallback hardcoded exchange rates", file=sys.stderr)
         return {
             'WBNB_USDT': 567.0,    # 1 WBNB = 567 USDT
             'USDT_WBNB': 1/567.0,  # 1 USDT = ~0.00176 WBNB
@@ -146,19 +174,31 @@ class ArbitrageCalculator:
 def main():
     """
     Main entry point - parse arguments and return JSON
+    Usage: python3 script.py <amount_in> [price_data_json]
     """
     try:
         # Parse command line arguments
         amount_in = 1.0  # Default 1 token
+        price_data = None
+
         if len(sys.argv) > 1:
             try:
                 amount_in = float(sys.argv[1])
             except ValueError:
                 amount_in = 1.0
 
+        # Check for price data as second argument (JSON string)
+        if len(sys.argv) > 2:
+            try:
+                price_data = json.loads(sys.argv[2])
+                print(f"Received price data with {len(price_data.get('prices', {}))} price entries", file=sys.stderr)
+            except json.JSONDecodeError as e:
+                print(f"Failed to parse price data JSON: {e}", file=sys.stderr)
+                price_data = None
+
         # Create calculator and calculate opportunities
         calculator = ArbitrageCalculator()
-        result = calculator.calculate_opportunities(amount_in)
+        result = calculator.calculate_opportunities(amount_in, price_data)
 
         # Output only valid JSON to stdout
         print(json.dumps(result, indent=None, separators=(',', ':')))
