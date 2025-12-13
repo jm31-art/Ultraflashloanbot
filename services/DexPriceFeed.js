@@ -387,7 +387,7 @@ class DexPriceFeed {
     }
 
     _getTokenAddress(symbol) {
-        return TOKENS[symbol]?.address || ethers.constants.AddressZero;
+        return TOKENS[symbol]?.address || ethers.ZeroAddress;
     }
 
     async getPrice(token0, token1) {
@@ -458,7 +458,7 @@ class DexPriceFeed {
                 amountIn,
                 minAmountOut,
                 path,
-                ethers.constants.AddressZero, // Use zero address for estimation
+                ethers.ZeroAddress, // Use zero address for estimation
                 deadline
             );
 

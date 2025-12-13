@@ -31,10 +31,6 @@ class PriceService {
         } catch (error) {
             // Use defaults if config file doesn't exist
         }
-
-        if (!this.provider) {
-            this.provider = new ethers.JsonRpcProvider(this.CONFIG.bsc_rpc);
-        }
         
         this.routerAbi = [
             {

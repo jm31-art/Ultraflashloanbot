@@ -69,7 +69,7 @@ class FlashloanSimulator {
             for (const method of methods) {
                 try {
                     const pool = await dodoRouter[method](normalizedTokenAddress);
-                    if (pool && pool !== ethers.constants.AddressZero) {
+                    if (pool && pool !== ethers.ZeroAddress) {
                         const poolContract = new ethers.Contract(pool, IERC20_ABI, this.provider);
                         // Verify pool has balance
                         const balance = await poolContract.balanceOf(pool);

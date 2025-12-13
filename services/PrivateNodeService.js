@@ -14,14 +14,6 @@ class PrivateNodeService {
 
         try {
             // Initialize HTTP provider
-            this.provider = new ethers.JsonRpcProvider(
-                this.config.url,
-                this.config.chainId,
-                {
-                    name: 'BSC-Private',
-                    headers: this.config.settings.headers
-                }
-            );
 
             // Initialize WebSocket provider if enabled
             if (this.config.websocket.enabled) {

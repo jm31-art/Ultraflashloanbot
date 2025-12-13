@@ -28,7 +28,7 @@ const CURVE_POOL_ABI = [
 
 class DexLiquidityChecker {
     constructor(provider) {
-        this.provider = provider || new ethers.JsonRpcProvider('https://bsc-dataseed.binance.org/');
+        this.provider = provider;
         this.poolAddresses = require('../config/pool_addresses.json');
         this.tokenPrices = {
             '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c': 300, // WBNB

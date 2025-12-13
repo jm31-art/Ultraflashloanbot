@@ -156,7 +156,7 @@ class LiquidationBot extends EventEmitter {
             try {
                 // Simple call to verify connection
                 if (protocol === 'AAVE') {
-                    await contract.getUserAccountData(ethers.constants.AddressZero);
+                    await contract.getUserAccountData(ethers.ZeroAddress);
                 }
                 console.log(`✅ ${protocol} contract connected`);
             } catch (error) {

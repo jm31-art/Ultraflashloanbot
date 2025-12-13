@@ -14,7 +14,6 @@ class StartupManager {
             console.log('Initializing bot systems...');
 
             // Initialize provider
-            this.provider = new ethers.JsonRpcProvider(this.config.rpcUrl);
             console.log('Provider initialized:', await this.provider.getNetwork());
 
             // Initialize signer

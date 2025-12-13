@@ -1,11 +1,11 @@
 const { ethers } = require('ethers');
 
 function safeGetAddress(address) {
+    if (!address) return address;
     try {
         return ethers.getAddress(address);
-    } catch (error) {
-        console.warn(`Warning: Address checksum failed for ${address}`);
-        return address;
+    } catch {
+        return address.toLowerCase();
     }
 }
 

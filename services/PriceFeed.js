@@ -81,13 +81,13 @@ class PriceFeed {
             // Try both token orderings
             let pairAddress = await factory.getPair(normalizedToken0, normalizedToken1);
             let reversed = false;
-            
-            if (pairAddress === ethers.constants.AddressZero) {
+
+            if (pairAddress === ethers.ZeroAddress) {
                 pairAddress = await factory.getPair(normalizedToken1, normalizedToken0);
                 reversed = true;
             }
 
-            if (pairAddress === ethers.constants.AddressZero) {
+            if (pairAddress === ethers.ZeroAddress) {
                 console.log(`No pair found for ${token0.symbol}/${token1.symbol} on ${dexConfig.name}`);
                 return null;
             }

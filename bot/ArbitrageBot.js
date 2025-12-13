@@ -2973,6 +2973,11 @@ class ArbitrageBot extends EventEmitter {
             // Ethers v6 provider creation
             this.provider = new ethers.JsonRpcProvider(rpcUrl);
 
+            // Defensive check
+            if (typeof this.provider.getBlockNumber !== 'function') {
+                throw new Error('Provider does not have getBlockNumber method');
+            }
+
             // Test connection with multiple methods
             const network = await this.provider.getNetwork();
             const blockNumber = await this.provider.getBlockNumber();
