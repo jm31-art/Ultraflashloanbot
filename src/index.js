@@ -32,19 +32,19 @@ async function main() {
     const paths = generateTriangularPaths();
     console.log(`Generated ${paths.length} triangular arbitrage paths`);
 
-    // Test amount (1 WBNB)
-    const amountInWei = ethers.parseEther("1");
-    const tokenPriceUsd = 567; // Approximate BNB price
-
-    // Flashloan contract address (deploy this first)
+    // Flashloan contract address
     const flashloanContractAddress = process.env.FLASHLOAN_ARB_CONTRACT;
 
     if (!flashloanContractAddress) {
-      console.log("⚠️ FLASHLOAN_CONTRACT_ADDRESS not set - running in dry-run mode");
+      console.log("❌ FLASHLOAN_ARB_CONTRACT not set in .env");
+      console.log("Please deploy FlashloanExecutor.sol and add address to .env");
+      return;
     }
 
-    // Run arbitrage detection
-    const result = await runArbitrage(paths, amountInWei, tokenPriceUsd, signer, flashloanContractAddress);
+    console.log(`Flashloan contract: ${flashloanContractAddress}`);
+
+    // Run arbitrage engine (dynamic sizing, MEV protection, extreme mode)
+    const result = await runArbitrage(paths, signer, flashloanContractAddress);
 
     if (result) {
       if (result.dryRun) {
