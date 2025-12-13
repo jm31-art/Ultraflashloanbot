@@ -165,9 +165,20 @@ class PriceFeed {
         const stableTokens = ['USDT', 'USDC', 'BUSD'];
         const baseTokens = ['WBNB', 'ETH', 'BTCB'];
 
+        // Convert tokens array to object keyed by symbol if needed
+        let tokensObj = tokens;
+        if (Array.isArray(tokens)) {
+            tokensObj = {};
+            for (const token of tokens) {
+                if (token && token.symbol) {
+                    tokensObj[token.symbol] = token;
+                }
+            }
+        }
+
         // Get prices from DexPriceFeed for live DEX data
         const dexPrices = {};
-        for (const tokenSymbol of Object.keys(tokens)) {
+        for (const tokenSymbol of Object.keys(tokensObj)) {
             if (tokenSymbol !== 'USDT') { // Skip USDT as base
                 try {
                     const pair = `${tokenSymbol}/USDT`;
@@ -180,7 +191,7 @@ class PriceFeed {
         }
 
         // Get prices from multiple DEXes
-        for (const [tokenSymbol, tokenData] of Object.entries(tokens)) {
+        for (const [tokenSymbol, tokenData] of Object.entries(tokensObj)) {
             newPrices[tokenSymbol] = {
                 dexPrices: {},
                 geckoPrice: null,
@@ -196,11 +207,11 @@ class PriceFeed {
             // For base tokens, try to get price from stable pairs first
             if (baseTokens.includes(tokenSymbol)) {
                 for (const stableSymbol of stableTokens) {
-                    if (tokens[stableSymbol]) {
+                    if (tokensObj[stableSymbol]) {
                         const price = await this.getPriceFromDex(
                             dexConfigs.PANCAKESWAP,
                             tokenData,
-                            tokens[stableSymbol]
+                            tokensObj[stableSymbol]
                         );
                         if (price) {
                             newPrices[tokenSymbol].basePrice = price;
@@ -222,7 +233,7 @@ class PriceFeed {
                         const price = await this.getPriceFromDex(
                             dexConfig,
                             tokenData,
-                            tokens.USDT // Using USDT as base for price comparison
+                            tokensObj.USDT // Using USDT as base for price comparison
                         );
                         if (price) {
                             newPrices[tokenSymbol].dexPrices[dexName] = price;

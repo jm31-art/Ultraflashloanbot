@@ -77,6 +77,30 @@ class ArbitrageBot extends EventEmitter {
     }
 
     /**
+     * Initialize the arbitrage bot (required by UnifiedStrategyManager)
+     */
+    async initialize() {
+        console.log('🔄 Initializing arbitrage bot...');
+
+        try {
+            // Test provider connection
+            await this.provider.getBlockNumber();
+
+            // Test signer
+            if (!this.signer.address) {
+                throw new Error('Signer not properly initialized');
+            }
+
+            console.log('✅ Arbitrage bot initialized successfully');
+            return true;
+
+        } catch (error) {
+            console.error('❌ Failed to initialize arbitrage bot:', error.message);
+            return false;
+        }
+    }
+
+    /**
      * Safely initialize router contract
      */
     async getRouterContract(dexName) {
