@@ -113,16 +113,16 @@ class ArbitrageCalculator:
 
             # Only return profitable opportunities (> 0.5% for meaningful arbitrage)
             if profit_percentage > 0.5:
-                # Convert amounts to Wei (multiply by 10^18 for BSC tokens)
-                amount_in_wei = str(int(amount_in * (10 ** 18)))
-                expected_profit_wei = str(int((final_amount - amount_in) * (10 ** 18)))
+                # Convert profit to USD (approximate BNB price ~$567)
+                profit_usd = (final_amount - amount_in) * 567
 
                 return {
                     'path': [self.TOKENS[token_a], self.TOKENS[token_b], self.TOKENS[token_c]],  # Array of token addresses
-                    'amountIn': amount_in_wei,  # String in Wei
-                    'expectedProfit': expected_profit_wei,  # String in Wei
-                    'router': 'PANCAKESWAP',  # String router name
-                    'timestamp': int(time.time())  # Unix timestamp
+                    'amountIn': amount_in,  # Number (float)
+                    'amountOut': final_amount,  # Number (float)
+                    'expectedProfitUSD': profit_usd,  # Number (USD value)
+                    'spread': profit_percentage,  # Profit percentage
+                    'router': 'PANCAKESWAP'  # String router name
                 }
 
             return None

@@ -1,6 +1,6 @@
 const { ethers } = require('ethers');
 const axios = require('axios');
-const { initMoralis, Moralis } = require('../utils/moralisSingleton');
+const moralisService = require('../utils/MoralisService');
 const { DEX_CONFIGS, TOKENS } = require('../config/dex');
 
 class DexPriceFeed {
@@ -33,16 +33,10 @@ class DexPriceFeed {
                 return;
             }
 
-            // Check if already initialized globally
-            if (global.__MORALIS_STARTED__) {
-                this.moralisInitialized = true;
-                return; // Already initialized, don't log again
-            }
-
-            await initMoralis(process.env.MORALIS_API_KEY);
-
+            // Use singleton MoralisService
+            await moralisService.initialize(process.env.MORALIS_API_KEY);
             this.moralisInitialized = true;
-            // Only log once globally
+
         } catch (error) {
             console.warn('Failed to initialize Moralis:', error.message);
             this.moralisInitialized = false;
@@ -198,6 +192,11 @@ class DexPriceFeed {
             this.lastApiCall = Date.now();
 
             // Use Moralis EvmApi to get token prices from specific DEX
+            const Moralis = moralisService.getClient();
+            if (!Moralis) {
+                throw new Error('Moralis client not available');
+            }
+
             const response = await Moralis.EvmApi.token.getTokenPrice({
                 address: token0Address,
                 chain: '0x38', // BSC mainnet

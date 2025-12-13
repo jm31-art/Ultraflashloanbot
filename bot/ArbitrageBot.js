@@ -299,12 +299,119 @@ class ArbitrageBot extends EventEmitter {
     }
 
     /**
+     * Display detailed arbitrage opportunity information
+     */
+    async _displayArbitrageOpportunity(opportunity, profitUSD) {
+        try {
+            const { path, amountIn, amountOut, expectedProfitUSD, router, spread } = opportunity;
+
+            // Get token symbols for display
+            const pathSymbols = path.map(addr => {
+                for (const [symbol, token] of Object.entries(TOKENS)) {
+                    if (token.address.toLowerCase() === addr.toLowerCase()) return symbol;
+                }
+                return addr.substring(0, 6) + '...';
+            });
+
+            console.log(`\n🎯 ARBITRAGE OPPORTUNITY FOUND:`);
+            console.log(`   Path: ${pathSymbols.join(' → ')}`);
+            console.log(`   Router: ${router}`);
+            console.log(`   Amount In: ${amountIn} tokens`);
+            console.log(`   Expected Out: ${amountOut} tokens`);
+            console.log(`   Expected Profit: $${profitUSD.toFixed(2)} USD (${spread ? spread.toFixed(4) + '%' : 'N/A'} spread)`);
+
+            // Get real-time prices from DEXes to show spread
+            const pair1 = `${pathSymbols[0]}/${pathSymbols[1]}`;
+            const pair2 = `${pathSymbols[1]}/${pathSymbols[2]}`;
+            const pair3 = `${pathSymbols[2]}/${pathSymbols[0]}`;
+
+            console.log(`   DEX Prices:`);
+
+            // Get prices for each pair
+            const priceFeed = new (require('../services/DexPriceFeed'))(this.provider);
+
+            try {
+                const prices1 = await priceFeed.getAllPrices(pair1);
+                const prices2 = await priceFeed.getAllPrices(pair2);
+                const prices3 = await priceFeed.getAllPrices(pair3);
+
+                // Display prices from available DEXes
+                const displayDexPrices = (pair, prices) => {
+                    const dexes = Object.keys(prices).filter(dex =>
+                        prices[dex] && typeof prices[dex] === 'object' && prices[dex].price
+                    );
+
+                    dexes.slice(0, 3).forEach(dex => { // Show top 3 DEXes
+                        const price = prices[dex].price;
+                        const liquidity = prices[dex].liquidity || 'unknown';
+                        console.log(`     ${dex}: ${price.toFixed(6)} (${liquidity})`);
+                    });
+                };
+
+                console.log(`     ${pair1}:`);
+                displayDexPrices(pair1, prices1);
+                console.log(`     ${pair2}:`);
+                displayDexPrices(pair2, prices2);
+                console.log(`     ${pair3}:`);
+                displayDexPrices(pair3, prices3);
+
+                // Calculate and display spread
+                const bestPrices = this._calculateBestPrices([prices1, prices2, prices3]);
+                if (bestPrices.spread > 0) {
+                    console.log(`   Calculated Spread: ${bestPrices.spread.toFixed(4)}%`);
+                    console.log(`   Best Route: ${bestPrices.buyDex} → ${bestPrices.sellDex}`);
+                }
+
+            } catch (priceError) {
+                console.log(`   Price fetch failed: ${priceError.message}`);
+            }
+
+            console.log(`   Status: Ready for execution\n`);
+
+        } catch (error) {
+            console.error('❌ Error displaying arbitrage opportunity:', error.message);
+        }
+    }
+
+    /**
+     * Calculate best prices and spread from DEX price data
+     */
+    _calculateBestPrices(priceArrays) {
+        const allPrices = [];
+
+        priceArrays.forEach((prices, index) => {
+            Object.keys(prices).forEach(dex => {
+                if (prices[dex] && typeof prices[dex] === 'object' && prices[dex].price) {
+                    allPrices.push({
+                        dex: dex,
+                        price: prices[dex].price,
+                        pairIndex: index
+                    });
+                }
+            });
+        });
+
+        if (allPrices.length < 2) return { spread: 0 };
+
+        // Find best buy and sell prices
+        let bestBuy = Math.min(...allPrices.map(p => p.price));
+        let bestSell = Math.max(...allPrices.map(p => p.price));
+
+        const spread = ((bestSell - bestBuy) / bestBuy) * 100;
+
+        const buyDex = allPrices.find(p => p.price === bestBuy)?.dex || 'unknown';
+        const sellDex = allPrices.find(p => p.price === bestSell)?.dex || 'unknown';
+
+        return { spread, buyDex, sellDex };
+    }
+
+    /**
      * Execute triangular arbitrage opportunity
      */
     async executeTriangularArbitrage(opportunity) {
         try {
             // Validate opportunity format from Python
-            const { path, amountIn, expectedProfit, router, timestamp } = opportunity;
+            const { path, amountIn, amountOut, expectedProfitUSD, router, spread } = opportunity;
 
             // Validate required fields
             if (!path || !Array.isArray(path) || path.length !== 3) {
@@ -312,13 +419,18 @@ class ArbitrageBot extends EventEmitter {
                 return null;
             }
 
-            if (!amountIn || typeof amountIn !== 'string') {
+            if (!amountIn || typeof amountIn !== 'number') {
                 console.error('❌ Invalid amountIn in opportunity:', amountIn);
                 return null;
             }
 
-            if (!expectedProfit || typeof expectedProfit !== 'string') {
-                console.error('❌ Invalid expectedProfit in opportunity:', expectedProfit);
+            if (!amountOut || typeof amountOut !== 'number') {
+                console.error('❌ Invalid amountOut in opportunity:', amountOut);
+                return null;
+            }
+
+            if (!expectedProfitUSD || typeof expectedProfitUSD !== 'number') {
+                console.error('❌ Invalid expectedProfitUSD in opportunity:', expectedProfitUSD);
                 return null;
             }
 
@@ -327,15 +439,9 @@ class ArbitrageBot extends EventEmitter {
                 return null;
             }
 
-            // Convert Wei strings to BigInt
-            let amountInWei, expectedProfitWei;
-            try {
-                amountInWei = BigInt(amountIn);
-                expectedProfitWei = BigInt(expectedProfit);
-            } catch (error) {
-                console.error('❌ Failed to parse Wei amounts:', error.message);
-                return null;
-            }
+            // Convert amounts to Wei for blockchain operations
+            const amountInWei = ethers.parseEther(amountIn.toString());
+            const amountOutWei = ethers.parseEther(amountOut.toString());
 
             // Validate amounts are positive
             if (amountInWei <= 0n) {
@@ -343,7 +449,7 @@ class ArbitrageBot extends EventEmitter {
                 return null;
             }
 
-            if (expectedProfitWei <= 0n) {
+            if (expectedProfitUSD <= 0) {
                 console.log('⚠️ Expected profit is not positive, skipping');
                 return null;
             }
@@ -364,8 +470,9 @@ class ArbitrageBot extends EventEmitter {
             });
 
             console.log(`🔄 Executing triangular arbitrage: ${pathSymbols.join(' → ')}`);
-            console.log(`   Amount In: ${ethers.formatEther(amountInWei)} tokens (${amountIn} wei)`);
-            console.log(`   Expected Profit: ${ethers.formatEther(expectedProfitWei)} tokens (${expectedProfit} wei)`);
+            console.log(`   Amount In: ${amountIn} tokens (${ethers.formatEther(amountInWei)} wei)`);
+            console.log(`   Expected Out: ${amountOut} tokens`);
+            console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)} USD (${spread.toFixed(4)}% spread)`);
             console.log(`   Router: ${router}`);
 
             // Get router contract
@@ -382,31 +489,27 @@ class ArbitrageBot extends EventEmitter {
                 return null;
             }
 
-            // Check if profit meets minimum threshold
-            const profitUSD = parseFloat(ethers.formatEther(expectedProfitWei)) * 567; // Approximate BNB price
-            if (profitUSD < this.minProfitUSD) {
-                console.log(`⚠️ Profit too low: $${profitUSD.toFixed(2)} < $${this.minProfitUSD} minimum`);
-                return null;
-            }
-
             // Execute the triangular arbitrage
             const result = await this._executeTriangularSwap(path, amountInWei, routerContract);
 
             if (result && result.success) {
                 console.log(`💰 Triangular arbitrage completed successfully!`);
-                console.log(`   Profit: $${profitUSD.toFixed(2)}`);
+                console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)}`);
                 console.log(`   Transaction: ${result.txHash}`);
+                console.log(`   Status: executed`);
                 this.totalTrades++;
                 this.successfulTrades++;
                 return result;
             } else {
                 console.error('❌ Triangular arbitrage execution failed');
+                console.log(`   Status: failed`);
                 this.totalTrades++;
                 return null;
             }
 
         } catch (error) {
             console.error('❌ Triangular arbitrage execution failed:', error.message);
+            console.log(`   Status: error`);
             this.totalTrades++;
             return null;
         }
@@ -559,69 +662,6 @@ class ArbitrageBot extends EventEmitter {
         }
     }
 
-    /**
-     * Execute triangular arbitrage
-     */
-    async executeTriangularArbitrage(opportunity) {
-        try {
-            const pathSymbols = opportunity.path_symbols || opportunity.path.map(addr => {
-                // Try to find symbol for address
-                for (const [symbol, token] of Object.entries(TOKENS)) {
-                    if (token.address.toLowerCase() === addr.toLowerCase()) return symbol;
-                }
-                return addr.substring(0, 6) + '...';
-            });
-
-            console.log(`🔄 Executing triangular arbitrage: ${pathSymbols.join(' → ')}`);
-
-            // Calculate profit
-            const profitCalc = await this.calculateArbitrageProfit(opportunity);
-            if (!profitCalc) {
-                console.log(`⚠️ Could not calculate profit for this opportunity`);
-                return null;
-            }
-
-            if (profitCalc.profitUSD < this.minProfitUSD) {
-                console.log(`⚠️ Profit too low: $${profitCalc.profitUSD.toFixed(2)} < $${this.minProfitUSD} minimum`);
-                return null;
-            }
-
-            // Check trade safety
-            const isSafe = await this.isTradeSafe(
-                profitCalc.path[0],
-                profitCalc.path[3],
-                ethers.parseEther(opportunity.amountIn.toString()),
-                profitCalc.finalAmount,
-                this.maxSlippage
-            );
-
-            if (!isSafe) {
-                console.log(`⚠️ Trade not safe due to slippage - skipping execution`);
-                return null;
-            }
-
-            console.log(`✅ All validations passed - executing triangular arbitrage`);
-
-            // Execute the trade
-            const result = await this.executeTrade(
-                'PANCAKESWAP',
-                profitCalc.path[0],
-                profitCalc.path[3],
-                ethers.parseEther(opportunity.amountIn.toString()),
-                profitCalc.finalAmount * 95n / 100n, // 5% slippage protection
-                profitCalc.path
-            );
-
-            console.log(`💰 Triangular arbitrage completed: $${profitCalc.profitUSD.toFixed(2)} profit`);
-            console.log(`📊 Transaction: ${result.txHash}`);
-
-            return result;
-
-        } catch (error) {
-            console.error('❌ Triangular arbitrage execution failed:', error.message);
-            throw error;
-        }
-    }
 
     /**
      * Run Python arbitrage calculator with real price data (single process)
@@ -683,7 +723,7 @@ class ArbitrageBot extends EventEmitter {
 
                             // Validate each opportunity has required fields
                             const validOpportunities = result.opportunities.filter(opp => {
-                                const isValid = opp.path && opp.amountIn && opp.expectedProfit && opp.router;
+                                const isValid = opp.path && opp.amountIn && opp.expectedProfitUSD && opp.router;
                                 if (!isValid) {
                                     console.warn('⚠️ Filtering out invalid opportunity:', Object.keys(opp));
                                 }
@@ -917,21 +957,32 @@ class ArbitrageBot extends EventEmitter {
                     for (const opportunity of pythonResult.opportunities) {
                         try {
                             // Validate opportunity has required fields
-                            if (!opportunity.path || !opportunity.amountIn || !opportunity.expectedProfit || !opportunity.router) {
+                            if (!opportunity.path || !opportunity.amountIn || !opportunity.expectedProfitUSD || !opportunity.router) {
                                 console.warn('⚠️ Skipping invalid opportunity - missing required fields:', Object.keys(opportunity));
                                 continue;
                             }
 
-                            // Convert expectedProfit to BigInt and check minimum threshold
-                            const expectedProfitWei = BigInt(opportunity.expectedProfit);
-                            const profitUSD = parseFloat(ethers.formatEther(expectedProfitWei)) * 567;
+                            // Additional validation for array and types
+                            if (!Array.isArray(opportunity.path) || opportunity.path.length !== 3) {
+                                console.warn('⚠️ Skipping invalid opportunity - path must be array of 3 addresses');
+                                continue;
+                            }
+
+                            if (typeof opportunity.amountIn !== 'number' || typeof opportunity.expectedProfitUSD !== 'number') {
+                                console.warn('⚠️ Skipping invalid opportunity - amountIn and expectedProfitUSD must be numbers');
+                                continue;
+                            }
+
+                            // Check minimum profit threshold
+                            const profitUSD = opportunity.expectedProfitUSD;
 
                             if (profitUSD < this.minProfitUSD) {
                                 console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below minimum $${this.minProfitUSD}`);
                                 continue;
                             }
 
-                            console.log(`🎯 Executing opportunity with expected profit: $${profitUSD.toFixed(2)}`);
+                            // Display real arbitrage opportunity details
+                            await this._displayArbitrageOpportunity(opportunity, profitUSD);
 
                             // Execute triangular arbitrage
                             const result = await this.executeTriangularArbitrage(opportunity);
