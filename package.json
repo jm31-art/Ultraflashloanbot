@@ -2,6 +2,7 @@
   "name": "bsc-venus-liquidator-pro",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "compile": "npx hardhat compile",
     "test": "npx hardhat test --config hardhat.config.cjs",
