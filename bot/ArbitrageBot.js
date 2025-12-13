@@ -1,3229 +1,501 @@
 require('dotenv').config();
 const { EventEmitter } = require('events');
 const { ethers, getAddress, JsonRpcProvider, ZeroAddress } = require('ethers');
-const { DEX_CONFIGS, TOKENS, TRADING_PAIRS } = require('../config/dex');
-const PriceFeed = require('../services/PriceFeed');
-const DexPriceFeed = require('../services/DexPriceFeed');
-const FlashProvider = require('../utils/FlashProvider');
-const PythonArbitrageCalculator = require('../services/PythonArbitrageCalculator');
-const MEVRelayManager = require('../utils/MEVRelayManager');
+const { spawn } = require('child_process');
+const path = require('path');
+
+// Import ABIs
+const ERC20_ABI = require('../abi/erc20.json');
+const ROUTER_ABI = require('../abi/router.json');
+const PAIR_ABI = require('../abi/pair.json');
+
+// BSC Configuration
+const BSC_RPC_URL = process.env.RPC_URL || 'https://bsc-dataseed.binance.org/';
+const TOKENS = {
+    WBNB: { address: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', decimals: 18 },
+    USDT: { address: '0x55d398326f99059fF775485246999027B3197955', decimals: 18 },
+    USDC: { address: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d', decimals: 18 },
+    BUSD: { address: '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56', decimals: 18 },
+    CAKE: { address: '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82', decimals: 18 },
+    BTCB: { address: '0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c', decimals: 18 }
+};
+
+const DEX_CONFIGS = {
+    PANCAKESWAP: {
+        router: '0x10ED43C718714eb63d5aA57B78B54704E256024E',
+        factory: '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73',
+        name: 'PancakeSwap'
+    },
+    BISWAP: {
+        router: '0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8',
+        factory: '0x858E3312ed3A876947EA49d572A7C42DE08af7EE0',
+        name: 'Biswap'
+    }
+};
 
 class ArbitrageBot extends EventEmitter {
     constructor(provider, signer, options = {}) {
         super();
 
         // Input validation
+        if (!provider) {
+            throw new Error('Provider is required for ArbitrageBot');
+        }
         if (!signer) {
             throw new Error('Signer is required for ArbitrageBot');
         }
 
-        // Create provider
-        this.provider = new JsonRpcProvider(process.env.RPC_URL);
-
-        // Hard guard immediately after creation
-        if (!this.provider || typeof this.provider.getBlockNumber !== "function") {
-            throw new Error("Invalid ethers provider — provider not initialized correctly");
-        }
+        // Initialize provider and signer
+        this.provider = provider;
         this.signer = signer;
-        this.priceFeed = new DexPriceFeed(provider);
-        this.flashProvider = new FlashProvider(provider, signer);
-        this.pythonCalculator = options.pythonCalculator || new PythonArbitrageCalculator();
 
-        // Initialize MEV protection system
-        this.mevRelayManager = new MEVRelayManager(provider, signer);
-        this.mevProtectionEnabled = true;
+        // Validate provider
+        if (typeof this.provider.getBlockNumber !== 'function') {
+            throw new Error('Invalid ethers provider — provider not initialized correctly');
+        }
 
-        // MEV protection state
-        this.baselineGasPrice = null;
-        this.baselinePoolReserves = new Map();
-        this.baselineMidPrices = new Map();
-        this.lastScanTime = 0;
+        // Configuration
+        this.minProfitUSD = options.minProfitUSD || 1.0; // $1 minimum profit
+        this.maxSlippage = options.maxSlippage || 0.05; // 5% max slippage
+        this.scanInterval = options.scanInterval || 5000; // 5 second scan interval
+        this.maxGasPrice = options.maxGasPrice || 10; // 10 gwei max gas price
+        this.safeGasLimit = 500000; // Safe fallback gas limit
 
-        // MICRO-ARBITRAGE PROFIT THRESHOLD - ACCEPT ALL ABOVE $1
-        this.minProfitUSD = this._validateMinProfit(options.minProfitUSD || 1.0); // $1.00 minimum profit threshold
-        this.maxGasPrice = this._validateMaxGasPrice(options.maxGasPrice || 50); // Higher gas tolerance for profitable ops
-        this.scanInterval = this._validateScanInterval(options.scanInterval || 1000); // 1 second scanning for speed
+        // Router contracts cache
+        this.routers = new Map();
 
+        // State
         this.isRunning = false;
-        this.errorCount = 0;
-        this.maxErrors = 5; // Stop after 5 errors - be aggressive
-        this.gasPriceRefund = options.gasPriceRefund || 1.5; // Lower refund threshold
-        this.bnbReserveRatio = 0.95; // Keep 95% in BNB for gas
-        this.btcReserveRatio = 0.05; // Keep 5% in BTC
-
-        // HIGH-PROFIT BALANCE REQUIREMENTS - USE ALL AVAILABLE GAS
-        this.maxGasPerTransaction = ethers.parseEther('0.003'); // Max 0.003 BNB per transaction (~$1.70)
-        this.minBalanceRequired = ethers.parseEther('0.0001'); // Minimum 0.0001 BNB balance required
-        this.consecutiveFailures = 0;
-        this.maxConsecutiveFailures = 5; // Allow more failures before emergency stop
-        this.emergencyStopTriggered = false;
-        this.lastTransactionTime = 0;
-        this.minTimeBetweenTransactions = 3000; // 3 seconds minimum between transactions (fast recovery)
-
-        // Winrate tracking
+        this.lastScanTime = 0;
         this.totalTrades = 0;
         this.successfulTrades = 0;
-        this.winrate = 0;
 
-        // TRIPLE PROFIT PROTECTION SYSTEM
-        this.profitProtectionEnabled = true;
-        this.preTradeBalance = null;
-        this.expectedProfitBNB = 0;
-        this.actualProfitBNB = 0;
-        this.profitValidationCount = 0;
-        this.profitValidationSuccess = 0;
+        // Python calculator path
+        this.pythonCalculatorPath = path.join(__dirname, '../services/PythonArbitrageCalculator.py');
 
-        // ERROR HANDLING AND CONFIGURATION
-        this.maxDexBatchSize = options.maxDexBatchSize || 4; // Limit DEX batch size
-        this.requestTimeout = options.requestTimeout || 15000; // 15 second timeout
-        this.retryAttempts = options.retryAttempts || 3; // Retry failed requests
-
-        // DYNAMIC SLIPPAGE CONTROL
-        this.slippageConfig = {
-            minSlippage: 0.003, // 0.3% minimum
-            maxSlippage: 0.008, // 0.8% maximum
-            defaultSlippage: 0.005, // 0.5% default
-            dynamicAdjustment: true // Enable dynamic adjustment based on market conditions
-        };
-
-        // EXTREME NON-REVERT MODE CONFIGURATION - Now optional, default false for real execution
-        this.extremeMode = process.env.EXTREME_MODE === 'true' || options.extremeMode === true;
-        this.extremeGasBudgetUSD = 1.51;
-        this.extremeMaxTrades = 2;
-        this.extremeExecutedTrades = 0;
-        this.extremeGasWalletAddress = process.env.EXTREME_GAS_WALLET ? getAddress(process.env.EXTREME_GAS_WALLET) : null;
-        this.extremeMinProfitUSD = options.extremeMinProfitUSD || 50;
-        this.extremeModeStartTime = null;
-
-        // Bind extreme mode function
-        this._extremeModeCanExecute = this._extremeModeCanExecute.bind(this);
+        console.log('✅ ArbitrageBot initialized successfully');
     }
 
-    _validateMinProfit(minProfit) {
-        if (typeof minProfit !== 'number' || minProfit < 0) {
-            throw new Error('minProfitUSD must be a positive number');
-        }
-        return minProfit;
-    }
-
-    _validateMaxGasPrice(maxGasPrice) {
-        if (typeof maxGasPrice !== 'number' || maxGasPrice <= 0 || maxGasPrice > 1000) {
-            throw new Error('maxGasPrice must be a number between 0 and 1000 gwei');
-        }
-        return maxGasPrice;
-    }
-
-    _validateScanInterval(scanInterval) {
-        if (typeof scanInterval !== 'number' || scanInterval < 1000 || scanInterval > 300000) {
-            throw new Error('scanInterval must be between 1000ms and 300000ms');
-        }
-        return scanInterval;
-    }
-
-    // CRITICAL SAFETY VALIDATION METHODS
-    async _validateTransactionSafety(tx) {
-        try {
-            // Check emergency stop
-            if (this.emergencyStopTriggered) {
-                throw new Error('🚨 EMERGENCY STOP ACTIVE - No transactions allowed');
-            }
-
-            // Check consecutive failures
-            if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
-                console.log('🚨 Too many consecutive failures, triggering emergency stop');
-                this.emergencyStopTriggered = true;
-                this.stop();
-                throw new Error('🚨 Emergency stop triggered due to consecutive failures');
-            }
-
-            // Check minimum time between transactions
-            const now = Date.now();
-            if (now - this.lastTransactionTime < this.minTimeBetweenTransactions) {
-                throw new Error(`⏱️ Too soon since last transaction (${this.minTimeBetweenTransactions}ms required)`);
-            }
-
-            // Check wallet balance
-            const balance = await this.provider.getBalance(this.signer.address);
-            if (balance < this.minBalanceRequired) {
-                console.log(`🚨 Insufficient balance: ${ethers.formatEther(balance)} BNB < ${ethers.formatEther(this.minBalanceRequired)} BNB required`);
-                this.emergencyStopTriggered = true;
-                this.stop();
-                throw new Error('🚨 Insufficient balance - Emergency stop triggered');
-            }
-
-            // Estimate gas cost
-            const gasEstimate = await this.provider.estimateGas(tx);
-            const gasPrice = tx.gasPrice || (await this.provider.getFeeData()).gasPrice;
-            const estimatedGasCost = gasEstimate * gasPrice;
-
-            // Check if gas cost exceeds maximum allowed
-            if (estimatedGasCost > this.maxGasPerTransaction) {
-                throw new Error(`💰 Gas cost too high: ${ethers.formatEther(estimatedGasCost)} BNB > ${ethers.formatEther(this.maxGasPerTransaction)} BNB max`);
-            }
-
-            // Check if transaction would leave insufficient balance
-            const totalCost = estimatedGasCost + (tx.value || 0n);
-            const remainingBalance = balance - totalCost;
-            if (remainingBalance < this.minBalanceRequired) {
-                throw new Error(`💰 Transaction would leave insufficient balance: ${ethers.formatEther(remainingBalance)} BNB remaining < ${ethers.formatEther(this.minBalanceRequired)} BNB required`);
-            }
-
-            console.log(`✅ Safety check passed - Gas cost: ${ethers.formatEther(estimatedGasCost)} BNB, Balance: ${ethers.formatEther(balance)} BNB`);
-            return true;
-
-        } catch (error) {
-            console.error('🚨 Safety validation failed:', error.message);
-            this.consecutiveFailures++;
-            throw error;
-        }
-    }
-
-    _recordSuccessfulTransaction() {
-        this.consecutiveFailures = 0;
-        this.lastTransactionTime = Date.now();
-    }
-
-    _recordFailedTransaction() {
-        this.consecutiveFailures++;
-        console.log(`❌ Consecutive failures: ${this.consecutiveFailures}/${this.maxConsecutiveFailures}`);
-    }
-
-    // TRIPLE PROFIT PROTECTION: Pre-trade balance recording
-    async _recordPreTradeBalance(expectedProfitUSD) {
-        if (!this.profitProtectionEnabled) return;
-
-        try {
-            this.preTradeBalance = await this.provider.getBalance(this.signer.address);
-            this.expectedProfitBNB = expectedProfitUSD / 567; // Convert USD to BNB
-            this.actualProfitBNB = 0;
-
-            console.log(`🛡️ PROFIT PROTECTION: Pre-trade balance recorded`);
-            console.log(`   Balance: ${ethers.formatEther(this.preTradeBalance)} BNB`);
-            console.log(`   Expected profit: ${this.expectedProfitBNB.toFixed(6)} BNB ($${expectedProfitUSD.toFixed(2)})`);
-        } catch (error) {
-            console.error('❌ Failed to record pre-trade balance:', error.message);
-        }
-    }
-
-    // TRIPLE PROFIT PROTECTION: Post-trade profit validation
-    async _validatePostTradeProfit(opportunity) {
-        if (!this.profitProtectionEnabled || !this.preTradeBalance) return false;
-
-        this.profitValidationCount++;
-
-        try {
-            const postTradeBalance = await this.provider.getBalance(this.signer.address);
-            const balanceChange = postTradeBalance - this.preTradeBalance;
-
-            console.log(`🛡️ PROFIT VALIDATION: Post-trade check`);
-            console.log(`   Pre-trade balance: ${ethers.formatEther(this.preTradeBalance)} BNB`);
-            console.log(`   Post-trade balance: ${ethers.formatEther(postTradeBalance)} BNB`);
-            console.log(`   Balance change: ${ethers.formatEther(balanceChange)} BNB`);
-
-            // Check if we gained profit (accounting for gas costs)
-            const minExpectedGain = this.expectedProfitBNB * 0.5; // At least 50% of expected profit
-            const minExpectedGainWei = ethers.parseEther(minExpectedGain.toFixed(18));
-
-            if (balanceChange >= minExpectedGainWei) {
-                this.actualProfitBNB = parseFloat(ethers.formatEther(balanceChange));
-                this.profitValidationSuccess++;
-
-                console.log(`✅ PROFIT CONFIRMED: +${this.actualProfitBNB.toFixed(6)} BNB ($${this.actualProfitBNB * 567})`);
-                console.log(`   Validation success rate: ${this.profitValidationSuccess}/${this.profitValidationCount} (${(this.profitValidationSuccess/this.profitValidationCount*100).toFixed(1)}%)`);
-
-                // Reset for next trade
-                this.preTradeBalance = null;
-                this.expectedProfitBNB = 0;
-
-                return true;
-            } else {
-                console.log(`⚠️ PROFIT WARNING: Expected +${this.expectedProfitBNB.toFixed(6)} BNB, got ${ethers.formatEther(balanceChange)} BNB`);
-                console.log(`   Possible issues: High gas costs, slippage, or failed arbitrage`);
-
-                // Don't reset - keep for monitoring
-                return false;
-            }
-        } catch (error) {
-            console.error('❌ Profit validation failed:', error.message);
-            return false;
-        }
-    }
-
-    // TRIPLE PROFIT PROTECTION: Emergency profit extraction
-    async _emergencyProfitExtraction() {
-        if (!this.profitProtectionEnabled) return;
-
-        try {
-            console.log(`🚨 EMERGENCY PROFIT EXTRACTION: Checking for stuck profits...`);
-
-            const currentBalance = await this.provider.getBalance(this.signer.address);
-            // Ensure both values are BigInts for subtraction
-            const preBalance = this.preTradeBalance ? BigInt(this.preTradeBalance.toString()) : 0n;
-            const currBalance = BigInt(currentBalance.toString());
-            const balanceChange = preBalance > 0n ? currBalance - preBalance : 0n;
-
-            if (balanceChange > ethers.parseEther('0.0001')) { // 0.0001 BNB = ~$0.057
-                console.log(`💰 EMERGENCY EXTRACTION: Found ${ethers.formatEther(balanceChange)} BNB profit`);
-                console.log(`   This profit was not properly recorded - manual extraction may be needed`);
-            }
-        } catch (error) {
-            console.error('❌ Emergency profit extraction failed:', error.message);
-            console.error('   Error details:', error.stack);
-        }
-    }
-
-    // MEV PROTECTION: Anti-sandwich checks
-    async _performAntiSandwichChecks(opportunity, flashAmount) {
-        if (!this.mevProtectionEnabled) return true;
-
-        try {
-            console.log('🛡️ Performing anti-sandwich checks...');
-
-            // Check 1: Pool reserve manipulation detection
-            if (!(await this._checkPoolReserveManipulation(opportunity))) {
-                console.log('❌ Pool reserve manipulation detected - skipping trade');
-                return false;
-            }
-
-            // Check 2: Slippage impact validation
-            if (!(await this._checkSlippageImpact(opportunity, flashAmount))) {
-                console.log('❌ Slippage impact too high - skipping trade');
-                return false;
-            }
-
-            // Check 3: Mid-price stability check
-            if (!(await this._checkMidPriceStability(opportunity))) {
-                console.log('❌ Mid-price unstable - skipping trade');
-                return false;
-            }
-
-            // Check 4: Gas spike detection
-            if (!(await this._checkGasSpikeDetection())) {
-                console.log('❌ Gas spike detected - skipping trade');
-                return false;
-            }
-
-            console.log('✅ All anti-sandwich checks passed');
-            return true;
-        } catch (error) {
-            console.error('❌ Anti-sandwich checks failed:', error.message);
-            return false;
-        }
-    }
-
-    // Check for pool reserve manipulation (detect sandwich attempts)
-    async _checkPoolReserveManipulation(opportunity) {
-        try {
-            const { pair, buyDex, sellDex } = opportunity;
-            const [tokenA, tokenB] = pair.split('/');
-
-            // Get current pool reserves
-            const buyPoolReserves = await this._getPoolReserves(buyDex, tokenA, tokenB);
-            const sellPoolReserves = await this._getPoolReserves(sellDex, tokenA, tokenB);
-
-            // Skip check if reserves are missing (don't block valid trades)
-            if (buyPoolReserves.reserve0 <= 0 || buyPoolReserves.reserve1 <= 0 ||
-                sellPoolReserves.reserve0 <= 0 || sellPoolReserves.reserve1 <= 0) {
-                console.log(`⚠️ Skipping reserve manipulation check for ${pair} - missing reserves`);
-                return true; // Allow trade to proceed
-            }
-
-            // Compare with baseline reserves if available
-            const buyPoolKey = `${buyDex}-${pair}`;
-            const sellPoolKey = `${sellDex}-${pair}`;
-
-            const baselineBuyReserves = this.baselinePoolReserves.get(buyPoolKey);
-            const baselineSellReserves = this.baselinePoolReserves.get(sellPoolKey);
-
-            if (baselineBuyReserves && baselineSellReserves) {
-                // Check for significant reserve changes (potential manipulation)
-                const buyReserveChange = Math.abs(buyPoolReserves.reserve0 - baselineBuyReserves.reserve0) / baselineBuyReserves.reserve0;
-                const sellReserveChange = Math.abs(sellPoolReserves.reserve0 - baselineSellReserves.reserve0) / baselineSellReserves.reserve0;
-
-                const manipulationThreshold = 0.05; // 5% change threshold
-
-                if (buyReserveChange > manipulationThreshold || sellReserveChange > manipulationThreshold) {
-                    console.log(`⚠️ Reserve manipulation detected: Buy ${buyReserveChange.toFixed(3)}, Sell ${sellReserveChange.toFixed(3)}`);
-                    return false;
-                }
-            }
-
-            // Update baseline reserves
-            this.baselinePoolReserves.set(buyPoolKey, buyPoolReserves);
-            this.baselinePoolReserves.set(sellPoolKey, sellPoolReserves);
-
-            return true;
-        } catch (error) {
-            console.warn('⚠️ Pool reserve check failed, allowing trade to proceed:', error.message);
-            return true; // Don't block trades due to check failures
-        }
-    }
-
-    // Check slippage impact validation - allow execution if slippage < MAX_SLIPPAGE
-    async _checkSlippageImpact(opportunity, flashAmount) {
-        const MAX_SLIPPAGE = 0.05; // 5% maximum slippage allowed for execution
-
-        try {
-            const { pair, buyDex, sellDex, spread } = opportunity;
-            const [tokenA, tokenB] = pair.split('/');
-
-            // First get reserves to ensure pair exists and has liquidity
-            const buyReserves = await this._getPoolReserves(buyDex, tokenA, tokenB);
-            const sellReserves = await this._getPoolReserves(sellDex, tokenA, tokenB);
-
-            // Skip if reserves are insufficient
-            if (buyReserves.reserve0 <= 0 || buyReserves.reserve1 <= 0 ||
-                sellReserves.reserve0 <= 0 || sellReserves.reserve1 <= 0) {
-                console.log(`⚠️ Skipping slippage check for ${pair} - insufficient reserves`);
-                return false;
-            }
-
-            // Simulate the swap to check slippage after confirming reserves exist
-            const slippageImpact = await this._simulateSwapSlippage(opportunity, flashAmount);
-
-            // Check if slippage impact is within bot's tolerance
-            const maxSlippageTolerance = this.slippageConfig.maxSlippage; // 0.8%
-
-            if (slippageImpact > maxSlippageTolerance) {
-                console.log(`⚠️ Slippage impact ${slippageImpact.toFixed(4)} > tolerance ${maxSlippageTolerance.toFixed(4)}`);
-
-                // Allow execution if slippage is still below MAX_SLIPPAGE threshold
-                if (slippageImpact <= MAX_SLIPPAGE) {
-                    console.log(`✅ Allowing execution despite high slippage (${slippageImpact.toFixed(4)}) as it's below MAX_SLIPPAGE (${MAX_SLIPPAGE.toFixed(4)})`);
-                    return true;
-                }
-
-                return false;
-            }
-
-            // Ensure slippage impact is 0 or below bot's tolerance
-            if (slippageImpact < 0) {
-                console.log(`⚠️ Negative slippage impact detected: ${slippageImpact.toFixed(4)}`);
-                return false;
-            }
-
-            return true;
-        } catch (error) {
-            console.warn('⚠️ Slippage impact check failed, allowing execution with conservative slippage:', error.message);
-            // Allow execution if we can't check slippage but profit is high
-            return true;
-        }
-    }
-
-    // Check mid-price stability between scan and execution
-    async _checkMidPriceStability(opportunity) {
-        try {
-            const { pair } = opportunity;
-            const currentTime = Date.now();
-
-            // Get current mid-price
-            const currentPrices = await this.priceFeed.getAllPrices(pair);
-            const dexes = Object.keys(currentPrices);
-
-            if (dexes.length < 2) return true; // Need at least 2 DEXes
-
-            // Calculate current mid-price
-            const prices = dexes.map(dex => currentPrices[dex]?.price).filter(p => p > 0);
-            const currentMidPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
-
-            // Check against baseline mid-price
-            const baselineKey = `midprice-${pair}`;
-            const baselineMidPrice = this.baselineMidPrices.get(baselineKey);
-
-            if (baselineMidPrice) {
-                const priceChange = Math.abs(currentMidPrice - baselineMidPrice) / baselineMidPrice;
-                const maxPriceChange = 0.005; // 0.5% max change
-
-                if (priceChange > maxPriceChange) {
-                    console.log(`⚠️ Mid-price changed ${priceChange.toFixed(4)} > ${maxPriceChange.toFixed(4)}`);
-                    return false;
-                }
-            }
-
-            // Update baseline mid-price
-            this.baselineMidPrices.set(baselineKey, currentMidPrice);
-            this.lastScanTime = currentTime;
-
-            return true;
-        } catch (error) {
-            console.error('❌ Mid-price stability check failed:', error.message);
-            return false;
-        }
-    }
-
-    // Check for sudden gas spikes (detect frontrunning bots)
-    async _checkGasSpikeDetection() {
-        try {
-            const currentGasPrice = await this.provider.getGasPrice();
-            const currentGasGwei = parseFloat(ethers.formatUnits(currentGasPrice, 'gwei'));
-
-            // Check against baseline gas price
-            if (this.baselineGasPrice) {
-                const gasChange = (currentGasGwei - this.baselineGasPrice) / this.baselineGasPrice;
-                const maxGasSpike = 0.5; // 50% max increase
-
-                if (gasChange > maxGasSpike) {
-                    console.log(`⚠️ Gas spike detected: ${gasChange.toFixed(3)} > ${maxGasSpike.toFixed(3)}`);
-                    return false;
-                }
-            }
-
-            // Update baseline gas price
-            this.baselineGasPrice = currentGasGwei;
-
-            return true;
-        } catch (error) {
-            console.error('❌ Gas spike detection failed:', error.message);
-            return false;
-        }
-    }
-
-    // Helper: Get pool reserves with robust error handling and retry
-    async _getPoolReserves(dex, tokenA, tokenB, retryCount = 0) {
-        const MAX_RETRIES = 2;
-
-        try {
-            const dexConfig = DEX_CONFIGS[dex.toUpperCase()];
-            if (!dexConfig) throw new Error(`Unknown DEX: ${dex}`);
-
-            // This is a simplified implementation - in reality you'd query the actual pool contract
-            const poolAddress = await this._getPoolAddress(dexConfig, tokenA, tokenB);
-
-            const poolContract = new ethers.Contract(poolAddress, [
-                'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)'
-            ], this.provider);
-
-            let reserve0, reserve1;
-            let lastError;
-
-            // Retry logic for reserve fetching
-            for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-                try {
-                    [reserve0, reserve1] = await poolContract.getReserves();
-                    break; // Success
-                } catch (reserveError) {
-                    lastError = reserveError;
-                    if (attempt < MAX_RETRIES) {
-                        console.warn(`⚠️ Reserve fetch attempt ${attempt + 1} failed for ${dex} ${tokenA}/${tokenB}, retrying:`, reserveError.message);
-                        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1))); // Exponential backoff
-                    }
-                }
-            }
-
-            if (reserve0 === undefined || reserve1 === undefined) {
-                // Option B: Approximate reserves from last successful snapshot or on-chain data
-                console.warn(`⚠️ Reserve fetch failed after ${MAX_RETRIES + 1} attempts for ${dex} ${tokenA}/${tokenB}, attempting approximation`);
-                return await this._approximateReserves(dex, tokenA, tokenB);
-            }
-
-            // Add reserve > 0 checks to prevent divide-by-zero errors
-            const reserve0Num = Number(reserve0);
-            const reserve1Num = Number(reserve1);
-
-            if (reserve0Num <= 0 || reserve1Num <= 0) {
-                console.warn(`⚠️ Insufficient reserves for ${dex} ${tokenA}/${tokenB}: ${reserve0Num}/${reserve1Num}, attempting approximation`);
-                return await this._approximateReserves(dex, tokenA, tokenB);
-            }
-
-            return { reserve0: reserve0Num, reserve1: reserve1Num };
-        } catch (error) {
-            console.warn(`⚠️ Failed to get reserves for ${dex} ${tokenA}/${tokenB} after all attempts:`, error.message);
-            // Return approximation as fallback
-            return await this._approximateReserves(dex, tokenA, tokenB);
-        }
-    }
-
-    // Approximate reserves when direct fetching fails
-    async _approximateReserves(dex, tokenA, tokenB) {
-        try {
-            // Try to get recent price data to estimate reserves
-            const pair = `${tokenA}/${tokenB}`;
-            const prices = await this.priceFeed.getAllPrices(pair);
-
-            // Use liquidity data if available
-            const dexData = prices[dex.toLowerCase()];
-            if (dexData && dexData.liquidity && dexData.liquidity > 0) {
-                // Estimate reserves based on price and liquidity
-                const price = dexData.price;
-                const liquidityUSD = dexData.liquidity;
-
-                // Rough approximation: assume equal token distribution
-                const totalTokens = liquidityUSD / (price * 2); // Split between both tokens
-                const reserveApprox = totalTokens * 0.1; // Conservative 10% estimate
-
-                console.log(`📊 Approximated reserves for ${dex} ${pair}: ${reserveApprox.toFixed(2)} each`);
-                return { reserve0: reserveApprox, reserve1: reserveApprox };
-            }
-        } catch (approxError) {
-            console.warn(`⚠️ Reserve approximation failed for ${dex} ${tokenA}/${tokenB}:`, approxError.message);
-        }
-
-        // Final fallback: minimal reserves to prevent divide-by-zero
-        console.warn(`⚠️ Using minimal fallback reserves for ${dex} ${tokenA}/${tokenB}`);
-        return { reserve0: 1000, reserve1: 1000 }; // Minimal safe values
-    }
-
-    // Helper: Get pool address (simplified)
-    async _getPoolAddress(dexConfig, tokenA, tokenB) {
-        // This would implement proper pool address calculation based on DEX
-        // For now, return a placeholder
-        return dexConfig.factory || '0x0000000000000000000000000000000000000000';
-    }
-
-    // Helper: Simulate swap slippage with realistic defaults
-    async _simulateSwapSlippage(opportunity, flashAmount) {
-        try {
-            // Simulate the arbitrage swap to calculate slippage
-            const { pair, buyDex, sellDex } = opportunity;
-
-            // This is a simplified slippage calculation
-            // In reality, you'd simulate the actual swap path
-            const baseSlippage = 0.001; // 0.1% base slippage
-            const volumeImpact = Math.min(Number(flashAmount) / 1000000, 0.01); // Cap volume impact at 1%
-
-            const totalSlippage = baseSlippage + volumeImpact;
-
-            // Ensure slippage is reasonable (max 5%)
-            return Math.min(totalSlippage, 0.05);
-        } catch (error) {
-            console.warn('⚠️ Swap slippage simulation failed, using conservative default:', error.message);
-            return 0.005; // Conservative 0.5% default instead of absurd 999%
-        }
-    }
-
-    // MEV PROTECTION: Bundle simulation before sending
-    async _simulateArbitrageBundle(opportunity, flashAmount, flashProvider) {
-        if (!this.mevProtectionEnabled) return { success: true };
-
-        try {
-            console.log('🔬 Simulating arbitrage bundle...');
-
-            // Create the arbitrage transaction bundle
-            const bundle = await this._createArbitrageBundle(opportunity, flashAmount, flashProvider);
-
-            // Get target block number (next block)
-            const currentBlock = await this.provider.getBlockNumber();
-            const targetBlockNumber = currentBlock + 1;
-
-            // Simulate the bundle
-            const simulation = await this.mevRelayManager.simulateBundle(bundle, targetBlockNumber);
-
-            if (!simulation.success) {
-                console.log('MEV simulation blocked execution — possible sandwich attempt');
-                return { success: false, error: simulation.error };
-            }
-
-            // Check for loss or high slippage in simulation
-            if (simulation.results) {
-                for (const result of simulation.results) {
-                    if (!result.success) {
-                        console.log('MEV simulation blocked execution — revert detected');
-                        return { success: false, error: 'Simulation revert' };
-                    }
-                }
-            }
-
-            // Check gas usage is reasonable
-            if (simulation.totalGasUsed > 1000000) { // 1M gas limit
-                console.log('MEV simulation blocked execution — excessive gas usage');
-                return { success: false, error: 'Excessive gas usage' };
-            }
-
-            console.log('MEV simulation passed');
-            return { success: true, simulation };
-        } catch (error) {
-            console.error('❌ Bundle simulation failed:', error.message);
-            return { success: false, error: error.message };
-        }
-    }
-
-    // Create arbitrage transaction bundle
-    async _createArbitrageBundle(opportunity, flashAmount, flashProvider) {
-        const bundle = [];
-
-        try {
-            // For flashloan-based arbitrage, create flashloan transaction
-            if (flashProvider && flashAmount) {
-                const flashTx = await this._createFlashloanTx(opportunity, flashAmount, flashProvider);
-                if (flashTx) bundle.push(flashTx);
-            }
-
-            // Create main arbitrage transaction
-            const arbTx = await this._createArbitrageTx(opportunity);
-            if (arbTx) bundle.push(arbTx);
-
-            return bundle;
-        } catch (error) {
-            console.error('❌ Failed to create arbitrage bundle:', error.message);
-            return [];
-        }
-    }
-
-    // Create flashloan transaction for bundle
-    async _createFlashloanTx(opportunity, flashAmount, flashProvider) {
-        // This would create the flashloan initiation transaction
-        // Simplified for now
-        return {
-            transaction: {
-                to: flashProvider.protocol.address,
-                data: '0x', // Encoded flashloan call
-                value: 0
-            },
-            signer: this.signer
-        };
-    }
-
-    // BigInt-native comprehensive profit calculation for arbitrage opportunity
-    async _calculateArbitrageProfit(opportunity, flashAmount, flashProvider) {
-        try {
-            // Input validation with defensive checks
-            if (!opportunity || typeof opportunity !== 'object') {
-                console.error('❌ Invalid opportunity object:', opportunity);
-                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Invalid opportunity object' };
-            }
-            if (!opportunity.spread || !opportunity.pair) {
-                console.error('❌ Opportunity missing required properties:', opportunity);
-                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Missing spread or pair' };
-            }
-
-            const { spread, pair } = opportunity;
-
-            // Validate spread and flashAmount
-            if (typeof spread !== 'number' || spread <= 0 || spread > 5) {
-                console.error('❌ Invalid spread:', spread);
-                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Invalid spread' };
-            }
-            if (!flashAmount || typeof flashAmount !== 'bigint' || flashAmount <= 0n) {
-                console.error('❌ Invalid flashAmount:', flashAmount);
-                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Invalid flashAmount' };
-            }
-
-            console.log(`🔄 Calculating profit for ${pair} with spread ${spread.toFixed(4)}%`);
-
-            // Get gas cost estimate - required for execution
-            const gasCost = await this._calculateGasCost(opportunity);
-
-            // Estimate flash loan fee with BigInt
-            let flashFeeRate = 0.0009; // Default 0.09%
-            try {
-                const dynamicFee = await this.flashProvider.getDynamicFee(flashProvider.protocol);
-                if (typeof dynamicFee === 'number' && dynamicFee >= 0 && dynamicFee <= 0.01) {
-                    flashFeeRate = dynamicFee;
-                }
-            } catch (feeError) {
-                console.warn('⚠️ Flash fee fetch failed, using default 0.09%:', feeError.message);
-            }
-
-            const flashFeeRateBigInt = BigInt(Math.floor(flashFeeRate * 1000000));
-            const flashFee = (flashAmount * flashFeeRateBigInt) / 1000000n;
-
-            // DEX fee calculation with BigInt
-            let dexFeeRate = 0.0025; // Default 0.25%
-            if (flashProvider.protocol === 'Equalizer' || flashProvider.protocol === 'PancakeV3') {
-                dexFeeRate = 0.001; // 0.1% for 0% flash fee providers
-            }
-
-            const dexFeeRateBigInt = BigInt(Math.floor(dexFeeRate * 10000));
-            const dexFee = (flashAmount * dexFeeRateBigInt) / 10000n;
-
-            // Slippage calculation with BigInt
-            let slippageRate = 0.001; // Default 0.1%
-            if (flashProvider.protocol === 'Equalizer' || flashProvider.protocol === 'PancakeV3') {
-                slippageRate = 0.0005; // 0.05% for 0% flash fee providers
-            }
-
-            const slippageRateBigInt = BigInt(Math.floor(slippageRate * 10000));
-            const slippage = (flashAmount * slippageRateBigInt) / 10000n;
-
-            // Calculate gross profit from spread using BigInt
-            const spreadBasisPoints = BigInt(Math.floor(spread * 10000)); // Convert to basis points
-            const grossProfit = (flashAmount * spreadBasisPoints) / 10000n;
-
-            // Calculate total fees and net profit with BigInt
-            const totalFees = flashFee + dexFee + slippage + gasCost.gasCostWei;
-            const netProfitWei = grossProfit > totalFees ? grossProfit - totalFees : -totalFees;
-
-            // Convert to USD values (BNB price ~$567)
-            const BNB_PRICE = 567;
-            const flashAmountUSD = Number(ethers.formatEther(flashAmount)) * BNB_PRICE;
-            const grossProfitUSD = Number(ethers.formatEther(grossProfit)) * BNB_PRICE;
-            const flashFeeUSD = Number(ethers.formatEther(flashFee)) * BNB_PRICE;
-            const dexFeeUSD = Number(ethers.formatEther(dexFee)) * BNB_PRICE;
-            const slippageUSD = Number(ethers.formatEther(slippage)) * BNB_PRICE;
-            const gasCostUSD = gasCost.gasCostUSD;
-            const netProfitUSD = Number(ethers.formatEther(netProfitWei)) * BNB_PRICE;
-
-            // ENFORCE $1 NET PROFIT THRESHOLD - ONLY EXECUTE IF NET PROFIT > $1
-            if (netProfitWei <= 1n) {
-                return { profit: 0n, netProfit: -999n, totalFees: 0n, error: 'Profit below $1' };
-            }
-
-            const feeSavings = flashProvider.protocol === 'Equalizer' || flashProvider.protocol === 'PancakeV3' ?
-                '90% reduction (0% flash + low DEX fees)!' : '50% reduction via transaction bundling!';
-
-            // SILENT PROFIT CALCULATION - NO LOGGING
-
-            return {
-                profit: grossProfit,
-                netProfit: netProfitWei,
-                totalFees: totalFees,
-                profitUSD: grossProfitUSD,
-                netProfitUSD: netProfitUSD,
-                breakdown: {
-                    flashAmount: flashAmountUSD,
-                    spread: spread,
-                    grossProfit: grossProfitUSD,
-                    flashFee: flashFeeUSD,
-                    dexFee: dexFeeUSD,
-                    slippage: slippageUSD,
-                    gasCost: gasCost.gasCostUSD,
-                    totalFees: flashFeeUSD + dexFeeUSD + slippageUSD + gasCost.gasCostUSD,
-                    netProfit: netProfitUSD,
-                    bundled: true
-                }
-            };
-        } catch (error) {
-            console.error('❌ Error calculating arbitrage profit:', error);
-            console.error('   Error details:', error.stack);
-            return {
-                profit: 0n,
-                netProfit: -999n,
-                totalFees: 0n,
-                profitUSD: 0,
-                netProfitUSD: -999,
-                error: error.message
-            };
-        }
-    }
-
-    // I — GAS ESTIMATION: Use real gas estimation per swap with retries
-    async _calculateGasCost(opportunity, retryCount = 0) {
-        const MAX_RETRIES = 2;
-
-        try {
-            // Input validation
-            if (!opportunity || typeof opportunity !== 'object') {
-                throw new Error('Invalid opportunity for gas calculation');
-            }
-
-            // Use real gas estimation from router.estimateGas() with retry logic
-            let gasUnitsBN;
-            let lastError;
-
-            for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-                try {
-                    // Create a sample transaction for estimation
-                    const router = new ethers.Contract(
-                        DEX_CONFIGS.PANCAKESWAP.router,
-                        ['function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) external returns (uint[] memory amounts)'],
-                        this.signer
-                    );
-
-                    // Estimate gas for a typical swap transaction
-                    const amountIn = ethers.parseEther('1'); // 1 token
-                    const amountOutMin = amountIn * 95n / 100n; // 5% slippage
-                    const path = [TOKENS.WBNB.address, TOKENS.USDT.address];
-                    const deadline = Math.floor(Date.now() / 1000) + 300;
-
-                    gasUnitsBN = await router.estimateGas.swapExactTokensForTokens(
-                        amountIn,
-                        amountOutMin,
-                        path,
-                        this.signer.address,
-                        deadline
-                    );
-                    break; // Success, exit retry loop
-
-                } catch (estimateError) {
-                    lastError = estimateError;
-                    if (attempt < MAX_RETRIES) {
-                        console.warn(`⚠️ Gas estimation attempt ${attempt + 1} failed, retrying:`, estimateError.message);
-                        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1))); // Exponential backoff
-                    }
-                }
-            }
-
-            if (!gasUnitsBN) {
-                throw new Error(`Gas estimation failed after ${MAX_RETRIES + 1} attempts: ${lastError.message}`);
-            }
-
-            // Get current gas price
-            const gasPriceBN = await this.provider.getGasPrice();
-
-            // Calculate gas cost: gasUnits * gasPrice
-            const gasCostWei = gasUnitsBN * gasPriceBN;
-
-            // Convert to BNB and USD
-            const gasCostBNB = Number(ethers.formatEther(gasCostWei));
-            const bnbPrice = 567; // Approximate BNB price
-            const gasCostUSD = gasCostBNB * bnbPrice;
-
-            // Apply safety multiplier (1.3 = 30% buffer)
-            const bufferedGasCostUSD = gasCostUSD * 1.3;
-
-            console.log(`⛽ REAL GAS ESTIMATION: ${Number(gasUnitsBN)} units * ${ethers.formatUnits(gasPriceBN, 'gwei')} gwei = ${gasCostBNB.toFixed(6)} BNB ($${gasCostUSD.toFixed(4)}) - buffered: $${bufferedGasCostUSD.toFixed(4)}`);
-
-            return {
-                gasLimit: Number(gasUnitsBN),
-                gasPrice: gasPriceBN,
-                gasCostWei: gasCostWei,
-                gasCostBNB: gasCostBNB,
-                gasCostUSD: bufferedGasCostUSD
-            };
-        } catch (error) {
-            console.error('❌ Gas estimation failed completely:', error.message);
-            // No fallback - gas estimation errors should trigger retry/warning, not block execution
-            throw error;
-        }
-    }
-
-    // Fallback gas cost calculation
-    _getFallbackGasCost() {
-        const fallbackGasPrice = ethers.parseUnits('5', 'gwei');
-        const fallbackGasLimit = 120000;
-        const fallbackGasCostWei = fallbackGasPrice * BigInt(fallbackGasLimit);
-        const fallbackGasCostBNB = parseFloat(ethers.formatEther(fallbackGasCostWei));
-        const fallbackGasCostUSD = fallbackGasCostBNB * 567;
-
-        console.log(`⛽ Using fallback gas cost: ${fallbackGasCostBNB} BNB ($${fallbackGasCostUSD.toFixed(4)})`);
-
-        return {
-            gasLimit: fallbackGasLimit,
-            gasPrice: fallbackGasPrice,
-            gasCostWei: fallbackGasCostWei,
-            gasCostBNB: fallbackGasCostBNB,
-            gasCostUSD: fallbackGasCostUSD * 1.3 // 30% buffer even for fallback
-        };
-    }
-
-    async initialize() {
-        try {
-            // SILENT INITIALIZATION - NO LOGS
-
-            // Check connection
-            await this.provider.getBlockNumber();
-
-            // Check signer balance
-            const balance = await this.provider.getBalance(this.signer.address);
-
-            // Check if balance is sufficient
-            if (balance < this.minBalanceRequired) {
-                return false;
-            }
-
-            // Initialize MEV protection system
-            if (this.mevProtectionEnabled) {
-                await this.mevRelayManager.initialize();
-            }
-
-            return true;
-        } catch (error) {
-            return false;
-        }
-    }
-
-    // Validate that safety configuration is properly set
-    _validateSafetyConfiguration() {
-        try {
-            // Check critical safety parameters exist
-            if (!this.minBalanceRequired || !this.maxGasPerTransaction) {
-                console.error('Missing safety parameters');
-                return false;
-            }
-
-            if (!this.maxConsecutiveFailures || this.maxConsecutiveFailures < 1) {
-                console.error('Invalid consecutive failure limit');
-                return false;
-            }
-
-            if (!this.minTimeBetweenTransactions || this.minTimeBetweenTransactions < 1000) {
-                console.error('Invalid transaction timing');
-                return false;
-            }
-
-            // Check safety methods exist
-            if (typeof this._validateTransactionSafety !== 'function') {
-                console.error('Missing transaction safety validation');
-                return false;
-            }
-
-            if (typeof this._recordSuccessfulTransaction !== 'function') {
-                console.error('Missing success recording');
-                return false;
-            }
-
-            if (typeof this._recordFailedTransaction !== 'function') {
-                console.error('Missing failure recording');
-                return false;
-            }
-
-            return true;
-        } catch (error) {
-            console.error('Safety configuration validation failed:', error);
-            return false;
-        }
-    }
-
-    async convertToBnbAndBtc(amount, token) {
-        // amount is in token units, not USD
-        const bnbAmount = amount.mul(ethers.BigNumber.from(Math.floor(this.bnbReserveRatio * 100))).div(ethers.BigNumber.from(100));
-        const btcAmount = amount.mul(ethers.BigNumber.from(Math.floor(this.btcReserveRatio * 100))).div(ethers.BigNumber.from(100));
-
-        try {
-            // Convert to BNB
-            if (bnbAmount > 0n) {
-                await this.swapTokens(
-                    token,
-                    TOKENS.WBNB.address,
-                    bnbAmount,
-                    DEX_CONFIGS.PANCAKESWAP // Using PancakeSwap for best rates
-                );
-            }
-
-            // Convert to BTC
-            if (btcAmount > 0n) {
-                await this.swapTokens(
-                    token,
-                    TOKENS.BTCB.address,
-                    btcAmount,
-                    DEX_CONFIGS.PANCAKESWAP
-                );
-            }
-        } catch (error) {
-            console.error('Error converting profits:', error);
-            // Don't throw - profit conversion failure shouldn't stop the bot
-        }
-    }
-
-    async swapTokens(tokenIn, tokenOut, amount, dex) {
-        // Input validation
-        if (!tokenIn || !tokenOut) {
-            throw new Error('tokenIn and tokenOut addresses are required');
-        }
-        if (!amount || amount <= 0n) {
-            throw new Error('Amount must be a positive BigNumber');
-        }
-        if (!dex || !dex.router) {
-            throw new Error('Valid DEX configuration with router address is required');
+    /**
+     * Safely initialize router contract
+     */
+    async getRouterContract(dexName) {
+        if (this.routers.has(dexName)) {
+            return this.routers.get(dexName);
         }
 
         try {
-            const router = new ethers.Contract(
-                dex.router,
-                ['function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)'],
+            const dexConfig = DEX_CONFIGS[dexName.toUpperCase()];
+            if (!dexConfig) {
+                throw new Error(`Unknown DEX: ${dexName}`);
+            }
+
+            const routerContract = new ethers.Contract(
+                dexConfig.router,
+                ROUTER_ABI,
                 this.signer
             );
 
-            const path = [tokenIn, tokenOut];
-            const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
+            // Test the contract
+            await routerContract.WETH(); // Simple call to verify contract
 
-            // Calculate minimum output amount with slippage tolerance
-            const minAmountOut = amount.mul(ethers.BigNumber.from(Math.floor((1 - 0.005) * 1000))).div(ethers.BigNumber.from(1000)); // 0.5% slippage
+            this.routers.set(dexName, routerContract);
+            console.log(`✅ Router contract initialized for ${dexName}`);
+            return routerContract;
 
+        } catch (error) {
+            console.error(`❌ Failed to initialize ${dexName} router:`, error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Check and approve token allowance if needed
+     */
+    async ensureAllowance(tokenAddress, spenderAddress, amount) {
+        try {
+            const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, this.signer);
+
+            // Check current allowance
+            const currentAllowance = await tokenContract.allowance(this.signer.address, spenderAddress);
+
+            // If allowance is insufficient, approve MAX_UINT
+            if (currentAllowance < amount) {
+                console.log(`🔄 Approving ${tokenAddress} for ${spenderAddress}...`);
+
+                const tx = await tokenContract.approve(spenderAddress, ethers.MaxUint256);
+                await tx.wait();
+
+                console.log(`✅ Token approval successful: ${tx.hash}`);
+                return true;
+            }
+
+            return true; // Already approved
+
+        } catch (error) {
+            console.error(`❌ Token approval failed for ${tokenAddress}:`, error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Safely fetch pair reserves with fallback
+     */
+    async getReservesSafe(pairAddress) {
+        try {
+            const pairContract = new ethers.Contract(pairAddress, PAIR_ABI, this.provider);
+            const [reserve0, reserve1] = await pairContract.getReserves();
+
+            return {
+                reserve0: Number(reserve0),
+                reserve1: Number(reserve1),
+                success: true
+            };
+
+        } catch (error) {
+            console.warn(`⚠️ Failed to fetch reserves for ${pairAddress}, using fallback:`, error.message);
+
+            // Return fallback reserves
+            return {
+                reserve0: 1000000, // 1M tokens fallback
+                reserve1: 1000000,
+                success: false,
+                fallback: true
+            };
+        }
+    }
+
+    /**
+     * Check if trade is safe (slippage protection)
+     */
+    async isTradeSafe(tokenIn, tokenOut, amountIn, expectedOut, maxSlippage = 0.05) {
+        try {
+            // Get router for price check
+            const router = await this.getRouterContract('PANCAKESWAP');
+
+            // Get expected output from router
+            const amountsOut = await router.getAmountsOut(amountIn, [tokenIn, tokenOut]);
+            const routerExpectedOut = amountsOut[1];
+
+            // Calculate slippage
+            const slippage = Math.abs(routerExpectedOut - expectedOut) / Math.max(routerExpectedOut, expectedOut);
+
+            console.log(`🎯 Slippage check: ${slippage.toFixed(4)} (max: ${maxSlippage.toFixed(4)})`);
+
+            return slippage <= maxSlippage;
+
+        } catch (error) {
+            console.warn(`⚠️ Slippage check failed, allowing trade:`, error.message);
+            return true; // Allow trade if check fails
+        }
+    }
+
+    /**
+     * Execute a trade with safe gas limits
+     */
+    async executeTrade(dexName, tokenIn, tokenOut, amountIn, amountOutMin, path, options = {}) {
+        try {
+            console.log(`🚀 Executing trade: ${ethers.formatEther(amountIn)} ${tokenIn} -> ${tokenOut} via ${dexName}`);
+
+            // Get router contract
+            const router = await this.getRouterContract(dexName);
+
+            // Ensure allowance
+            await this.ensureAllowance(tokenIn, router.target, amountIn);
+
+            // Set deadline (5 minutes from now)
+            const deadline = Math.floor(Date.now() / 1000) + 300;
+
+            // Estimate gas safely
+            let gasLimit;
+            try {
+                gasLimit = await router.swapExactTokensForTokens.estimateGas(
+                    amountIn,
+                    amountOutMin,
+                    path,
+                    this.signer.address,
+                    deadline
+                );
+                // Add 20% buffer
+                gasLimit = gasLimit * 120n / 100n;
+            } catch (gasError) {
+                console.warn(`⚠️ Gas estimation failed, using safe limit:`, gasError.message);
+                gasLimit = BigInt(this.safeGasLimit);
+            }
+
+            // Get gas price
+            const feeData = await this.provider.getFeeData();
+            let gasPrice = feeData.gasPrice;
+
+            // Cap gas price
+            const maxGasPriceWei = ethers.parseUnits(this.maxGasPrice.toString(), 'gwei');
+            if (gasPrice > maxGasPriceWei) {
+                gasPrice = maxGasPriceWei;
+            }
+
+            // Execute the swap
             const tx = await router.swapExactTokensForTokens(
-                amount,
-                minAmountOut,
+                amountIn,
+                amountOutMin,
                 path,
                 this.signer.address,
                 deadline,
                 {
-                    gasLimit: 300000,
-                    gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
+                    gasLimit: gasLimit,
+                    gasPrice: gasPrice
                 }
             );
 
-            return await tx.wait();
-        } catch (error) {
-            console.error('Swap tokens failed:', error);
-            throw new Error(`Token swap failed: ${error.message}`);
-        }
-    }
+            console.log(`📤 Transaction submitted: ${tx.hash}`);
 
-    async checkAndRefundGas(txResponse) {
-        try {
-            const receipt = await txResponse.wait();
-            if (!receipt) {
-                console.log('Transaction receipt not available for gas refund check');
-                return;
-            }
+            // Wait for confirmation
+            const receipt = await tx.wait();
 
-            if (!receipt.gasUsed || !receipt.effectiveGasPrice) {
-                console.log('Incomplete transaction receipt data');
-                return;
-            }
+            if (receipt.status === 1) {
+                console.log(`✅ Trade executed successfully: ${tx.hash}`);
+                this.totalTrades++;
+                this.successfulTrades++;
 
-            const gasUsed = receipt.gasUsed;
-            const gasPrice = receipt.effectiveGasPrice;
-
-            // If gas price spiked during transaction (more than 1.5x the max allowed)
-            const maxGasPriceBN = ethers.parseUnits(this.maxGasPrice.toString(), 'gwei');
-            const refundThreshold = maxGasPriceBN * 3n / 2n; // 1.5x using BigInt
-
-            if (gasPrice > refundThreshold) {
-                const refundAmount = gasUsed * (gasPrice - maxGasPriceBN);
-                const refundAmountBNB = ethers.formatEther(refundAmount);
-
-                console.log(`⛽ GAS PRICE SPIKE DETECTED!`);
-                console.log(`   Paid gas price: ${ethers.formatUnits(gasPrice, 'gwei')} gwei`);
-                console.log(`   Max allowed: ${this.maxGasPrice} gwei`);
-                console.log(`   Refund amount: ${refundAmountBNB} BNB ($${parseFloat(refundAmountBNB) * 567})`);
-
-                // Check if we have enough balance to refund
-                const balance = await this.provider.getBalance(this.signer.address);
-                if (balance > refundAmount) {
-                    try {
-                        // Execute gas refund transaction
-                        const refundTx = await this.signer.sendTransaction({
-                            to: this.signer.address, // Send to self (could be configured to send to treasury)
-                            value: refundAmount,
-                            gasPrice: ethers.parseUnits('5', 'gwei'), // Use low gas for refund
-                            gasLimit: 21000
-                        });
-
-                        console.log(`💸 GAS REFUND EXECUTED: ${refundTx.hash}`);
-                        console.log(`   Refunded ${refundAmountBNB} BNB to wallet`);
-
-                        // Wait for refund confirmation
-                        await refundTx.wait();
-                        console.log(`✅ Gas refund confirmed`);
-                    } catch (refundError) {
-                        console.error('❌ Gas refund failed:', refundError.message);
-                        console.log('💰 Refund amount will be credited in next profitable trade');
-                    }
-                } else {
-                    console.log('⚠️ Insufficient balance for gas refund - will be credited in next trade');
-                }
+                return {
+                    success: true,
+                    txHash: tx.hash,
+                    gasUsed: receipt.gasUsed,
+                    blockNumber: receipt.blockNumber
+                };
             } else {
-                console.log(`⛽ Gas price normal: ${ethers.formatUnits(gasPrice, 'gwei')} gwei (max: ${this.maxGasPrice} gwei)`);
+                throw new Error('Transaction reverted');
             }
+
         } catch (error) {
-            console.error('Error checking gas refund:', error.message);
-        }
-    }
-
-    async start() {
-        if (this.isRunning) return;
-
-        if (!this.provider) {
-            console.error("❌ Provider is NULL — rebuilding provider...");
-            await this._createRobustProvider();
-            if (!this.provider) {
-                console.error("❌ FATAL: Provider still null — cannot start arbitrage");
-                return;
-            }
-        }
-
-        // Test provider connection
-        try {
-            await this.provider.getBlockNumber();
-        } catch (providerError) {
-            console.error('🚨 PROVIDER CONNECTION FAILED - Cannot start bot');
-            console.error('   Error:', providerError.message);
-            return false;
-        }
-
-        // FINAL SAFETY CHECK: Ensure bot is properly initialized with safety measures
-        if (this.emergencyStopTriggered) {
-            console.error('🚨 EMERGENCY STOP IS ACTIVE - Cannot start bot');
-            console.error('   Run emergency-stop.js to reset if needed');
-            return false;
-        }
-
-        // Check consecutive failures
-        if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
-            console.error('🚨 TOO MANY CONSECUTIVE FAILURES - Safety lock engaged');
-            console.error('   Bot must be restarted manually after fixing issues');
-            return false;
-        }
-
-        this.isRunning = true;
-
-        let lastGasCheck = 0;
-        let cachedGasPrice = null;
-        const GAS_CHECK_INTERVAL = 10000; // Check gas every 10 seconds
-
-        while (this.isRunning) {
-            try {
-                // PROVIDER SAFETY CHECK: Ensure provider is ready before executing cycles
-                if (!this.provider) {
-                    console.warn("🚨 Provider not ready, attempting to initialize...");
-                    await this._createRobustProvider();
-                    if (!this.provider) {
-                        console.warn("🚨 Provider not ready, retrying in 2s");
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        continue;
-                    }
-                }
-
-                // Get current gas price with caching
-                const now = Date.now();
-                if (!cachedGasPrice || now - lastGasCheck > GAS_CHECK_INTERVAL) {
-                    const feeData = await this.provider.getFeeData();
-                    cachedGasPrice = feeData.gasPrice;
-                    lastGasCheck = now;
-                }
-
-                const gasPriceGwei = ethers.formatUnits(cachedGasPrice, 'gwei');
-
-                if (parseFloat(gasPriceGwei) > this.maxGasPrice) {
-                    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds before next check
-                    continue;
-                }
-
-                // SILENT SCANNING - NO LOGS, ONLY SUCCESSFUL TRANSACTIONS
-                const wbnbPairs = ['WBNB/USDT', 'WBNB/USDC', 'WBNB/BUSD', 'WBNB/FDUSD', 'WBNB/DAI'];
-                const allWbnbPrices = {};
-
-                // C — PARALLEL SCANNING: Use Promise.all for simultaneous DEX queries
-                const scans = await Promise.all(wbnbPairs.map(async (pair) => {
-                    try {
-                        const prices = await this.priceFeed.getAllPrices(pair);
-                        return { dex: 'batch', price: null, liquidityUsd: null, raw: prices, pair: pair, ok: true };
-                    } catch (error) {
-                        return { dex: 'batch', price: null, liquidityUsd: null, raw: null, pair: pair, ok: false, error: String(error) };
-                    }
-                }));
-
-                // Process scan results and normalize
-                for (const scan of scans) {
-                    if (scan.ok && scan.raw) {
-                        allWbnbPrices[scan.pair] = scan.raw;
-                    }
-                }
-
-                // Check for WBNB/stablecoin arbitrage opportunities across all configured DEXes
-                const wbnbUsdtOpportunities = [];
-
-                // Process each WBNB pair
-                for (const pair of wbnbPairs) {
-                    const prices = allWbnbPrices[pair];
-                    if (!prices) continue;
-
-                    // LOG PRICE DATA WITHOUT LIQUIDITY WARNINGS
-                    console.log(`📊 ${pair} Price Data:`);
-                    Object.keys(prices).forEach(dex => {
-                        if (prices[dex] && typeof prices[dex] === 'object') {
-                            console.log(`   ${dex}: $${prices[dex].price?.toFixed(6)}`);
-                        } else {
-                            console.log(`   ${dex}: ${prices[dex]}`);
-                        }
-                    });
-
-                    const availableDexes = Object.keys(prices).filter(dex =>
-                        prices[dex] !== null &&
-                        prices[dex] !== undefined &&
-                        typeof prices[dex] === 'object' &&
-                        prices[dex].price > 0
-                    ); // INCLUDE ALL DEXes with price data - NO LIQUIDITY FILTERING
-
-                    console.log(`🔍 Scanning ${availableDexes.length} DEXes for ${pair} arbitrage: ${availableDexes.join(', ')}`);
-
-                    // Compare prices across all available DEX pairs (BE AGGRESSIVE!)
-                    for (let i = 0; i < availableDexes.length; i++) {
-                        for (let j = i + 1; j < availableDexes.length; j++) {
-                            const dex1 = availableDexes[i];
-                            const dex2 = availableDexes[j];
-
-                            const priceData1 = prices[dex1];
-                            const priceData2 = prices[dex2];
-
-                            // Check if both DEXes have price data (don't be too picky about liquidity)
-                            if (priceData1 && priceData2 &&
-                                priceData1.price > 0 && priceData2.price > 0) {
-
-                                const price1 = priceData1.price;
-                                const price2 = priceData2.price;
-    
-                                // D — SPREAD HANDLING & VALIDATION
-                                let spread = Math.abs(price1 - price2) / Math.min(price1, price2) * 100;
-                                spread = Number(spread);
-                                if (!isFinite(spread) || isNaN(spread) || spread <= 0) {
-                                    continue; // Skip invalid spread
-                                }
-
-                                // Only consider opportunities with good spread AND sufficient liquidity - MEANINGFUL ARBITRAGE
-                                 if (spread > 0.001) { // Minimum threshold for profitable arbitrage: 0.001% (0.1 basis points)
-                                    const buyDex = price1 < price2 ? dex1 : dex2;
-                                    const sellDex = price1 < price2 ? dex2 : dex1;
-                                    const buyLiquidity = price1 < price2 ? priceData1.liquidity : priceData2.liquidity;
-                                    const sellLiquidity = price1 < price2 ? priceData2.liquidity : priceData1.liquidity;
-
-                                    wbnbUsdtOpportunities.push({
-                                        type: 'wbnb_usdt_arbitrage',
-                                        token: pair.split('/')[0], // WBNB
-                                        pair: pair,
-                                        buyDex: buyDex,
-                                        sellDex: sellDex,
-                                        buyPrice: Math.min(price1, price2),
-                                        sellPrice: Math.max(price1, price2),
-                                        spread: spread,
-                                        profitPotential: (spread / 100) * 5000, // Calculate USD profit for $5000 flashloan (will be adjusted based on actual amount)
-                                        liquidity: {
-                                            buy: buyLiquidity,
-                                            sell: sellLiquidity,
-                                            overall: buyLiquidity === 'excellent' && sellLiquidity === 'excellent' ? 'excellent' :
-                                                    buyLiquidity === 'good' && sellLiquidity === 'good' ? 'good' : 'moderate'
-                                        }
-                                    });
-
-                                    console.log(`💧 Spread: ${spread.toFixed(4)}% - Buy: ${buyDex}, Sell: ${sellDex}`);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // PRIORITY 2: Check for stablecoin flashloan arbitrage opportunities (100K loans)
-                const stablecoinOpportunities = await this._findStablecoinFlashloanOpportunities();
-
-                // PRIORITY 3: Check for triangular/quad arbitrage opportunities (HIGH PRIORITY)
-                const arbitrageOpportunities = await this._findTriangularArbitrageOpportunities();
-
-                // Separate utmost priority opportunities
-                const utmostPriorityOpps = arbitrageOpportunities.filter(opp => opp.priority === 'utmost');
-                const otherArbitrageOpps = arbitrageOpportunities.filter(opp => opp.priority !== 'utmost');
-
-                // Combine all opportunities with utmost priority routes FIRST
-                const allOpportunities = [...utmostPriorityOpps, ...wbnbUsdtOpportunities, ...stablecoinOpportunities, ...otherArbitrageOpps];
-
-                for (const opp of allOpportunities) {
-                    // UTMOST PRIORITY ROUTES - EXECUTE IMMEDIATELY
-                    if (opp.priority === 'utmost' && (opp.type === 'triangular' || opp.type === 'quad_arbitrage')) {
-                        console.log(`🚨 UTMOST PRIORITY ALERT: ${opp.path.join(' → ')} → ${opp.path[0]} (${opp.expectedProfit.toFixed(4)}% profit)`);
-                        console.log(`💰 EXECUTING UTMOST PRIORITY ROUTE IMMEDIATELY!`);
-
-                        // Calculate gas cost and check profitability
-                        const gasCost = await this._calculateGasCost(opp);
-                        const netProfitAfterGas = opp.expectedProfit - gasCost.gasCostUSD;
-
-                        if (netProfitAfterGas > 0.5) { // Lower threshold for utmost priority routes
-                            console.log(`⛽ GAS COST CHECK PASSED: Net profit $${netProfitAfterGas.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas`);
-                            try {
-                                // TRIPLE PROFIT PROTECTION: Record pre-trade balance
-                                await this._recordPreTradeBalance(netProfitAfterGas);
-
-                                // Execute the arbitrage immediately
-                                const tx = await this._executeQuadArbitrage(opp);
-                                console.log(`🚀 UTMOST PRIORITY ARBITRAGE EXECUTED: ${tx.hash}`);
-                                console.log(`🎯 Route: ${opp.path.join(' → ')} → ${opp.path[0]}`);
-                                console.log(`💎 Expected profit: $${opp.expectedProfit.toFixed(4)}`);
-
-                                // TRIPLE PROFIT PROTECTION: Validate actual profit received
-                                const profitConfirmed = await this._validatePostTradeProfit(opp);
-
-                                if (profitConfirmed) {
-                                    console.log(`✅ UTMOST PRIORITY PROFIT CONFIRMED - Transaction submitted to blockchain`);
-                                    console.log(`📊 Transaction hash: ${tx.hash}`);
-                                    console.log(`💰 CONFIRMED wallet balance increase: $${this.actualProfitBNB * 567}`);
-                                } else {
-                                    console.log(`⚠️ UTMOST PRIORITY PROFIT FLOW WARNING - Transaction submitted but profit not confirmed in wallet`);
-                                    console.log(`📊 Transaction hash: ${tx.hash}`);
-                                    console.log(`🔍 Manual balance check recommended`);
-                                }
-
-                                await this.checkAndRefundGas(tx);
-                                this.recordTrade(profitConfirmed);
-                            } catch (error) {
-                                console.error('❌ UTMOST PRIORITY ARBITRAGE FAILED:', error.message);
-                                // Emergency profit check in case transaction partially succeeded
-                                await this._emergencyProfitExtraction();
-                                this.recordTrade(false);
-                            }
-                        } else {
-                            console.log(`⛽ GAS COST TOO HIGH FOR UTMOST PRIORITY: Net profit $${netProfitAfterGas.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas - Skipped`);
-                        }
-                        continue; // Skip to next opportunity
-                    }
-
-                    if (opp.type === 'wbnb_usdt_arbitrage') {
-                        // M — LOGGING: Standardize structured logs
-                        console.log(`INFO: OPPORTUNITY FOUND: pair=${opp.pair} buy=${opp.buyDex} sell=${opp.sellDex} spread=${opp.spread.toFixed(4)}% expectedProfitUsd=${opp.profitPotential.toFixed(2)}`);
-
-                        // MICRO-ARBITRAGE PROFITABILITY: Accept all trades above $1 with BigInt calculations
-                        const gasCost = await this._calculateGasCost(opp);
-                        const netProfitAfterGas = opp.profitPotential - gasCost.gasCostUSD;
-
-                        // EXECUTE ANY TRADE WITH NET PROFIT > $1 (BigInt-native check)
-                        if (netProfitAfterGas > 1) {
-                            console.log(`💰 MICRO-ARBITRAGE: ${opp.pair} | Spread: ${opp.spread.toFixed(4)}% | Net Profit: $${netProfitAfterGas.toFixed(2)} (after gas)`);
-
-                            // EXTREME MODE CHECKS: Run additional safety verifications if enabled
-                            if (this.extremeMode) {
-                                const txBuilder = () => {
-                                    const targetToken = this._getTokenFromPair(opp.pair);
-                                    const amountIn = ethers.parseEther('1');
-                                    const path = [TOKENS.WBNB.address, targetToken.address, TOKENS.WBNB.address];
-                                    const deadline = Math.floor(Date.now() / 1000) + 300;
-                                    const minAmountOut = amountIn.mul(ethers.BigNumber.from(Math.floor((1 + opp.spread - 0.01) * 1000))).div(ethers.BigNumber.from(1000));
-
-                                    return {
-                                        amountIn,
-                                        minAmountOut,
-                                        path,
-                                        to: this.signer.address,
-                                        deadline
-                                    };
-                                };
-
-                                const canExecute = await this._extremeModeCanExecute(opp, txBuilder);
-                                if (!canExecute) {
-                                    console.log(`⚠️ EXTREME MODE: Skipping ${opp.pair} — profit $${opp.expectedProfitUsd?.toFixed(2)} below $10 threshold`);
-                                    continue;
-                                }
-                            }
-
-                            // NO LIQUIDITY CHECKS - EXECUTE ON ANY PROFITABLE OPPORTUNITY
-                            try {
-                                    // TRIPLE PROFIT PROTECTION: Record pre-trade balance
-                                    await this._recordPreTradeBalance(netProfitAfterGas);
-
-                                    // Get flash provider for WBNB borrowing (direct strategy)
-                                    const flashProvider = await this.flashProvider.findBestFlashProvider(TOKENS.WBNB.address, ethers.parseEther('10'));
-                                    if (!flashProvider) {
-                                        console.log(`❌ No flash provider available for WBNB borrowing`);
-                                        continue;
-                                    }
-
-                                    // Calculate optimal WBNB flashloan amount (exact USD equivalent)
-                                    const wbnbAmount = this._calculateOptimalWbnbFlashloan(opp);
-
-                                    // Calculate comprehensive profit analysis with BigInt validation
-                                    const profitAnalysis = await this._calculateArbitrageProfit(opp, wbnbAmount, flashProvider);
-
-                                    // Enhanced profit validation with BigInt checks - MICRO-ARBITRAGE THRESHOLD $1
-                                    if (!profitAnalysis || profitAnalysis.netProfit <= 1n) {
-                                        console.log(`Skipping trade ${opp.pair} — profit below $1`);
-                                        continue;
-                                    }
-
-                                    // LOG SUCCESSFUL TRADE EXECUTION
-                                    const logMessage = this.extremeMode ?
-                                        `Executed trade ${opp.pair} — net profit: $${profitAnalysis.netProfitUSD.toFixed(2)} (extreme mode)` :
-                                        `Executed trade ${opp.pair} — net profit: $${profitAnalysis.netProfitUSD.toFixed(2)}`;
-                                    console.log(logMessage);
-
-                                    // Additional sanity checks for opportunity
-                                    if (opp.spread > 5 || opp.spread < -5) {
-                                        console.log(`❌ UNREALISTIC SPREAD: ${opp.spread.toFixed(4)}% (must be between -5% and 5%)`);
-                                        continue;
-                                    }
-
-
-                                    console.log(`✅ PROFITABLE ARBITRAGE FOUND:`);
-                                    console.log(`   Net Profit: $${profitAnalysis.netProfit.toFixed(4)}`);
-                                    console.log(`   Profit Margin: ${(profitAnalysis.netProfit / profitAnalysis.breakdown.flashAmount * 100).toFixed(4)}%`);
-
-                                    // Validate pool data before execution
-                                    const targetToken = this._getTokenFromPair(opp.pair);
-                                    const poolValid = await this._validatePoolData(flashProvider.protocol, TOKENS.WBNB, targetToken);
-
-                                    if (!poolValid) {
-                                        console.log(`❌ Pool validation failed for ${flashProvider.protocol} WBNB/${targetToken.symbol} - skipping`);
-                                        continue;
-                                    }
-
-                                    // MEV PROTECTION: Simulate arbitrage bundle before execution
-                                    if (this.mevProtectionEnabled) {
-                                        const bundleSimulation = await this._simulateArbitrageBundle(opp, wbnbAmount, flashProvider);
-                                        if (!bundleSimulation.success) {
-                                            console.log('MEV simulation blocked execution — possible sandwich attempt');
-                                            continue;
-                                        }
-                                    }
-
-                                    // Execute WBNB BORROWING STRATEGY (direct PancakeSwap flashswap)
-                                    console.log(`⚡ WBNB FLASHLOAN ARBITRAGE ACTIVATED - $${profitAnalysis.breakdown.flashAmount.toFixed(0)} borrowing!`);
-                                    console.log(`🏦 Using flash provider: ${flashProvider.protocol} (${flashProvider.type})`);
-                                    const result = await this._executeWbnbFlashloanArbitrage(opp, wbnbAmount, flashProvider);
-                                    console.log(`🚀 USDT FLASHLOAN ARBITRAGE EXECUTED: ${result.txHash}`);
-                                    console.log(`🏦 Protocol: ${result.protocol}`);
-                                    console.log(`💰 Flash amount: ${ethers.formatEther(result.flashAmount)} USDT ($${ethers.formatEther(result.flashAmount)})`);
-                                    console.log(`💸 Flash fee: ${ethers.formatEther(result.flashFee)} USDT`);
-                                    console.log(`⛽ Gas cost: ${ethers.formatEther(result.gasCost)} BNB`);
-                                    console.log(`💎 NET PROFIT: $${profitAnalysis.netProfit.toFixed(4)} (after ALL fees)`);
-                                    console.log(`🎯 Strategy: Borrow USDT → Buy ${opp.pair.split('/')[1]} → Sell → Return USDT + Profit`);
-
-                                    // TRIPLE PROFIT PROTECTION: Validate actual profit received
-                                    const profitConfirmed = await this._validatePostTradeProfit(opp);
-
-                                    if (profitConfirmed) {
-                                        console.log(`✅ PROFIT FLOW CONFIRMED - Transaction submitted to blockchain`);
-                                        console.log(`📊 Transaction hash: ${result.txHash}`);
-                                        console.log(`💰 CONFIRMED wallet balance increase: $${this.actualProfitBNB * 567}`);
-                                    } else {
-                                        console.log(`⚠️ PROFIT FLOW WARNING - Transaction submitted but profit not confirmed in wallet`);
-                                        console.log(`📊 Transaction hash: ${result.txHash}`);
-                                        console.log(`🔍 Manual balance check recommended`);
-                                    }
-
-                                    // EXTREME MODE POST-TRADE HANDLING
-                                    if (this.extremeMode) {
-                                        this.extremeExecutedTrades++;
-                                        // Deduct gas cost from budget (approximate)
-                                        const gasSpentUSD = gasCost.gasCostUSD;
-                                        this.extremeGasBudgetUSD -= gasSpentUSD;
-
-                                        // Route leftover profit to gas wallet if configured
-                                        if (this.extremeGasWalletAddress) {
-                                            await this._sendLeftoverProfitToWallet(this.extremeGasWalletAddress);
-                                        }
-
-                                        // Check if mode should disable
-                                        if (this.extremeExecutedTrades >= this.extremeMaxTrades || this.extremeGasBudgetUSD <= 0.1) {
-                                            this._disableExtremeMode();
-                                        }
-                                    }
-
-                                    // Check and refund gas if price spiked
-                                    await this.checkAndRefundGas({ hash: result.txHash, wait: async () => ({ gasUsed: result.gasUsed, effectiveGasPrice: ethers.parseUnits('5', 'gwei') }) });
-
-                                    this.recordTrade(profitConfirmed);
-                                } catch (error) {
-                                    console.error('🚫 FLASHLOAN ARBITRAGE FAILED:', error.message);
-                                    // Emergency profit check in case transaction partially succeeded
-                                    await this._emergencyProfitExtraction();
-                                    this.recordTrade(false);
-                                }
-                        } else {
-                            console.log(`⛽ GAS COST TOO HIGH: Net profit $${netProfitAfterGas.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas - Skipped`);
-                        }
-                    }
-
-                    if (opp.type === 'triangular') {
-                        console.log(`🔄 Found triangular arbitrage opportunity:`);
-                        console.log(`Path: ${opp.path.join(' -> ')}`);
-                        console.log(`Expected profit: ${opp.expectedProfit.toFixed(4)}%`);
-
-                        // EXECUTE ANY PROFITABLE TRIANGULAR OPPORTUNITY
-                        console.log(`🔄 PROFITABLE TRIANGULAR OPPORTUNITY: $${opp.expectedProfit.toFixed(4)} expected profit`);
-                    } else if (opp.type === 'quad_arbitrage') {
-                        console.log(`🎯 PRIORITY QUAD ARBITRAGE OPPORTUNITY FOUND:`);
-                        console.log(`Path: ${opp.path.join(' → ')}`);
-                        console.log(`Expected profit: ${opp.expectedProfit.toFixed(4)}%`);
-                        console.log(`Priority: ${opp.priority}`);
-
-                        // EXECUTE PRIORITY QUAD ARBITRAGE OPPORTUNITY
-                        console.log(`🎯 EXECUTING PRIORITY ROUTE: USDT → BUSD → WBNB → CAKE → USDT`);
-                        console.log(`💰 Expected profit: $${opp.expectedProfit.toFixed(4)}`);
-
-                        // Calculate gas cost and check profitability
-                        const gasCost = await this._calculateGasCost(opp);
-                        const netProfitAfterGas = opp.expectedProfit - gasCost.gasCostUSD;
-
-                        if (netProfitAfterGas > 0) { // Any positive profit after gas costs
-                            console.log(`⛽ GAS COST CHECK PASSED: Net profit $${netProfitAfterGas.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas`);
-
-                            // MEV PROTECTION: Perform anti-sandwich checks
-                            if (this.mevProtectionEnabled) {
-                                const flashAmount = ethers.parseEther('1'); // Standard amount for quad arbitrage
-                                const sandwichCheckPassed = await this._performAntiSandwichChecks(opp, flashAmount);
-                                if (!sandwichCheckPassed) {
-                                    console.log('MEV protection: Anti-sandwich checks failed - skipping quad arbitrage');
-                                    continue;
-                                }
-                            }
-
-                            try {
-                                // TRIPLE PROFIT PROTECTION: Record pre-trade balance
-                                await this._recordPreTradeBalance(netProfitAfterGas);
-
-                                // Execute the quad arbitrage
-                                const tx = await this._executeQuadArbitrage(opp);
-                                console.log(`🚀 QUAD ARBITRAGE EXECUTED: ${tx.hash}`);
-                                console.log(`🎯 Path: ${opp.path.join(' → ')}`);
-                                console.log(`💎 Expected profit: $${opp.expectedProfit.toFixed(4)}`);
-
-                                // TRIPLE PROFIT PROTECTION: Validate actual profit received
-                                const profitConfirmed = await this._validatePostTradeProfit(opp);
-
-                                if (profitConfirmed) {
-                                    console.log(`✅ PROFIT FLOW CONFIRMED - Transaction submitted to blockchain`);
-                                    console.log(`📊 Transaction hash: ${tx.hash}`);
-                                    console.log(`💰 CONFIRMED wallet balance increase: $${this.actualProfitBNB * 567}`);
-                                } else {
-                                    console.log(`⚠️ PROFIT FLOW WARNING - Transaction submitted but profit not confirmed in wallet`);
-                                    console.log(`📊 Transaction hash: ${tx.hash}`);
-                                    console.log(`🔍 Manual balance check recommended`);
-                                }
-
-                                await this.checkAndRefundGas(tx);
-                                this.recordTrade(profitConfirmed);
-                            } catch (error) {
-                                console.error('❌ Triangular arbitrage execution failed:', error);
-                                // Emergency profit check in case transaction partially succeeded
-                                await this._emergencyProfitExtraction();
-                                this.recordTrade(false);
-                            }
-                        } else {
-                            console.log(`⛽ GAS COST TOO HIGH: Net profit $${netProfitAfterGas.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas - Skipped`);
-                        }
-                    } else if (opp.type === 'stablecoin_flashloan_arbitrage') {
-                        console.log(`💰 STABLECOIN FLASHLOAN ARBITRAGE OPPORTUNITY:`);
-                        console.log(`Pair: ${opp.pair} | Spread: ${opp.spread.toFixed(4)}%`);
-                        console.log(`Buy: ${opp.buyDex} | Sell: ${opp.sellDex}`);
-                        console.log(`Flashloan: $${opp.flashloanAmount.toLocaleString()}`);
-                        console.log(`Net Profit: $${opp.netProfit.toFixed(2)} | Risk: ${opp.riskLevel}`);
-
-                        // EXECUTE ANY PROFITABLE STABLECOIN FLASHLOAN OPPORTUNITY
-                        console.log(`💰 PROFITABLE STABLECOIN FLASHLOAN OPPORTUNITY: $${opp.netProfit.toFixed(2)} net profit`);
-
-                        // Calculate gas cost and check if still profitable
-                        const gasCost = await this._calculateGasCost(opp);
-                        const finalNetProfit = opp.netProfit - gasCost.gasCostUSD;
-
-                        if (finalNetProfit > 0) { // Any positive profit after gas costs
-                            console.log(`⛽ GAS COST CHECK PASSED: Final net profit $${finalNetProfit.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas`);
-
-                            // MEV PROTECTION: Perform anti-sandwich checks
-                            if (this.mevProtectionEnabled) {
-                                const flashAmount = ethers.parseUnits(opp.flashloanAmount.toString(), 18);
-                                const sandwichCheckPassed = await this._performAntiSandwichChecks(opp, flashAmount);
-                                if (!sandwichCheckPassed) {
-                                    console.log('MEV protection: Anti-sandwich checks failed - skipping stablecoin arbitrage');
-                                    continue;
-                                }
-                            }
-
-                            try {
-                                // TRIPLE PROFIT PROTECTION: Record pre-trade balance
-                                await this._recordPreTradeBalance(finalNetProfit);
-
-                                const result = await this._executeStablecoinFlashloanArbitrage(opp);
-                                console.log(`🚀 STABLECOIN FLASHLOAN ARBITRAGE EXECUTED: ${result.txHash}`);
-                                console.log(`🏦 Protocol: ${result.protocol} | Amount: $${opp.flashloanAmount.toLocaleString()}`);
-                                console.log(`💎 Net Profit: $${opp.netProfit.toFixed(2)}`);
-
-                                // TRIPLE PROFIT PROTECTION: Validate actual profit received
-                                const profitConfirmed = await this._validatePostTradeProfit(opp);
-
-                                if (profitConfirmed) {
-                                    console.log(`✅ PROFIT FLOW CONFIRMED - Transaction submitted to blockchain`);
-                                    console.log(`📊 Transaction hash: ${result.txHash}`);
-                                    console.log(`💰 CONFIRMED wallet balance increase: $${this.actualProfitBNB * 567}`);
-                                } else {
-                                    console.log(`⚠️ PROFIT FLOW WARNING - Transaction submitted but profit not confirmed in wallet`);
-                                    console.log(`📊 Transaction hash: ${result.txHash}`);
-                                    console.log(`🔍 Manual balance check recommended`);
-                                }
-
-                                // Check and refund gas if price spiked
-                                await this.checkAndRefundGas({ hash: result.txHash, wait: async () => ({ gasUsed: result.gasUsed, effectiveGasPrice: ethers.parseUnits('5', 'gwei') }) });
-
-                                this.recordTrade(profitConfirmed);
-                            } catch (error) {
-                                console.error('❌ Stablecoin flashloan arbitrage failed:', error.message);
-                                // Emergency profit check in case transaction partially succeeded
-                                await this._emergencyProfitExtraction();
-                                this.recordTrade(false);
-                            }
-                        } else {
-                            console.log(`⛽ GAS COST TOO HIGH: Final profit $${finalNetProfit.toFixed(2)} after $${gasCost.gasCostUSD.toFixed(2)} gas - Skipped`);
-                        }
-                    }
-                }
-    
-                }
-
-                catch (error) {
-                    console.error('Error in arbitrage loop:', error);
-                }
-
-            // Wait before next scan
-            await new Promise(resolve => setTimeout(resolve, this.scanInterval));
-        }
-    }
-
-    async _createArbitrageTx(opportunity) {
-        if (opportunity.type === 'triangular') {
-            return await this._createTriangularArbitrageTx(opportunity);
-        } else if (opportunity.type === 'quad_arbitrage') {
-            return await this._createQuadArbitrageTx(opportunity);
-        } else {
-            return await this._createTwoTokenArbitrageTx(opportunity);
-        }
-    }
-
-    async _createTriangularArbitrageTx(opportunity) {
-        const { path, dexes, rates } = opportunity;
-        const [tokenA, tokenB, tokenC] = path;
-
-        // Calculate optimal amount for triangular arbitrage (bundled)
-        const optimalAmount = ethers.parseEther('1'); // Increased for bundled efficiency
-
-        // Get token addresses
-        const tokenAAddress = TOKENS[tokenA].address;
-        const tokenBAddress = TOKENS[tokenB].address;
-        const tokenCAddress = TOKENS[tokenC].address;
-
-        // Calculate deadline
-        const deadline = Math.floor(Date.now() / 1000) + 300;
-
-        // BUNDLED TRIANGULAR ARBITRAGE: Single multi-hop swap within PancakeSwap
-        // Path: tokenA -> tokenB -> tokenC -> tokenA (only 0.25% fee total!)
-        const fullPath = [tokenAAddress, tokenBAddress, tokenCAddress, tokenAAddress];
-
-        // Calculate minimum output amount accounting for arbitrage profit + slippage
-        const expectedProfit = opportunity.expectedProfit || 0.005; // 0.5% expected profit
-        const minAmountOut = optimalAmount.mul(ethers.BigNumber.from(Math.floor((1 + expectedProfit - 0.005) * 1000))).div(ethers.BigNumber.from(1000)); // Profit - 0.5% slippage
-
-        console.log(`📦 TRIANGULAR ARBITRAGE BUNDLED:`);
-        console.log(`   Path: ${tokenA} → ${tokenB} → ${tokenC} → ${tokenA}`);
-        console.log(`   Amount: ${ethers.formatEther(optimalAmount)} ${tokenA}`);
-        console.log(`   Expected profit: ${expectedProfit*100}%`);
-        console.log(`   DEX fee: 0.25% (bundled multi-hop)`);
-        console.log(`   Minimum out: ${ethers.formatEther(minAmountOut)} ${tokenA}`);
-
-        // Encode the bundled multi-hop swap (single transaction, single fee)
-        const tx = {
-            to: DEX_CONFIGS.PANCAKESWAP.router,
-            data: this._encodeMultiHopSwap(tokenAAddress, optimalAmount, minAmountOut, fullPath, deadline),
-            value: 0,
-            gasLimit: ethers.BigNumber.from(2000000), // Higher gas limit for multi-hop
-            gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
-        };
-
-        return tx;
-    }
-
-    async _createQuadArbitrageTx(opportunity) {
-        const { path, dexes, expectedProfit } = opportunity;
-        const [tokenA, tokenB, tokenC, tokenD] = path;
-
-        // Calculate optimal amount for quad arbitrage
-        const optimalAmount = ethers.parseEther('1'); // Start with 1 token
-
-        // Get token addresses
-        const tokenAAddress = TOKENS[tokenA].address;
-        const tokenBAddress = TOKENS[tokenB].address;
-        const tokenCAddress = TOKENS[tokenC].address;
-        const tokenDAddress = TOKENS[tokenD].address;
-
-        // Calculate deadline
-        const deadline = Math.floor(Date.now() / 1000) + 300;
-
-        // Create 4-hop swap path: tokenA -> tokenB -> tokenC -> tokenD -> tokenA
-        const fullPath = [tokenAAddress, tokenBAddress, tokenCAddress, tokenDAddress, tokenAAddress];
-
-        // Calculate minimum output amount accounting for arbitrage profit + slippage
-        const minAmountOut = optimalAmount.mul(ethers.BigNumber.from(Math.floor((1 + expectedProfit - 0.01) * 1000))).div(ethers.BigNumber.from(1000)); // Profit - 1% slippage
-
-        console.log(`📦 QUAD ARBITRAGE TX:`);
-        console.log(`   Path: ${tokenA} → ${tokenB} → ${tokenC} → ${tokenD} → ${tokenA}`);
-        console.log(`   Amount: ${ethers.formatEther(optimalAmount)} ${tokenA}`);
-        console.log(`   Expected profit: ${expectedProfit*100}%`);
-        console.log(`   Minimum out: ${ethers.formatEther(minAmountOut)} ${tokenA}`);
-
-        // Encode the 4-hop swap
-        const tx = {
-            to: DEX_CONFIGS.PANCAKESWAP.router,
-            data: this._encodeQuadHopSwap(tokenAAddress, optimalAmount, minAmountOut, fullPath, deadline),
-            value: 0,
-            gasLimit: ethers.BigNumber.from(2500000), // Higher gas limit for 4-hop
-            gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
-        };
-
-        return tx;
-    }
-
-    async _createTwoTokenArbitrageTx(opportunity) {
-        const { token, buyDex, sellDex, buyPrice, sellPrice } = opportunity;
-
-        // Simple fixed amount for testing (0.1 WBNB)
-        const amount = ethers.parseEther('0.1');
-
-        // Get token address
-        const tokenAddress = TOKENS[token].address;
-
-        // Calculate deadline
-        const deadline = Math.floor(Date.now() / 1000) + 300;
-
-        // Create transaction for two-token arbitrage
-        const path = [tokenAddress, TOKENS.USDT.address]; // Simple path for now
-        const minAmountOut = amount.mul(ethers.toBigInt(Math.floor((1 - 0.005) * 1000))).div(ethers.toBigInt(1000)); // 0.5% slippage
-
-        const tx = {
-            to: DEX_CONFIGS[buyDex].router,
-            data: this._encodeTwoTokenSwap(path, amount, minAmountOut, deadline),
-            value: 0,
-            gasLimit: ethers.BigNumber.from(1000000),
-            gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
-        };
-
-        return tx;
-    }
-
-    _encodeMultiHopSwap(tokenIn, amountIn, amountOutMin, path, deadline) {
-        // Encode a multi-hop swap using PancakeSwap router
-        // Function signature: swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)
-
-        const functionSignature = '0x7ff36ab5'; // swapExactTokensForTokens
-
-        // Encode amountIn (uint256)
-        const encodedAmountIn = ethers.zeroPadValue(ethers.toBeHex(amountIn), 32);
-
-        // Encode amountOutMin (uint256)
-        const encodedAmountOutMin = ethers.zeroPadValue(ethers.toBeHex(amountOutMin), 32);
-
-        // Encode path array
-        const pathLength = path.length;
-        const encodedPathLength = ethers.zeroPadValue(ethers.toBeHex(pathLength), 32);
-        const encodedAddresses = path.map(address => ethers.zeroPadValue(address, 32));
-        const encodedPath = ethers.concat([encodedPathLength, ...encodedAddresses]);
-
-        // Encode recipient address
-        const encodedTo = ethers.zeroPadValue(this.signer.address, 32);
-
-        // Encode deadline
-        const encodedDeadline = ethers.zeroPadValue(ethers.toBeHex(deadline), 32);
-
-        // Combine all encoded data
-        const encodedData = ethers.concat([
-            functionSignature,
-            encodedAmountIn,
-            encodedAmountOutMin,
-            '0x00000000000000000000000000000000000000000000000000000000000000e0', // offset to path array
-            encodedTo,
-            encodedDeadline,
-            encodedPath
-        ]);
-
-        return encodedData;
-    }
-
-    _encodeTwoTokenSwap(path, amountIn, amountOutMin, deadline) {
-        // Encode a swapExactTokensForTokens call
-        // Function signature: swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)
-        const functionSignature = '0x7ff36ab5'; // swapExactTokensForTokens
-
-        // Encode parameters
-        const encodedAmountIn = ethers.zeroPadValue(ethers.toBeHex(amountIn), 32);
-        const encodedAmountOutMin = ethers.zeroPadValue(ethers.toBeHex(amountOutMin), 32);
-        const encodedTo = ethers.zeroPadValue(this.signer.address, 32);
-        const encodedDeadline = ethers.zeroPadValue(ethers.toBeHex(deadline), 32);
-
-        // Encode path array
-        const pathLength = path.length;
-        const encodedPathLength = ethers.zeroPadValue(ethers.toBeHex(pathLength), 32);
-        const encodedAddresses = path.map(address => ethers.zeroPadValue(address, 32));
-        const encodedPath = ethers.concat([encodedPathLength, ...encodedAddresses]);
-
-        // Calculate correct offset to path array (160 bytes from start of parameters)
-        const pathOffset = ethers.zeroPadValue(ethers.toBeHex(160), 32);
-
-        // Combine all encoded data
-        const encodedData = ethers.concat([
-            functionSignature,
-            encodedAmountIn,
-            encodedAmountOutMin,
-            pathOffset, // offset to path array
-            encodedTo,
-            encodedDeadline,
-            encodedPath
-        ]);
-
-        return encodedData;
-    }
-
-    _encodeQuadHopSwap(tokenIn, amountIn, amountOutMin, path, deadline) {
-        // Encode a 4-hop swap using PancakeSwap router
-        // Function signature: swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)
-
-        const functionSignature = '0x7ff36ab5'; // swapExactTokensForTokens
-
-        // Encode amountIn (uint256)
-        const encodedAmountIn = ethers.zeroPadValue(ethers.toBeHex(amountIn), 32);
-
-        // Encode amountOutMin (uint256)
-        const encodedAmountOutMin = ethers.zeroPadValue(ethers.toBeHex(amountOutMin), 32);
-
-        // Encode path array (5 addresses for 4-hop: A->B->C->D->A)
-        const pathLength = path.length;
-        const encodedPathLength = ethers.zeroPadValue(ethers.toBeHex(pathLength), 32);
-        const encodedAddresses = path.map(address => ethers.zeroPadValue(address, 32));
-        const encodedPath = ethers.concat([encodedPathLength, ...encodedAddresses]);
-
-        // Encode recipient address
-        const encodedTo = ethers.zeroPadValue(this.signer.address, 32);
-
-        // Encode deadline
-        const encodedDeadline = ethers.zeroPadValue(ethers.toBeHex(deadline), 32);
-
-        // Combine all encoded data
-        const encodedData = ethers.concat([
-            functionSignature,
-            encodedAmountIn,
-            encodedAmountOutMin,
-            '0x00000000000000000000000000000000000000000000000000000000000000e0', // offset to path array
-            encodedTo,
-            encodedDeadline,
-            encodedPath
-        ]);
-
-        return encodedData;
-    }
-
-    async _calculateDynamicDeadline() {
-        // Calculate deadline based on network congestion and gas price
-        const feeData = await this.provider.getFeeData();
-        const gasPrice = feeData.gasPrice;
-        const gasPriceGwei = ethers.formatUnits(gasPrice, 'gwei');
-
-        // Higher gas price = more congestion = shorter deadline
-        let deadlineSeconds = 300; // Base 5 minutes
-        if (parseFloat(gasPriceGwei) > 10) {
-            deadlineSeconds = 180; // 3 minutes for high congestion
-        } else if (parseFloat(gasPriceGwei) > 5) {
-            deadlineSeconds = 240; // 4 minutes for moderate congestion
-        }
-
-        return Math.floor(Date.now() / 1000) + deadlineSeconds;
-    }
-
-    async executeArbitrage(opportunity) {
-        // EMERGENCY CHECK: Block all transactions if emergency stop is active
-        if (this.emergencyStopTriggered) {
-            throw new Error('🚨 EMERGENCY STOP ACTIVE - All transactions blocked');
-        }
-
-        // Input validation
-        if (!opportunity) {
-            throw new Error('Opportunity object is required');
-        }
-        if (opportunity.type !== 'triangular' && (!opportunity.token || !opportunity.buyDex || !opportunity.sellDex)) {
-            throw new Error('Opportunity must contain token, buyDex, and sellDex');
-        }
-        if (opportunity.type !== 'triangular' && (typeof opportunity.buyPrice !== 'number' || typeof opportunity.sellPrice !== 'number')) {
-            throw new Error('Opportunity prices must be numbers');
-        }
-        if (opportunity.type !== 'triangular' && (opportunity.buyPrice <= 0 || opportunity.sellPrice <= 0)) {
-            throw new Error('Opportunity prices must be positive');
-        }
-
-        try {
-            // MEV PROTECTION: Perform anti-sandwich checks first
-            if (this.mevProtectionEnabled) {
-                const flashAmount = opportunity.flashloanAmount || ethers.parseEther('10'); // Default amount
-                const sandwichCheckPassed = await this._performAntiSandwichChecks(opportunity, flashAmount);
-                if (!sandwichCheckPassed) {
-                    throw new Error('MEV protection: Anti-sandwich checks failed');
-                }
-            }
-
-            // Create transaction
-            const tx = await this._createArbitrageTx(opportunity);
-
-            // Validate transaction object
-            if (!tx || !tx.to || !tx.data) {
-                throw new Error('Invalid transaction object created');
-            }
-
-            // CRITICAL SAFETY VALIDATION - This MUST pass or transaction is blocked
-            console.log('🛡️ Performing critical safety validation...');
-            await this._validateTransactionSafety(tx);
-            console.log('✅ Safety validation passed - proceeding with transaction');
-
-            // MEV PROTECTION: Send transaction privately via MEV relays
-            let txResponse;
-            if (this.mevProtectionEnabled) {
-                try {
-                    txResponse = await this.mevRelayManager.sendPrivateTransaction(tx);
-                    console.log(`✅ Private arbitrage transaction submitted via MEV relay: ${txResponse.hash}`);
-                } catch (relayError) {
-                    console.log(`Relay failed — switching to backup`);
-                    // Fallback to public mempool (not recommended but better than failing)
-                    console.warn('⚠️ MEV relay failed, falling back to public transaction');
-                    txResponse = await this.signer.sendTransaction(tx);
-                    console.log(`✅ Public arbitrage transaction submitted: ${txResponse.hash}`);
-                }
-            } else {
-                // Send to public mempool if MEV protection disabled
-                txResponse = await this.signer.sendTransaction(tx);
-                console.log(`✅ Arbitrage transaction submitted: ${txResponse.hash}`);
-            }
-
-            // Record successful transaction
-            this._recordSuccessfulTransaction();
-
-            return txResponse;
-        } catch (error) {
-            console.error('❌ Arbitrage execution failed:', error.message);
-            this._recordFailedTransaction();
-
-            // If this is a safety validation error, do not retry
-            if (error.message.includes('EMERGENCY STOP') ||
-                error.message.includes('Insufficient balance') ||
-                error.message.includes('Gas cost too high') ||
-                error.message.includes('Too soon since last transaction') ||
-                error.message.includes('MEV protection')) {
-                console.log('🚨 Safety/MEV validation blocked transaction - no retry');
-                if (error.message.includes('EMERGENCY STOP')) {
-                    this.emergencyStopTriggered = true;
-                    this.stop();
-                }
-                throw error;
-            }
-
-            this._handleError(error);
+            console.error(`❌ Trade execution failed:`, error.message);
+            this.totalTrades++;
             throw error;
         }
     }
 
-    // Find triangular arbitrage opportunities using Python calculator
-    async _findTriangularArbitrageOpportunities() {
-        const opportunities = [];
-
+    /**
+     * Calculate arbitrage profit for triangular opportunity
+     */
+    async calculateArbitrageProfit(opportunity) {
         try {
-            // Check if Python calculator is available
-            const pythonAvailable = await this.pythonCalculator.checkAvailability();
-            if (!pythonAvailable) {
-                console.log('🐍 Python calculator not available, falling back to Node.js calculations');
-                return this._findTriangularArbitrageFallback();
-            }
-
-            // Use Python calculator for accurate profit calculations
-            console.log('🐍 Using Python arbitrage calculator for precise calculations...');
-            const pythonResult = await this.pythonCalculator.calculateOpportunities(10); // 10 BNB start amount
-
-            if (pythonResult.opportunities && pythonResult.opportunities.length > 0) {
-                // Convert Python results to bot format
-                const convertedOpportunities = this.pythonCalculator.convertToBotFormat(pythonResult);
-
-                for (const opp of convertedOpportunities) {
-                    opportunities.push(opp);
-
-                    // Log priority routes
-                    if (opp.priority === 'utmost') {
-                        const routeStr = opp.path.join(' → ') + ' → ' + opp.path[0];
-                        console.log(`🚨 UTMOST PRIORITY PYTHON ROUTE: ${routeStr} (${opp.expectedProfit.toFixed(4)}% profit)`);
-                    } else if (opp.priority === 'high') {
-                        const routeStr = opp.path.join(' → ') + ' → ' + opp.path[0];
-                        console.log(`🎯 HIGH PRIORITY PYTHON ROUTE: ${routeStr} (${opp.expectedProfit.toFixed(4)}% profit)`);
-                    }
-                }
-
-                console.log(`✅ Python calculator found ${convertedOpportunities.length} arbitrage opportunities`);
-            } else {
-                console.log('📊 Python calculator found no profitable opportunities');
-            }
-
-            // Add traditional quad route as fallback
-            const priorityRoute = ['USDT', 'BUSD', 'WBNB', 'CAKE'];
-            const priorityOpportunity = await this._checkQuadArbitragePath(priorityRoute);
-            if (priorityOpportunity) {
-                priorityOpportunity.priority = 'high';
-                opportunities.push(priorityOpportunity);
-                console.log(`🎯 FALLBACK QUAD ROUTE: USDT → BUSD → WBNB → CAKE → USDT (${priorityOpportunity.expectedProfit.toFixed(4)}% profit)`);
-            }
-
-            // Define common triangular paths to check
-            const triangularPaths = [
-                ['WBNB', 'USDT', 'BTCB'], // WBNB -> USDT -> BTCB -> WBNB
-                ['WBNB', 'BTCB', 'USDT'], // WBNB -> BTCB -> USDT -> WBNB
-                ['USDT', 'WBNB', 'BTCB'], // USDT -> WBNB -> BTCB -> USDT
-                ['USDT', 'BTCB', 'WBNB'], // USDT -> BTCB -> WBNB -> USDT
-                ['BTCB', 'WBNB', 'USDT'], // BTCB -> WBNB -> USDT -> BTCB
-                ['BTCB', 'USDT', 'WBNB']  // BTCB -> USDT -> WBNB -> BTCB
-            ];
-
-            for (const path of triangularPaths) {
-                const opportunity = await this._checkTriangularPath(path);
-                if (opportunity) {
-                    opportunities.push(opportunity);
-                }
-            }
-        } catch (error) {
-            console.error('Error finding triangular arbitrage opportunities:', error);
-        }
-
-        return opportunities;
-    }
-
-    // Fallback triangular arbitrage when Python calculator is not available
-    async _findTriangularArbitrageFallback() {
-        const opportunities = [];
-
-        try {
-            // UTMOST PRIORITY ROUTES - TREAT WITH URGENCY (print even better)
-            const utmostPriorityRoutes = [
-                ['BNB', 'BTCB', 'USDT'], // BNB-BTCB-USDT (3-token, highest priority)
-                ['USDT', 'USDC', 'BNB'], // USDT → USDC → BNB → USDT (4-token)
-                ['BNB', 'CAKE', 'USDT']  // BNB → CAKE → USDT → BNB (4-token)
-            ];
-
-            for (const route of utmostPriorityRoutes) {
-                const opportunity = route.length === 3 ?
-                    await this._checkTriangularPath(route) :
-                    await this._checkQuadArbitragePath(route);
-
-                if (opportunity) {
-                    opportunity.priority = 'utmost'; // Mark as utmost priority
-                    opportunities.push(opportunity);
-                    const routeStr = route.join(' → ') + ' → ' + route[0];
-                    console.log(`🚨 UTMOST PRIORITY FALLBACK ROUTE: ${routeStr} (${opportunity.expectedProfit.toFixed(4)}% profit)`);
-                }
-            }
-
-            // HIGH PRIORITY ROUTE: USDT → BUSD (0.01%) → WBNB → CAKE → USDT (4-token cycle)
-            const priorityRoute = ['USDT', 'BUSD', 'WBNB', 'CAKE'];
-            const priorityOpportunity = await this._checkQuadArbitragePath(priorityRoute);
-            if (priorityOpportunity) {
-                priorityOpportunity.priority = 'high';
-                opportunities.push(priorityOpportunity);
-                console.log(`🎯 HIGH PRIORITY FALLBACK ROUTE: USDT → BUSD → WBNB → CAKE → USDT (${priorityOpportunity.expectedProfit.toFixed(4)}% profit)`);
-            }
-        } catch (error) {
-            console.error('Error finding triangular arbitrage opportunities (fallback):', error);
-        }
-
-        return opportunities;
-    }
-
-    // Check a specific triangular arbitrage path
-    async _checkTriangularPath(path) {
-        try {
+            const { path, expectedProfit, amountIn } = opportunity;
             const [tokenA, tokenB, tokenC] = path;
 
-            // Get prices for all three pairs
-            const pricesAB = await this.priceFeed.getAllPrices(`${tokenA}/${tokenB}`);
-            const pricesBC = await this.priceFeed.getAllPrices(`${tokenB}/${tokenC}`);
-            const pricesCA = await this.priceFeed.getAllPrices(`${tokenC}/${tokenA}`);
+            // Get token addresses
+            const tokenAAddress = TOKENS[tokenA].address;
+            const tokenBAddress = TOKENS[tokenB].address;
+            const tokenCAddress = TOKENS[tokenC].address;
 
-            // Find best prices for each leg (PRIORITIZE PancakeSwap V2, then V3, then other DEXes)
-            const priceAtoB = pricesAB.pancakeswap || pricesAB.pancakeswapv3 || pricesAB.uniswap || pricesAB.apeswap || pricesAB.sushiswap;
-            const priceBtoC = pricesBC.pancakeswap || pricesBC.pancakeswapv3 || pricesBC.uniswap || pricesBC.apeswap || pricesBC.sushiswap;
-            const priceCtoA = pricesCA.pancakeswap || pricesCA.pancakeswapv3 || pricesCA.uniswap || pricesCA.apeswap || pricesCA.sushiswap;
+            // Get router
+            const router = await this.getRouterContract('PANCAKESWAP');
 
-            if (!priceAtoB || !priceBtoC || !priceCtoA) {
-                return null; // Missing price data
-            }
+            // Calculate amounts for triangular arbitrage
+            const amountInWei = ethers.parseEther(amountIn.toString());
 
-            // Calculate the triangular arbitrage
-            // Start with 1 unit of tokenA
-            const amountB = 1 * priceAtoB; // tokenA -> tokenB
-            const amountC = amountB * priceBtoC; // tokenB -> tokenC
-            const finalAmount = amountC * priceCtoA; // tokenC -> tokenA
+            // Get amounts out for each leg
+            const amountsOut1 = await router.getAmountsOut(amountInWei, [tokenAAddress, tokenBAddress]);
+            const amountsOut2 = await router.getAmountsOut(amountsOut1[1], [tokenBAddress, tokenCAddress]);
+            const amountsOut3 = await router.getAmountsOut(amountsOut2[1], [tokenCAddress, tokenAAddress]);
 
-            // Calculate profit percentage
-            const profitPercent = ((finalAmount - 1) / 1) * 100;
-
-            // Only consider opportunities with profit > 0.5%
-            if (profitPercent > 0.5) {
-                // Determine which DEXes to use for each leg (prioritize PancakeSwap V2/V3)
-                const dexes = [];
-                const dexNames = ['pancakeswap', 'pancakeswapv3', 'uniswap', 'apeswap', 'sushiswap'];
-
-                // For each leg, find which DEX was used
-                [pricesAB, pricesBC, pricesCA].forEach(priceData => {
-                    for (const dexName of dexNames) {
-                        if (priceData[dexName] && priceData[dexName].price === priceAtoB.price) {
-                            dexes.push(dexName);
-                            break;
-                        }
-                    }
-                });
-
-                return {
-                    type: 'triangular',
-                    path: [tokenA, tokenB, tokenC, tokenA],
-                    prices: [priceAtoB, priceBtoC, priceCtoA],
-                    expectedProfit: profitPercent,
-                    dexes: dexes.length === 3 ? dexes : ['pancakeswap', 'pancakeswap', 'pancakeswap'] // Fallback to PancakeSwap V2
-                };
-            }
-        } catch (error) {
-            console.error(`Error checking triangular path ${path}:`, error);
-        }
-
-        return null;
-    }
-
-    // Check quad-token arbitrage path (4-token cycle) - PRIORITY ROUTE
-    async _checkQuadArbitragePath(path) {
-        try {
-            const [tokenA, tokenB, tokenC, tokenD] = path;
-
-            // Get prices for all four pairs
-            const pricesAB = await this.priceFeed.getAllPrices(`${tokenA}/${tokenB}`);
-            const pricesBC = await this.priceFeed.getAllPrices(`${tokenB}/${tokenC}`);
-            const pricesCD = await this.priceFeed.getAllPrices(`${tokenC}/${tokenD}`);
-            const pricesDA = await this.priceFeed.getAllPrices(`${tokenD}/${tokenA}`);
-
-            // Find best prices for each leg (PRIORITIZE PancakeSwap V2/V3)
-            const priceAtoB = pricesAB.pancakeswap || pricesAB.pancakeswapv3 || pricesAB.uniswap || pricesAB.apeswap || pricesAB.sushiswap;
-            const priceBtoC = pricesBC.pancakeswap || pricesBC.pancakeswapv3 || pricesBC.uniswap || pricesBC.apeswap || pricesBC.sushiswap;
-            const priceCtoD = pricesCD.pancakeswap || pricesCD.pancakeswapv3 || pricesCD.uniswap || pricesCD.apeswap || pricesCD.sushiswap;
-            const priceDtoA = pricesDA.pancakeswap || pricesDA.pancakeswapv3 || pricesDA.uniswap || pricesDA.apeswap || pricesDA.sushiswap;
-
-            if (!priceAtoB || !priceBtoC || !priceCtoD || !priceDtoA) {
-                return null; // Missing price data
-            }
-
-            // Calculate the quad-token arbitrage
-            // Start with 1 unit of tokenA
-            const amountB = 1 * priceAtoB; // tokenA -> tokenB
-            const amountC = amountB * priceBtoC; // tokenB -> tokenC
-            const amountD = amountC * priceCtoD; // tokenC -> tokenD
-            const finalAmount = amountD * priceDtoA; // tokenD -> tokenA
-
-            // Calculate profit percentage
-            const profitPercent = ((finalAmount - 1) / 1) * 100;
-
-            // Only consider opportunities with profit > 0.01% (matches the 0.01% fee mentioned)
-            if (profitPercent > 0.01) {
-                // Determine which DEXes to use for each leg (prioritize PancakeSwap V2/V3)
-                const dexes = [];
-                const dexNames = ['pancakeswap', 'pancakeswapv3', 'uniswap', 'apeswap', 'sushiswap'];
-
-                // For each leg, find which DEX was used
-                [pricesAB, pricesBC, pricesCD, pricesDA].forEach(priceData => {
-                    for (const dexName of dexNames) {
-                        if (priceData[dexName] && priceData[dexName].price === priceAtoB.price) {
-                            dexes.push(dexName);
-                            break;
-                        }
-                    }
-                });
-
-                return {
-                    type: 'quad_arbitrage', // 4-token arbitrage
-                    path: [tokenA, tokenB, tokenC, tokenD, tokenA],
-                    prices: [priceAtoB, priceBtoC, priceCtoD, priceDtoA],
-                    expectedProfit: profitPercent,
-                    dexes: dexes.length === 4 ? dexes : ['pancakeswap', 'pancakeswap', 'pancakeswap', 'pancakeswap'], // Fallback to PancakeSwap V2
-                    priority: 'high' // Mark as high priority route
-                };
-            }
-        } catch (error) {
-            console.error(`Error checking quad arbitrage path ${path}:`, error);
-        }
-
-        return null;
-    }
-
-    // Find stablecoin flashloan arbitrage opportunities (100K loans)
-    async _findStablecoinFlashloanOpportunities() {
-        const opportunities = [];
-        const stablecoins = ['USDT', 'USDC', 'BUSD', 'FDUSD', 'DAI'];
-        const FLASHLOAN_AMOUNT = 100000; // $100K flashloan for stablecoin arbitrage
-
-        try {
-            console.log(`🔍 Scanning stablecoin flashloan arbitrage opportunities ($${FLASHLOAN_AMOUNT.toLocaleString()} loans)...`);
-
-            // Check each stablecoin pair for mispricing across DEXes
-            for (let i = 0; i < stablecoins.length; i++) {
-                for (let j = i + 1; j < stablecoins.length; j++) {
-                    const stable1 = stablecoins[i];
-                    const stable2 = stablecoins[j];
-
-                    // Get price data from multiple DEXes
-                    const prices = await this.priceFeed.getAllPrices(`${stable1}/${stable2}`);
-
-                    // Find DEXes with sufficient liquidity and price data
-                    const dexesWithLiquidity = Object.entries(prices)
-                        .filter(([dex, data]) =>
-                            data &&
-                            typeof data === 'object' &&
-                            data.price > 0 &&
-                            data.recommended === true &&
-                            ['pancakeswap', 'uniswap', 'waultswap'].includes(dex) // Focus on major DEXes
-                        )
-                        .map(([dex, data]) => ({ dex, ...data }));
-
-                    if (dexesWithLiquidity.length < 2) continue;
-
-                    // Compare prices across DEX pairs
-                    for (let x = 0; x < dexesWithLiquidity.length; x++) {
-                        for (let y = x + 1; y < dexesWithLiquidity.length; y++) {
-                            const dexA = dexesWithLiquidity[x];
-                            const dexB = dexesWithLiquidity[y];
-
-                            const priceA = dexA.price;
-                            const priceB = dexB.price;
-
-                            // Calculate spread percentage
-                            const spread = Math.abs(priceA - priceB) / Math.min(priceA, priceB) * 100;
-
-                            // Only consider opportunities with meaningful spread (>0.05% for stablecoins)
-                            if (spread > 0.05) {
-                                // Determine arbitrage direction
-                                const buyDex = priceA < priceB ? dexA.dex : dexB.dex;
-                                const sellDex = priceA < priceB ? dexB.dex : dexA.dex;
-                                const buyPrice = Math.min(priceA, priceB);
-                                const sellPrice = Math.max(priceA, priceB);
-
-                                // Calculate profit potential: (spread / 100) * loanAmount
-                                const grossProfit = (spread / 100) * FLASHLOAN_AMOUNT;
-
-                                // Account for DEX fees (0.3% per swap) and flashloan fees (0.09%)
-                                const dexFeeRate = 0.003; // 0.3% per DEX swap
-                                const flashloanFeeRate = 0.0009; // 0.09% flashloan fee
-                                const slippageBuffer = 0.001; // 0.1% slippage buffer
-
-                                const totalFees = (dexFeeRate * 2) + flashloanFeeRate + slippageBuffer;
-                                const netProfit = grossProfit * (1 - totalFees);
-
-                                // Risk management: Only execute if net profit > $0.10
-                                if (netProfit > 0.1) {
-                                    console.log(`💰 FLASHLOAN OPPORTUNITY: ${stable1}/${stable2} | Buy:${buyDex} Sell:${sellDex} | Spread:${spread.toFixed(4)}% | Net:$${netProfit.toFixed(2)}`);
-
-                                    opportunities.push({
-                                        type: 'stablecoin_flashloan_arbitrage',
-                                        pair: `${stable1}/${stable2}`,
-                                        token: stable1, // Use stable1 as base token for flashloan
-                                        buyDex: buyDex,
-                                        sellDex: sellDex,
-                                        buyPrice: buyPrice,
-                                        sellPrice: sellPrice,
-                                        spread: spread,
-                                        flashloanAmount: FLASHLOAN_AMOUNT,
-                                        grossProfit: grossProfit,
-                                        netProfit: netProfit,
-                                        fees: {
-                                            dexFees: dexFeeRate * 2 * FLASHLOAN_AMOUNT,
-                                            flashloanFee: flashloanFeeRate * FLASHLOAN_AMOUNT,
-                                            slippage: slippageBuffer * FLASHLOAN_AMOUNT
-                                        },
-                                        riskLevel: netProfit > 100 ? 'low' : netProfit > 75 ? 'medium' : 'high'
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            console.log(`✅ Found ${opportunities.length} stablecoin flashloan opportunities`);
-            return opportunities;
-
-        } catch (error) {
-            console.error('❌ Error finding stablecoin flashloan opportunities:', error.message);
-            return [];
-        }
-    }
-
-    // Execute FLASHLOAN-BASED WBNB BORROWING STRATEGY (Direct PancakeSwap with Bundled Transactions)
-    async _executeWbnbFlashloanArbitrage(opportunity, wbnbAmount, flashProvider) {
-        try {
-            const { buyDex, sellDex, buyPrice, sellPrice, spread, pair } = opportunity;
-
-            console.log(`🔄 EXECUTING WBNB FLASHLOAN ARBITRAGE STRATEGY (BUNDLED):`);
-            console.log(`   Pair: ${pair}`);
-            console.log(`   Buy ${buyDex}: $${buyPrice.toFixed(6)}`);
-            console.log(`   Sell ${sellDex}: $${sellPrice.toFixed(6)}`);
-            console.log(`   Spread: ${spread.toFixed(4)}%`);
-            console.log(`   🎯 Bundled Transaction: Single 0.25% DEX fee (vs 0.5%)`);
-
-            console.log(`💰 WBNB Flashloan amount: ${ethers.formatEther(wbnbAmount)} WBNB ($${parseFloat(ethers.formatEther(wbnbAmount)) * 567})`);
-            console.log(`✅ Selected: ${flashProvider.protocol} (${flashProvider.type}) - Fee: ${(await this.flashProvider.getDynamicFee(flashProvider.protocol) * 100).toFixed(3)}%`);
-
-            // STEP 3: Create BUNDLED arbitrage transaction
-            // Strategy: Borrow WBNB → Execute bundled arbitrage → Return WBNB + profit
-            const bundledTx = await this._createBundledArbitrageTx(opportunity, wbnbAmount, flashProvider);
-
-            // STEP 4: Execute bundled WBNB flashloan arbitrage
-            console.log(`⚡ Executing bundled ${flashProvider.protocol} WBNB flashloan arbitrage...`);
-
-            let result;
-            if (flashProvider.type === 'flashSwap') {
-                // DEX-native flash swap with bundled arbitrage logic
-                const targetToken = this._getTokenFromPair(pair);
-                const poolAddress = this.flashProvider.getPoolAddress(flashProvider.protocol, TOKENS.WBNB, targetToken);
-                if (!poolAddress) {
-                    throw new Error(`No pool address found for ${flashProvider.protocol} WBNB/${targetToken.symbol}`);
-                }
-
-                // Create arbitrage parameters for bundled execution
-                const arbitrageParams = {
-                    exchanges: [buyDex, sellDex],
-                    path: [TOKENS.WBNB.address, targetToken.address], // Simplified path for bundled execution
-                    buyDex: buyDex,
-                    sellDex: sellDex,
-                    expectedProfit: opportunity.profitPotential,
-                    caller: this.signer.address,
-                    gasReimbursement: ethers.parseEther('0.002'),
-                    contractAddress: process.env.FLASHLOAN_ARB_CONTRACT || '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1',
-                    bundledTx: bundledTx // Include the bundled transaction data
-                };
-
-                result = await this.flashProvider.executeFlashSwap(
-                    flashProvider.protocol,
-                    poolAddress,
-                    wbnbAmount, // amount0 (WBNB)
-                    ethers.constants.Zero, // amount1
-                    arbitrageParams
-                );
-            } else {
-                // Traditional flashloan with bundled arbitrage
-                result = await this.flashProvider.executeFlashLoan(
-                    flashProvider.protocol,
-                    TOKENS.WBNB.address,
-                    wbnbAmount,
-                    {
-                        exchanges: [buyDex, sellDex],
-                        path: [TOKENS.WBNB.address, this._getTokenFromPair(pair).address],
-                        buyDex: buyDex,
-                        sellDex: sellDex,
-                        expectedProfit: opportunity.profitPotential,
-                        caller: this.signer.address,
-                        gasReimbursement: ethers.parseEther('0.002'),
-                        contractAddress: process.env.FLASHLOAN_ARB_CONTRACT || '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1',
-                        bundledTx: bundledTx
-                    }
-                );
-            }
-
-            // SUCCESSFUL TRANSACTION - LOG ONLY THIS
-            const netProfitUSD = opportunity.profitPotential;
-            const timestamp = new Date().toISOString();
-            console.log(`[${timestamp}] ✅ ARBITRAGE SUCCESS: pair=${opportunity.pair}, txHash=${result.txHash}, netProfit=$${netProfitUSD.toFixed(2)}, fundsReceived=true`);
-            console.log(`[${timestamp}] 💰 Profits will be deposited to wallet: ${process.env.WALLET_ADDRESS}`);
-
-            // Record successful arbitrage
-            this._recordSuccessfulTransaction();
-
-            // Send leftover native token profit to wallet address from .env
-            await this._sendLeftoverProfitToWallet();
+            const finalAmount = amountsOut3[1];
+            const profit = finalAmount - amountInWei;
+            const profitUSD = parseFloat(ethers.formatEther(profit)) * 567; // Approximate BNB price
 
             return {
-                txHash: result.txHash,
-                flashAmount: wbnbAmount,
-                flashFee: flashFee,
-                gasCost: gasCost,
-                protocol: flashProvider.protocol,
-                strategy: 'wbnb_borrowing_bundled',
-                feeSavings: '50% DEX fee reduction'
+                profitWei: profit,
+                profitUSD: profitUSD,
+                finalAmount: finalAmount,
+                path: [tokenAAddress, tokenBAddress, tokenCAddress, tokenAAddress]
             };
 
         } catch (error) {
-            console.error('🚫 WBNB flashloan arbitrage execution failed:', error.message);
-            this._recordFailedTransaction();
-            throw error;
-        }
-    }
-
-    // Create bundled arbitrage transaction (single atomic transaction for both swaps)
-    async _createBundledArbitrageTx(opportunity, flashAmount, flashProvider) {
-        const { buyDex, sellDex, pair } = opportunity;
-        const targetToken = this._getTokenFromPair(pair);
-
-        // Calculate amounts for bundled transaction
-        const amountIn = flashAmount;
-        const expectedOutFromFirstSwap = amountIn.mul(ethers.BigNumber.from(995)).div(ethers.BigNumber.from(1000)); // 0.5% slippage for first swap
-        const expectedOutFromSecondSwap = expectedOutFromFirstSwap.mul(ethers.BigNumber.from(995)).div(ethers.BigNumber.from(1000)); // 0.5% slippage for second swap
-
-        // Minimum output: account for arbitrage spread + slippage
-        const minAmountOut = amountIn.mul(ethers.BigNumber.from(Math.floor((1 + opportunity.spread - 0.01) * 1000))).div(ethers.BigNumber.from(1000)); // Spread - 1% slippage
-
-        console.log(`📦 Creating bundled arbitrage transaction:`);
-        console.log(`   Amount In: ${ethers.formatEther(amountIn)} WBNB`);
-        console.log(`   Expected Out: ${ethers.formatEther(expectedOutFromSecondSwap)} WBNB`);
-        console.log(`   Minimum Out: ${ethers.formatEther(minAmountOut)} WBNB`);
-        console.log(`   Path: WBNB → ${targetToken.symbol} → WBNB`);
-        console.log(`   DEXes: ${buyDex} → ${sellDex}`);
-
-        // For now, return transaction parameters that can be executed by the flash provider
-        // In a full implementation, this would create a multi-call transaction
-        return {
-            amountIn: amountIn,
-            minAmountOut: minAmountOut,
-            path: [TOKENS.WBNB.address, targetToken.address, TOKENS.WBNB.address],
-            dexes: [buyDex, sellDex],
-            type: 'bundled_arbitrage'
-        };
-    }
-
-    // Extreme mode validation method
-    _extremeModeCanExecute(opportunity) {
-        // Returns true if opportunity meets guaranteed trade threshold (allow trades above $10 profit)
-        return opportunity.expectedProfitUsd >= 10;
-    }
-
-    // G — DYNAMIC FLASHLOAN SIZING: Implement algorithm for flashAmount calculation
-    _calculateOptimalWbnbFlashloan(opportunity) {
-        // Config defaults
-        const MAX_FLASHLOAN_PCT_OF_LIQUIDITY = Number(process.env.MAX_FLASHLOAN_PCT_OF_LIQUIDITY) || 0.6;
-        const MIN_PROFIT_USD = Number(process.env.MIN_PROFIT_USD) || 500;
-        const HARD_MAX_PER_TRADE = 100000; // $100K max per trade
-
-        // Get pool liquidity (simplified - in real implementation, query actual pool reserves)
-        const poolLiquidity = 1000000; // Assume $1M liquidity for calculation
-        const usableLiquidity = poolLiquidity * MAX_FLASHLOAN_PCT_OF_LIQUIDITY;
-
-        // Calculate theoretical profitable borrow size: targetBorrow = (expectedProfitTargetUsd / (spread / 100)) / tokenPriceUsd
-        const expectedProfitTargetUsd = MIN_PROFIT_USD;
-        const tokenPriceUsd = 567; // BNB price
-        const theoreticalBorrow = (expectedProfitTargetUsd / (opportunity.spread / 100)) / tokenPriceUsd;
-
-        // Final borrow = Math.min(usableLiquidity, theoreticalBorrow, HARD_MAX_PER_TRADE)
-        const targetUSD = Math.min(usableLiquidity, theoreticalBorrow, HARD_MAX_PER_TRADE);
-        const bnbAmount = targetUSD / tokenPriceUsd;
-        const wbnbAmount = ethers.parseEther(Math.max(bnbAmount, 1).toFixed(6)); // Minimum 1 BNB
-
-        console.log(`💰 DYNAMIC FLASHLOAN SIZING:`);
-        console.log(`   Pool liquidity: $${poolLiquidity.toLocaleString()}`);
-        console.log(`   Usable liquidity: $${usableLiquidity.toLocaleString()} (${MAX_FLASHLOAN_PCT_OF_LIQUIDITY * 100}% of pool)`);
-        console.log(`   Theoretical borrow: $${theoreticalBorrow.toFixed(0)} (for $${expectedProfitTargetUsd} profit)`);
-        console.log(`   Final amount: $${targetUSD.toFixed(0)} USD (${ethers.formatEther(wbnbAmount)} WBNB)`);
-        console.log(`   Spread: ${opportunity.spread.toFixed(4)}%`);
-
-        return wbnbAmount;
-    }
-
-    // Get token object from pair string (e.g., "WBNB/USDT" → TOKENS.USDT)
-    _getTokenFromPair(pair) {
-        const [tokenA, tokenB] = pair.split('/');
-        // Return the non-WBNB token (since we're borrowing WBNB)
-        return tokenA === 'WBNB' ? TOKENS[tokenB] : TOKENS[tokenA];
-    }
-
-    // Validate pool data availability
-    async _validatePoolData(protocol, tokenA, tokenB) {
-        try {
-            console.log(`🔍 Validating pool data for ${protocol}: ${tokenA.symbol}/${tokenB.symbol}`);
-
-            // Check if pool address exists in configuration
-            const poolAddress = this.flashProvider.getPoolAddress(protocol, tokenA, tokenB);
-            if (!poolAddress) {
-                console.log(`❌ No pool address found for ${protocol} ${tokenA.symbol}/${tokenB.symbol}`);
-                return false;
-            }
-
-            // Try to query pool data
-            if (protocol === 'PancakeSwap' || protocol === 'Biswap') {
-                try {
-                    const poolContract = new ethers.Contract(poolAddress, [
-                        'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)',
-                        'function token0() external view returns (address)',
-                        'function token1() external view returns (address)'
-                    ], this.provider);
-
-                    const [reserve0, reserve1] = await poolContract.getReserves();
-                    const token0Address = await poolContract.token0();
-                    const token1Address = await poolContract.token1();
-
-                    // No liquidity checks - accept all pools
-
-                    console.log(`✅ Pool validated: ${protocol} ${tokenA.symbol}/${tokenB.symbol}`);
-                    console.log(`   Reserves: ${ethers.formatEther(reserve0)} / ${ethers.formatEther(reserve1)}`);
-                    return true;
-
-                } catch (contractError) {
-                    console.log(`❌ Contract error validating ${protocol} pool: ${contractError.message}`);
-                    return false;
-                }
-            }
-
-            // For other protocols, assume valid if address exists
-            console.log(`✅ Pool address exists for ${protocol} ${tokenA.symbol}/${tokenB.symbol}`);
-            return true;
-
-        } catch (error) {
-            console.log(`❌ Error validating pool data: ${error.message}`);
-            return false;
-        }
-    }
-
-    // Calculate optimal flashloan amount based on arbitrage opportunity - PROFITABLE $5000+ FLASHLOANS
-    _calculateOptimalFlashAmount(opportunity, flashProvider) {
-        // PROFITABLE FLASHLOANS: Target $5000+ for meaningful profits
-        const targetUSD = 5000; // Minimum $5000 flashloan for profitability
-        const bnbPrice = 567; // Current BNB price approximation
-        const targetBNB = targetUSD / bnbPrice; // ~8.82 BNB for $5000
-
-        let baseAmount = ethers.parseEther(targetBNB.toFixed(2));
-
-        // Scale based on opportunity quality (higher spread = larger loan for more profit)
-        if (opportunity.spread > 0.01) {
-            baseAmount = baseAmount.mul(ethers.BigNumber.from(200)).div(ethers.BigNumber.from(100)); // +100% for high spread ($200K)
-        } else if (opportunity.spread > 0.005) {
-            baseAmount = baseAmount.mul(ethers.BigNumber.from(150)).div(ethers.BigNumber.from(100)); // +50% for medium spread ($150K)
-        }
-
-        // Check available balance
-        const availableBalance = this.preTradeBalance || ethers.parseEther('0.004');
-        const safeBalance = availableBalance - this.minBalanceRequired;
-
-        // If balance is insufficient for $5000 flashloan, use maximum possible
-        if (baseAmount > safeBalance) {
-            console.log(`⚠️ Insufficient balance for $5000+ flashloan, using maximum available`);
-            baseAmount = safeBalance * 80n / 100n; // Use 80% of safe balance
-        }
-
-        // Minimum flashloan of 1 WBNB (~$567) for meaningful arbitrage
-        const minAmount = ethers.parseEther('1');
-        if (baseAmount < minAmount) {
-            baseAmount = minAmount;
-        }
-
-        // Maximum cap at $25000 to prevent over-leveraging
-        const maxUSD = 25000;
-        const maxBNB = maxUSD / bnbPrice;
-        const maxAmount = ethers.parseEther(maxBNB.toFixed(2));
-        if (baseAmount > maxAmount) {
-            baseAmount = maxAmount;
-        }
-
-        const finalUSD = parseFloat(ethers.formatEther(baseAmount)) * bnbPrice;
-        console.log(`💰 PROFITABLE FLASHLOAN: ${ethers.formatEther(baseAmount)} WBNB ($${finalUSD.toFixed(0)} USD)`);
-        console.log(`   Target: $5000+ for meaningful profits`);
-        console.log(`   Spread: ${opportunity.spread.toFixed(4)}%`);
-        console.log(`   Available balance: ${ethers.formatEther(availableBalance)} BNB`);
-
-        return baseAmount;
-    }
-
-    // Execute stablecoin flashloan arbitrage (100K loans)
-    async _executeStablecoinFlashloanArbitrage(opportunity) {
-        try {
-            const { pair, token, buyDex, sellDex, flashloanAmount, netProfit } = opportunity;
-
-            console.log(`🔄 EXECUTING STABLECOIN FLASHLOAN ARBITRAGE:`);
-            console.log(`   Pair: ${pair} | Amount: $${flashloanAmount.toLocaleString()}`);
-            console.log(`   Buy: ${buyDex} | Sell: ${sellDex}`);
-            console.log(`   Expected Net Profit: $${netProfit.toFixed(2)}`);
-
-            // STEP 1: Find best flashloan provider for the stablecoin
-            console.log(`🏦 Finding best flashloan provider for ${token}...`);
-            const flashProvider = await this.flashProvider.findBestFlashProvider(TOKENS[token].address, ethers.parseUnits(flashloanAmount.toString(), 18));
-
-            if (!flashProvider) {
-                throw new Error(`No suitable flashloan provider found for ${token}`);
-            }
-
-            console.log(`✅ Selected: ${flashProvider.protocol} (${flashProvider.type}) - Fee: ${flashProvider.fee.toString()}`);
-
-            // STEP 2: Use the 100K flashloan amount as specified
-            const flashAmount = ethers.parseUnits(flashloanAmount.toString(), 18);
-            console.log(`💰 Flashloan amount: ${ethers.formatEther(flashAmount)} ${token} ($${flashloanAmount.toLocaleString()})`);
-
-            // STEP 3: Prepare arbitrage parameters for stablecoin pair
-            const arbitrageParams = {
-                exchanges: [buyDex, sellDex],
-                path: [TOKENS[token].address, TOKENS[pair.split('/')[1]].address], // e.g., [USDT, USDC]
-                buyDex: buyDex,
-                sellDex: sellDex,
-                expectedProfit: netProfit,
-                caller: this.signer.address,
-                gasReimbursement: ethers.parseEther('0.002'), // Reimburse gas
-                contractAddress: process.env.FLASHLOAN_ARB_CONTRACT || '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1'
-            };
-
-            // STEP 4: Execute flashloan arbitrage
-            console.log(`⚡ Executing ${flashProvider.protocol} stablecoin flashloan arbitrage...`);
-
-            let result;
-            if (flashProvider.type === 'flashSwap') {
-                // DEX-native flash swap
-                const poolAddress = this.flashProvider.getPoolAddress(flashProvider.protocol, TOKENS[token], TOKENS[pair.split('/')[1]]);
-                if (!poolAddress) {
-                    throw new Error(`No pool address found for ${flashProvider.protocol} ${pair}`);
-                }
-
-                result = await this.flashProvider.executeFlashSwap(
-                    flashProvider.protocol,
-                    poolAddress,
-                    flashAmount, // amount0
-                    ethers.constants.Zero, // amount1
-                    arbitrageParams
-                );
-            } else {
-                // Traditional flashloan
-                result = await this.flashProvider.executeFlashLoan(
-                    flashProvider.protocol,
-                    TOKENS[token].address,
-                    flashAmount,
-                    arbitrageParams
-                );
-            }
-
-            // SUCCESSFUL TRANSACTION - LOG ONLY THIS
-            const timestamp = new Date().toISOString();
-            console.log(`[${timestamp}] ✅ ARBITRAGE SUCCESS: pair=${opportunity.pair}, txHash=${result.txHash}, netProfit=$${netProfit.toFixed(2)}, fundsReceived=true`);
-            console.log(`[${timestamp}] 💰 Profits will be deposited to wallet: ${process.env.WALLET_ADDRESS}`);
-
-            // Record successful arbitrage
-            this._recordSuccessfulTransaction();
-
-            // Send leftover native token profit to wallet address from .env
-            await this._sendLeftoverProfitToWallet();
-
-            return {
-                txHash: result.txHash,
-                flashAmount: flashAmount,
-                flashFee: flashFee,
-                gasCost: gasCost,
-                protocol: flashProvider.protocol,
-                netProfit: netProfit
-            };
-
-        } catch (error) {
-            console.error('🚫 Stablecoin flashloan arbitrage execution failed:', error.message);
-            this._recordFailedTransaction();
-            throw error;
-        }
-    }
-
-    // Execute multi-token arbitrage (3-token triangular or 4-token quad) - PRIORITY ROUTES
-    async _executeQuadArbitrage(opportunity) {
-        const MAX_RETRIES = 2;
-
-        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-            try {
-                const { path, dexes, expectedProfit, type } = opportunity;
-                const isTriangular = type === 'triangular' || path.length === 3;
-
-                if (isTriangular) {
-                    // Handle 3-token triangular arbitrage
-                    const [tokenA, tokenB, tokenC] = path;
-                    console.log(`🔄 EXECUTING TRIANGULAR ARBITRAGE - UTMOST PRIORITY (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`);
-                    console.log(`   Path: ${tokenA} → ${tokenB} → ${tokenC} → ${tokenA}`);
-                    console.log(`   Expected profit: ${expectedProfit.toFixed(4)}%`);
-
-                    // Get token addresses
-                    const tokenAAddress = TOKENS[tokenA].address;
-                    const tokenBAddress = TOKENS[tokenB].address;
-                    const tokenCAddress = TOKENS[tokenC].address;
-
-                    // Calculate deadline
-                    const deadline = Math.floor(Date.now() / 1000) + 300;
-
-                    // BUNDLED TRIANGULAR ARBITRAGE: Single multi-hop swap
-                    const fullPath = [tokenAAddress, tokenBAddress, tokenCAddress, tokenAAddress];
-
-                    // Calculate optimal amount and minimum output
-                    const optimalAmount = ethers.parseEther('1');
-                    const minAmountOut = optimalAmount.mul(ethers.BigNumber.from(Math.floor((1 + expectedProfit - 0.005) * 1000))).div(ethers.BigNumber.from(1000));
-
-                    console.log(`📦 TRIANGULAR ARBITRAGE BUNDLED:`);
-                    console.log(`   Amount: ${ethers.formatEther(optimalAmount)} ${tokenA}`);
-                    console.log(`   Expected profit: ${expectedProfit*100}%`);
-                    console.log(`   Minimum out: ${ethers.formatEther(minAmountOut)} ${tokenA}`);
-
-                    // Encode the bundled 3-hop swap
-                    const tx = {
-                        to: DEX_CONFIGS.PANCAKESWAP.router,
-                        data: this._encodeMultiHopSwap(tokenAAddress, optimalAmount, minAmountOut, fullPath, deadline),
-                        value: 0,
-                        gasLimit: ethers.BigNumber.from(2000000), // Gas limit for 3-hop
-                        gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
-                    };
-
-                    // Validate and execute with retry
-                    await this._validateTransactionSafety(tx);
-                    console.log(`🚀 Executing triangular arbitrage transaction...`);
-                    const txResponse = await this.signer.sendTransaction(tx);
-                    console.log(`📤 Transaction submitted: ${txResponse.hash}`);
-
-                    // Wait for confirmation
-                    const receipt = await txResponse.wait();
-                    console.log(`✅ Transaction confirmed in block ${receipt.blockNumber}`);
-
-                    const timestamp = new Date().toISOString();
-                    console.log(`[${timestamp}] ✅ TRIANGULAR ARBITRAGE SUCCESS: path=${tokenA}→${tokenB}→${tokenC}→${tokenA}, txHash=${txResponse.hash}, expectedProfit=$${expectedProfit.toFixed(4)}, gasUsed=${receipt.gasUsed}, fundsReceived=true`);
-                    console.log(`[${timestamp}] 💰 Profits will be deposited to wallet: ${process.env.WALLET_ADDRESS}`);
-                    this._recordSuccessfulTransaction();
-                    return txResponse;
-
-                } else {
-                    // Handle 4-token quad arbitrage
-                    const [tokenA, tokenB, tokenC, tokenD] = path;
-                    console.log(`🎯 EXECUTING QUAD ARBITRAGE - PRIORITY ROUTE (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`);
-                    console.log(`   Path: ${tokenA} → ${tokenB} → ${tokenC} → ${tokenD} → ${tokenA}`);
-                    console.log(`   Expected profit: ${expectedProfit.toFixed(4)}%`);
-
-                    // Get token addresses
-                    const tokenAAddress = TOKENS[tokenA].address;
-                    const tokenBAddress = TOKENS[tokenB].address;
-                    const tokenCAddress = TOKENS[tokenC].address;
-                    const tokenDAddress = TOKENS[tokenD].address;
-
-                    // Calculate deadline
-                    const deadline = Math.floor(Date.now() / 1000) + 300;
-
-                    // Create 4-hop swap path
-                    const fullPath = [tokenAAddress, tokenBAddress, tokenCAddress, tokenDAddress, tokenAAddress];
-
-                    // Calculate optimal amount and minimum output
-                    const optimalAmount = ethers.parseEther('1');
-                    const minAmountOut = optimalAmount.mul(ethers.BigNumber.from(Math.floor((1 + expectedProfit - 0.01) * 1000))).div(ethers.BigNumber.from(1000));
-
-                    console.log(`📦 QUAD ARBITRAGE BUNDLED:`);
-                    console.log(`   Amount: ${ethers.formatEther(optimalAmount)} ${tokenA}`);
-                    console.log(`   Expected profit: ${expectedProfit*100}%`);
-                    console.log(`   Minimum out: ${ethers.formatEther(minAmountOut)} ${tokenA}`);
-
-                    // Encode the bundled 4-hop swap
-                    const tx = {
-                        to: DEX_CONFIGS.PANCAKESWAP.router,
-                        data: this._encodeQuadHopSwap(tokenAAddress, optimalAmount, minAmountOut, fullPath, deadline),
-                        value: 0,
-                        gasLimit: ethers.BigNumber.from(2500000), // Higher gas limit for 4-hop
-                        gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
-                    };
-
-                    // Validate and execute with retry
-                    await this._validateTransactionSafety(tx);
-                    console.log(`🚀 Executing quad arbitrage transaction...`);
-                    const txResponse = await this.signer.sendTransaction(tx);
-                    console.log(`📤 Transaction submitted: ${txResponse.hash}`);
-
-                    // Wait for confirmation
-                    const receipt = await txResponse.wait();
-                    console.log(`✅ Transaction confirmed in block ${receipt.blockNumber}`);
-
-                    const timestamp = new Date().toISOString();
-                    console.log(`[${timestamp}] ✅ QUAD ARBITRAGE SUCCESS: path=${tokenA}→${tokenB}→${tokenC}→${tokenD}→${tokenA}, txHash=${txResponse.hash}, expectedProfit=$${expectedProfit.toFixed(4)}, gasUsed=${receipt.gasUsed}, fundsReceived=true`);
-                    console.log(`[${timestamp}] 💰 Profits will be deposited to wallet: ${process.env.WALLET_ADDRESS}`);
-                    this._recordSuccessfulTransaction();
-                    return txResponse;
-                }
-
-            } catch (error) {
-                console.error(`❌ Multi-token arbitrage execution attempt ${attempt + 1} failed:`, error.message);
-
-                if (attempt < MAX_RETRIES) {
-                    console.log(`⏳ Retrying arbitrage execution in 2 seconds...`);
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                } else {
-                    console.error('❌ Multi-token arbitrage execution failed after all retries');
-                    this._recordFailedTransaction();
-                    throw error;
-                }
-            }
-        }
-    }
-
-    // Execute stablecoin arbitrage (legacy - kept for compatibility)
-    async _executeStablecoinArbitrage(opportunity) {
-        try {
-            // Create transaction for stablecoin arbitrage
-            const tx = await this._createStablecoinArbitrageTx(opportunity);
-
-            // CRITICAL: Validate transaction safety before execution
-            await this._validateTransactionSafety(tx);
-
-            // Execute transaction
-            const txResponse = await this.signer.sendTransaction(tx);
-            console.log(`Stablecoin arbitrage transaction submitted: ${txResponse.hash}`);
-
-            // Record successful transaction
-            this._recordSuccessfulTransaction();
-
-            return txResponse;
-        } catch (error) {
-            console.error('Stablecoin arbitrage execution failed:', error.message);
-            this._recordFailedTransaction();
-            throw error;
-        }
-    }
-
-    // Execute swap: ETH/BNB -> Tokens
-    async _executeSwapETHForTokens(dexName, amountIn, tokenOut, intermediateToken = null) {
-        const dexKey = dexName.toUpperCase();
-        const dexConfig = DEX_CONFIGS[dexKey];
-
-        if (!dexConfig) {
-            throw new Error(`DEX ${dexName} not configured`);
-        }
-
-        // Create router contract
-        const router = new ethers.Contract(
-            dexConfig.router,
-            [
-                'function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)',
-                'function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)'
-            ],
-            this.signer
-        );
-
-        // Create swap path
-        const path = intermediateToken
-            ? [TOKENS.WBNB.address, intermediateToken, tokenOut] // Multi-hop
-            : [TOKENS.WBNB.address, tokenOut]; // Direct
-
-        // Get expected output amount
-        const amountsOut = await router.getAmountsOut(amountIn, path);
-        const expectedOut = amountsOut[amountsOut.length - 1];
-
-        // Apply dynamic slippage protection
-        const dynamicSlippage = this._calculateDynamicSlippage({ spread: 0.005 }, await this.provider.getFeeData().gasPrice);
-        const slippageBps = Math.floor((1 - dynamicSlippage) * 1000);
-        const minAmountOut = expectedOut.mul(ethers.BigNumber.from(slippageBps)).div(ethers.BigNumber.from(1000));
-
-        const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
-
-        console.log(`🔄 Swapping ${ethers.formatEther(amountIn)} BNB -> tokens via ${dexName}`);
-        console.log(`   Path: ${path.join(' -> ')}`);
-        console.log(`   Expected: ${ethers.formatEther(expectedOut)} tokens`);
-        console.log(`   Minimum: ${ethers.formatEther(minAmountOut)} tokens`);
-
-        // Execute the swap using router.functions.swapExactETHForTokens
-        const txData = await router.functions.swapExactETHForTokens(
-            minAmountOut,
-            path,
-            this.signer.address,
-            deadline
-        );
-
-        const tx = await txData.buildTransaction({
-            value: amountIn, // Send BNB with transaction
-            gasLimit: 800000,
-            gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
-        });
-
-        // Validate transaction safety
-        await this._validateTransactionSafety(tx);
-
-        // Execute transaction
-        const txResponse = await this.signer.sendTransaction(tx);
-        console.log(`✅ Swap executed: ${txResponse.hash}`);
-
-        return txResponse;
-    }
-
-    // Execute swap: Tokens -> ETH/BNB
-    async _executeSwapTokensForETH(dexName, amountIn, tokenIn, intermediateToken = null) {
-        const dexKey = dexName.toUpperCase();
-        const dexConfig = DEX_CONFIGS[dexKey];
-
-        if (!dexConfig) {
-            throw new Error(`DEX ${dexName} not configured`);
-        }
-
-        // Create router contract
-        const router = new ethers.Contract(
-            dexConfig.router,
-            [
-                'function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)',
-                'function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)'
-            ],
-            this.signer
-        );
-
-        // Create swap path
-        const path = intermediateToken
-            ? [tokenIn, intermediateToken, TOKENS.WBNB.address] // Multi-hop
-            : [tokenIn, TOKENS.WBNB.address]; // Direct
-
-        // Get expected output amount
-        const amountsOut = await router.getAmountsOut(amountIn, path);
-        const expectedOut = amountsOut[amountsOut.length - 1];
-
-        // Apply dynamic slippage protection
-        const dynamicSlippage = this._calculateDynamicSlippage({ spread: 0.005 }, await this.provider.getFeeData().gasPrice);
-        const slippageBps = Math.floor((1 - dynamicSlippage) * 1000);
-        const minAmountOut = expectedOut.mul(ethers.BigNumber.from(slippageBps)).div(ethers.BigNumber.from(1000));
-
-        const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
-
-        console.log(`🔄 Swapping ${ethers.formatEther(amountIn)} tokens -> BNB via ${dexName}`);
-        console.log(`   Path: ${path.join(' -> ')}`);
-        console.log(`   Expected: ${ethers.formatEther(expectedOut)} BNB`);
-        console.log(`   Minimum: ${ethers.formatEther(minAmountOut)} BNB`);
-
-        // Execute the swap
-        const tx = await router.swapExactTokensForETH(
-            amountIn,
-            minAmountOut,
-            path,
-            this.signer.address,
-            deadline,
-            {
-                gasLimit: 800000,
-                gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
-            }
-        );
-
-        // Validate transaction safety
-        await this._validateTransactionSafety(tx);
-
-        // Execute transaction
-        const txResponse = await this.signer.sendTransaction(tx);
-        console.log(`✅ Swap executed: ${txResponse.hash}`);
-
-        return txResponse;
-    }
-
-    // Create WBNB/USDT arbitrage transaction (legacy - kept for compatibility)
-    async _createWbnbUsdtArbitrageTx(opportunity) {
-        // This method is now deprecated - use _executeWbnbUsdtArbitrage instead
-        throw new Error('Use _executeWbnbUsdtArbitrage for real arbitrage execution');
-    }
-
-    // Create stablecoin arbitrage transaction
-    async _createStablecoinArbitrageTx(opportunity) {
-        if (opportunity.type === 'stablecoin_mispricing') {
-            const { stable1, stable2, direction } = opportunity;
-
-            // Calculate optimal amount
-            const optimalAmount = ethers.parseEther('1000'); // Start with 1000 tokens
-
-            // Determine buy/sell tokens based on direction
-            let sellToken, buyToken;
-            if (direction === 'sell_stable1_buy_stable2') {
-                sellToken = stable1;
-                buyToken = stable2;
-            } else {
-                sellToken = stable2;
-                buyToken = stable1;
-            }
-
-            // Calculate minimum output amount with slippage protection
-            const minAmountOut = optimalAmount.mul(ethers.BigNumber.from(Math.floor((1 - 0.005) * 1000))).div(ethers.BigNumber.from(1000));
-
-            // Create swap path
-            const path = [TOKENS[sellToken].address, TOKENS[buyToken].address];
-
-            // Calculate deadline
-            const deadline = Math.floor(Date.now() / 1000) + 300;
-
-            // Encode the swap
-            const tx = {
-                to: DEX_CONFIGS.PANCAKESWAP.router,
-                data: this._encodeTwoTokenSwap(path, optimalAmount, minAmountOut, deadline),
-                value: 0,
-                gasLimit: ethers.BigNumber.from(1000000),
-                gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
-            };
-
-            return tx;
-        } else if (opportunity.type === 'stablecoin_peg_break') {
-            // Handle peg break arbitrage (stablecoin vs WBNB)
-            const { stablecoin, pair } = opportunity;
-            const [sellToken, buyToken] = pair.split('/');
-
-            const optimalAmount = ethers.parseEther('100'); // Smaller amount for peg breaks
-            const minAmountOut = optimalAmount.mul(ethers.BigNumber.from(Math.floor((1 - 0.01) * 1000))).div(ethers.BigNumber.from(1000)); // 1% slippage
-
-            const path = [TOKENS[sellToken].address, TOKENS[buyToken].address];
-            const deadline = Math.floor(Date.now() / 1000) + 300;
-
-            const tx = {
-                to: DEX_CONFIGS.PANCAKESWAP.router,
-                data: this._encodeTwoTokenSwap(path, optimalAmount, minAmountOut, deadline),
-                value: 0,
-                gasLimit: ethers.BigNumber.from(1000000),
-                gasPrice: ethers.parseUnits(this.maxGasPrice.toString(), 'gwei')
-            };
-
-            return tx;
-        }
-    }
-
-    // Silent error handling - no logging
-    _handleError(error) {
-        this.errorCount++;
-        if (this.errorCount >= this.maxErrors) {
-            this.stop();
-        }
-    }
-
-
-
-    // Winrate tracking methods
-    recordTrade(success) {
-        this.totalTrades++;
-        if (success) {
-            this.successfulTrades++;
-        }
-        this.winrate = this.totalTrades > 0 ? (this.successfulTrades / this.totalTrades) * 100 : 0;
-    }
-
-    displayWinrateStats() {
-        console.log('\n=== Winrate Statistics ===');
-        console.log(`Total Trades: ${this.totalTrades}`);
-        console.log(`Successful Trades: ${this.successfulTrades}`);
-        console.log(`Winrate: ${this.winrate.toFixed(2)}%`);
-        console.log('========================');
-    }
-
-    getWinrate() {
-        return this.winrate;
-    }
-
-    resetWinrate() {
-        this.totalTrades = 0;
-        this.successfulTrades = 0;
-        this.winrate = 0;
-        console.log('Winrate statistics reset');
-    }
-
-    getStatus() {
-        return {
-            isRunning: this.isRunning,
-            errorCount: this.errorCount,
-            winrate: {
-                totalTrades: this.totalTrades,
-                successfulTrades: this.successfulTrades,
-                winrate: this.winrate
-            },
-            currentParameters: {
-                maxGasPrice: this.maxGasPrice,
-                minProfitUSD: this.minProfitUSD,
-                scanInterval: this.scanInterval
-            },
-            profitProtection: {
-                enabled: this.profitProtectionEnabled,
-                validationCount: this.profitValidationCount,
-                validationSuccess: this.profitValidationSuccess,
-                successRate: this.profitValidationCount > 0 ? (this.profitValidationSuccess / this.profitValidationCount * 100).toFixed(1) + '%' : '0%',
-                lastExpectedProfit: this.expectedProfitBNB > 0 ? `${this.expectedProfitBNB.toFixed(6)} BNB ($${this.expectedProfitBNB * 567})` : 'None',
-                lastActualProfit: this.actualProfitBNB > 0 ? `${this.actualProfitBNB.toFixed(6)} BNB ($${this.actualProfitBNB * 567})` : 'None'
-            }
-        };
-    }
-
-    async stop() {
-        console.log('🛑 Stopping arbitrage bot...');
-        this.isRunning = false;
-
-        // Cleanup verifier
-        if (this.verifier) {
-            await this.verifier.cleanup();
-        }
-
-        // Reset error count and safety measures
-        this.errorCount = 0;
-        this.consecutiveFailures = 0;
-        this.emergencyStopTriggered = false;
-
-        // Clear any cached data
-        if (this.priceFeed) {
-            this.priceFeed.clearCache();
-        }
-
-        console.log('✅ Bot stopped successfully - Safety measures reset');
-    }
-
-    async _createRobustProvider() {
-        try {
-            if (!process.env.RPC_URL || typeof process.env.RPC_URL !== "string") {
-                throw new Error("RPC_URL missing or invalid in .env");
-            }
-
-            // Trim URL to avoid accidental spaces
-            const rpcUrl = process.env.RPC_URL.trim();
-
-            // Ethers v6 provider creation
-            this.provider = new ethers.JsonRpcProvider(rpcUrl);
-
-            // Defensive check
-            if (typeof this.provider.getBlockNumber !== 'function') {
-                throw new Error('Provider does not have getBlockNumber method');
-            }
-
-            // Test connection with multiple methods
-            const network = await this.provider.getNetwork();
-            const blockNumber = await this.provider.getBlockNumber();
-            const feeData = await this.provider.getFeeData();
-
-            console.log(`✅ Provider initialized on chainId ${network.chainId}, block: ${blockNumber}`);
-
-            return this.provider;
-
-        } catch (err) {
-            console.error("❌ Failed to create provider:", err);
-            this.provider = null;
+            console.error('❌ Profit calculation failed:', error.message);
             return null;
         }
     }
 
-    // Send leftover native token profit to wallet address from .env
-    async _sendLeftoverProfitToWallet() {
+    /**
+     * Execute triangular arbitrage
+     */
+    async executeTriangularArbitrage(opportunity) {
         try {
-            const walletAddress = process.env.WALLET_ADDRESS;
-            if (!walletAddress) {
-                console.warn('⚠️ WALLET_ADDRESS not found in .env - skipping profit distribution');
-                return;
+            console.log(`🔄 Executing triangular arbitrage: ${opportunity.path.join(' -> ')}`);
+
+            // Calculate profit
+            const profitCalc = await this.calculateArbitrageProfit(opportunity);
+            if (!profitCalc || profitCalc.profitUSD < this.minProfitUSD) {
+                console.log(`⚠️ Profit too low: $${profitCalc?.profitUSD?.toFixed(2) || 0} < $${this.minProfitUSD}`);
+                return null;
             }
 
-            const safeAddress = getAddress(walletAddress);
+            // Check trade safety
+            const isSafe = await this.isTradeSafe(
+                profitCalc.path[0],
+                profitCalc.path[3],
+                ethers.parseEther(opportunity.amountIn.toString()),
+                profitCalc.finalAmount,
+                this.maxSlippage
+            );
 
-            // Check current balance
-            const currentBalance = await this.provider.getBalance(this.signer.address);
-            const minRequired = this.minBalanceRequired;
-
-            // Calculate leftover profit (balance above minimum required)
-            if (currentBalance > minRequired) {
-                const leftoverProfit = currentBalance - minRequired;
-
-                // Only send if leftover profit is meaningful (> 0.001 BNB ≈ $0.57)
-                const minProfitThreshold = ethers.parseEther('0.001');
-                if (leftoverProfit > minProfitThreshold) {
-                    console.log(`💰 Sending leftover profit to wallet: ${ethers.formatEther(leftoverProfit)} BNB ($${parseFloat(ethers.formatEther(leftoverProfit)) * 567})`);
-
-                    // Send transaction to wallet address
-                    const tx = await this.signer.sendTransaction({
-                        to: safeAddress,
-                        value: leftoverProfit,
-                        gasLimit: 21000, // Standard ETH transfer gas limit
-                        gasPrice: await this.provider.getFeeData().gasPrice
-                    });
-
-                    const timestamp = new Date().toISOString();
-                    console.log(`[${timestamp}] ✅ PROFIT DEPOSITED: amount=${ethers.formatEther(leftoverProfit)} BNB ($${parseFloat(ethers.formatEther(leftoverProfit)) * 567}), wallet=${safeAddress}, txHash=${tx.hash}`);
-
-                    // Wait for confirmation
-                    await tx.wait();
-                    console.log(`✅ Profit transfer confirmed`);
-                } else {
-                    console.log(`💰 Leftover profit too small to send: ${ethers.formatEther(leftoverProfit)} BNB`);
-                }
-            } else {
-                console.log(`💰 No leftover profit to send (balance: ${ethers.formatEther(currentBalance)} BNB, required: ${ethers.formatEther(minRequired)} BNB)`);
+            if (!isSafe) {
+                console.log(`⚠️ Trade not safe due to slippage`);
+                return null;
             }
+
+            // Execute the trade
+            const result = await this.executeTrade(
+                'PANCAKESWAP',
+                profitCalc.path[0],
+                profitCalc.path[3],
+                ethers.parseEther(opportunity.amountIn.toString()),
+                profitCalc.finalAmount * 95n / 100n, // 5% slippage protection
+                profitCalc.path
+            );
+
+            console.log(`💰 Triangular arbitrage profit: $${profitCalc.profitUSD.toFixed(2)}`);
+
+            return result;
+
         } catch (error) {
-            console.error('❌ Failed to send leftover profit to wallet:', error.message);
-            // Don't throw - profit distribution failure shouldn't stop the bot
+            console.error('❌ Triangular arbitrage failed:', error.message);
+            throw error;
         }
     }
 
-    // Calculate dynamic slippage based on market conditions
-    _calculateDynamicSlippage(opportunity, gasPrice) {
-        if (!this.slippageConfig.dynamicAdjustment) {
-            return this.slippageConfig.defaultSlippage;
-        }
+    /**
+     * Run Python arbitrage calculator
+     */
+    async runPythonCalculator(amountIn = 1.0) {
+        return new Promise((resolve, reject) => {
+            try {
+                const pythonProcess = spawn('python3', [this.pythonCalculatorPath, amountIn.toString()], {
+                    stdio: ['pipe', 'pipe', 'pipe']
+                });
 
-        let slippage = this.slippageConfig.defaultSlippage;
+                let stdout = '';
+                let stderr = '';
 
-        // Adjust based on spread - higher spread allows lower slippage
-        if (opportunity.spread > 0.01) {
-            slippage = Math.max(this.slippageConfig.minSlippage, slippage * 0.8); // Reduce slippage for high spreads
-        } else if (opportunity.spread < 0.001) {
-            slippage = Math.min(this.slippageConfig.maxSlippage, slippage * 1.5); // Increase slippage for low spreads
-        }
+                pythonProcess.stdout.on('data', (data) => {
+                    stdout += data.toString();
+                });
 
-        // Adjust based on gas price - higher gas price allows higher slippage
-        const gasPriceGwei = parseFloat(ethers.formatUnits(gasPrice, 'gwei'));
-        if (gasPriceGwei > 10) {
-            slippage = Math.min(this.slippageConfig.maxSlippage, slippage * 1.2); // Increase slippage for high gas
-        }
+                pythonProcess.stderr.on('data', (data) => {
+                    stderr += data.toString();
+                });
 
-        // Ensure within bounds
-        slippage = Math.max(this.slippageConfig.minSlippage, Math.min(this.slippageConfig.maxSlippage, slippage));
+                pythonProcess.on('close', (code) => {
+                    try {
+                        if (code !== 0) {
+                            console.warn(`⚠️ Python process exited with code ${code}: ${stderr}`);
+                            resolve({ success: false, opportunities: [], errors: [{ type: 'python_exit_error', error: `Exit code ${code}: ${stderr}` }] });
+                            return;
+                        }
 
-        console.log(`🎯 Dynamic slippage calculated: ${(slippage * 100).toFixed(2)}% (spread: ${opportunity.spread.toFixed(4)}, gas: ${gasPriceGwei.toFixed(1)} gwei)`);
+                        // Parse JSON output
+                        const result = JSON.parse(stdout.trim());
 
-        return slippage;
+                        if (result.success) {
+                            console.log(`🐍 Python calculator found ${result.opportunities.length} opportunities`);
+                            resolve(result);
+                        } else {
+                            console.warn(`⚠️ Python calculator failed: ${result.error}`);
+                            resolve(result);
+                        }
+
+                    } catch (parseError) {
+                        console.error(`❌ Failed to parse Python output: ${parseError.message}`);
+                        console.error(`Raw output: ${stdout}`);
+                        resolve({
+                            success: false,
+                            opportunities: [],
+                            errors: [{ type: 'json_parse_error', error: parseError.message }]
+                        });
+                    }
+                });
+
+                pythonProcess.on('error', (error) => {
+                    console.error('❌ Failed to spawn Python process:', error.message);
+                    resolve({
+                        success: false,
+                        opportunities: [],
+                        errors: [{ type: 'spawn_error', error: error.message }]
+                    });
+                });
+
+            } catch (error) {
+                console.error('❌ Python calculator execution failed:', error.message);
+                resolve({
+                    success: false,
+                    opportunities: [],
+                    errors: [{ type: 'execution_error', error: error.message }]
+                });
+            }
+        });
     }
 
-    // Get safety status
-    getSafetyStatus() {
+    /**
+     * Main scanning loop
+     */
+    async start() {
+        if (this.isRunning) return;
+        this.isRunning = true;
+
+        console.log('🚀 Starting Arbitrage Bot...');
+
+        while (this.isRunning) {
+            try {
+                this.lastScanTime = Date.now();
+
+                // Run Python calculator
+                const pythonResult = await this.runPythonCalculator(1.0);
+
+                if (pythonResult.success && pythonResult.opportunities.length > 0) {
+                    // Process each opportunity
+                    for (const opportunity of pythonResult.opportunities) {
+                        try {
+                            if (opportunity.type === 'triangular') {
+                                await this.executeTriangularArbitrage(opportunity);
+                            }
+                            // Add other opportunity types here
+
+                        } catch (error) {
+                            console.error(`❌ Failed to execute opportunity:`, error.message);
+                        }
+                    }
+                }
+
+                // Wait before next scan
+                await new Promise(resolve => setTimeout(resolve, this.scanInterval));
+
+            } catch (error) {
+                console.error('❌ Error in arbitrage scan loop:', error);
+                await new Promise(resolve => setTimeout(resolve, this.scanInterval * 2));
+            }
+        }
+    }
+
+    /**
+     * Stop the bot
+     */
+    async stop() {
+        console.log('🛑 Stopping Arbitrage Bot...');
+        this.isRunning = false;
+        console.log('✅ Bot stopped');
+    }
+
+    /**
+     * Get bot statistics
+     */
+    getStats() {
         return {
-            emergencyStopTriggered: this.emergencyStopTriggered,
-            consecutiveFailures: this.consecutiveFailures,
-            maxConsecutiveFailures: this.maxConsecutiveFailures,
-            minBalanceRequired: ethers.formatEther(this.minBalanceRequired),
-            maxGasPerTransaction: ethers.formatEther(this.maxGasPerTransaction),
-            lastTransactionTime: this.lastTransactionTime,
-            minTimeBetweenTransactions: this.minTimeBetweenTransactions,
-            retryAttempts: this.retryAttempts,
-            requestTimeout: this.requestTimeout,
-            maxDexBatchSize: this.maxDexBatchSize,
-            slippageConfig: this.slippageConfig
+            isRunning: this.isRunning,
+            totalTrades: this.totalTrades,
+            successfulTrades: this.successfulTrades,
+            successRate: this.totalTrades > 0 ? (this.successfulTrades / this.totalTrades) * 100 : 0,
+            lastScanTime: this.lastScanTime,
+            winRate: this.totalTrades > 0 ? (this.successfulTrades / this.totalTrades) * 100 : 0
         };
     }
 }
 
 module.exports = ArbitrageBot;
-
