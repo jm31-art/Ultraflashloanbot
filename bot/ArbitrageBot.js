@@ -321,6 +321,13 @@ class ArbitrageBot extends EventEmitter {
             const buyPoolReserves = await this._getPoolReserves(buyDex, tokenA, tokenB);
             const sellPoolReserves = await this._getPoolReserves(sellDex, tokenA, tokenB);
 
+            // Skip check if reserves are missing (don't block valid trades)
+            if (buyPoolReserves.reserve0 <= 0 || buyPoolReserves.reserve1 <= 0 ||
+                sellPoolReserves.reserve0 <= 0 || sellPoolReserves.reserve1 <= 0) {
+                console.log(`⚠️ Skipping reserve manipulation check for ${pair} - missing reserves`);
+                return true; // Allow trade to proceed
+            }
+
             // Compare with baseline reserves if available
             const buyPoolKey = `${buyDex}-${pair}`;
             const sellPoolKey = `${sellDex}-${pair}`;
@@ -347,8 +354,8 @@ class ArbitrageBot extends EventEmitter {
 
             return true;
         } catch (error) {
-            console.error('❌ Pool reserve check failed:', error.message);
-            return false;
+            console.warn('⚠️ Pool reserve check failed, allowing trade to proceed:', error.message);
+            return true; // Don't block trades due to check failures
         }
     }
 
@@ -356,8 +363,20 @@ class ArbitrageBot extends EventEmitter {
     async _checkSlippageImpact(opportunity, flashAmount) {
         try {
             const { pair, buyDex, sellDex, spread } = opportunity;
+            const [tokenA, tokenB] = pair.split('/');
 
-            // Simulate the swap to check slippage
+            // First get reserves to ensure pair exists and has liquidity
+            const buyReserves = await this._getPoolReserves(buyDex, tokenA, tokenB);
+            const sellReserves = await this._getPoolReserves(sellDex, tokenA, tokenB);
+
+            // Skip if reserves are insufficient
+            if (buyReserves.reserve0 <= 0 || buyReserves.reserve1 <= 0 ||
+                sellReserves.reserve0 <= 0 || sellReserves.reserve1 <= 0) {
+                console.log(`⚠️ Skipping slippage check for ${pair} - insufficient reserves`);
+                return false;
+            }
+
+            // Simulate the swap to check slippage after confirming reserves exist
             const slippageImpact = await this._simulateSwapSlippage(opportunity, flashAmount);
 
             // Check if slippage impact is within bot's tolerance
@@ -464,9 +483,18 @@ class ArbitrageBot extends EventEmitter {
 
             const [reserve0, reserve1] = await poolContract.getReserves();
 
-            return { reserve0: Number(reserve0), reserve1: Number(reserve1) };
+            // Add reserve > 0 checks to prevent divide-by-zero errors
+            const reserve0Num = Number(reserve0);
+            const reserve1Num = Number(reserve1);
+
+            if (reserve0Num <= 0 || reserve1Num <= 0) {
+                console.warn(`Skipping ${dex} ${tokenA}/${tokenB} - insufficient reserves: ${reserve0Num}/${reserve1Num}`);
+                return { reserve0: 0, reserve1: 0 };
+            }
+
+            return { reserve0: reserve0Num, reserve1: reserve1Num };
         } catch (error) {
-            console.error(`Failed to get reserves for ${dex} ${tokenA}/${tokenB}:`, error.message);
+            console.warn(`Failed to get reserves for ${dex} ${tokenA}/${tokenB}, skipping pair:`, error.message);
             return { reserve0: 0, reserve1: 0 };
         }
     }
@@ -726,7 +754,7 @@ class ArbitrageBot extends EventEmitter {
                 const router = new ethers.Contract(
                     DEX_CONFIGS.PANCAKESWAP.router,
                     ['function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) external returns (uint[] memory amounts)'],
-                    this.provider
+                    this.signer
                 );
 
                 // Estimate gas for a typical swap transaction
@@ -761,7 +789,7 @@ class ArbitrageBot extends EventEmitter {
             // Apply safety multiplier (1.3 = 30% buffer)
             const bufferedGasCostUSD = gasCostUSD * 1.3;
 
-            console.log(`⛽ REAL GAS ESTIMATION: ${Number(gasUnitsBN)} units * ${ethers.formatUnits(gasPriceBN, 'gwei')} gwei = ${gasCostBNB.toFixed(6)} BNB ($${gasCostUSD.toFixed(4)})`);
+            console.log(`⛽ REAL GAS ESTIMATION: ${Number(gasUnitsBN)} units * ${ethers.formatUnits(gasPriceBN, 'gwei')} gwei = ${gasCostBNB.toFixed(6)} BNB ($${gasCostUSD.toFixed(4)}) - buffered: $${bufferedGasCostUSD.toFixed(4)}`);
 
             return {
                 gasLimit: Number(gasUnitsBN),
@@ -1244,7 +1272,7 @@ class ArbitrageBot extends EventEmitter {
 
                         // EXECUTE ANY TRADE WITH NET PROFIT > $1 (BigInt-native check)
                         if (netProfitAfterGas > 1) {
-                            console.log(`⛽ MICRO-ARBITRAGE PROFITABILITY CHECK PASSED: Net profit $${netProfitAfterGas.toFixed(2)} > $1 minimum`);
+                            console.log(`💰 MICRO-ARBITRAGE: ${opp.pair} | Spread: ${opp.spread.toFixed(4)}% | Net Profit: $${netProfitAfterGas.toFixed(2)} (after gas)`);
 
                             // EXTREME MODE CHECKS: Run additional safety verifications if enabled
                             if (this.extremeMode) {
@@ -1266,7 +1294,7 @@ class ArbitrageBot extends EventEmitter {
 
                                 const canExecute = await this._extremeModeCanExecute(opp, txBuilder);
                                 if (!canExecute) {
-                                    console.log(`Skipping trade ${opp.pair} — extreme mode checks failed`);
+                                    console.log(`⚠️ EXTREME MODE: Skipping ${opp.pair} — profit $${opp.expectedProfitUsd?.toFixed(2)} below $10 threshold`);
                                     continue;
                                 }
                             }
@@ -2163,10 +2191,7 @@ class ArbitrageBot extends EventEmitter {
 
                                 // Risk management: Only execute if net profit > $0.10
                                 if (netProfit > 0.1) {
-                                    console.log(`💰 STABLECOIN FLASHLOAN OPPORTUNITY: ${stable1}/${stable2}`);
-                                    console.log(`   Buy ${buyDex}: $${buyPrice.toFixed(6)} | Sell ${sellDex}: $${sellPrice.toFixed(6)}`);
-                                    console.log(`   Spread: ${spread.toFixed(4)}% | Gross Profit: $${grossProfit.toFixed(2)}`);
-                                    console.log(`   Net Profit: $${netProfit.toFixed(2)} (after fees & slippage)`);
+                                    console.log(`💰 FLASHLOAN OPPORTUNITY: ${stable1}/${stable2} | Buy:${buyDex} Sell:${sellDex} | Spread:${spread.toFixed(4)}% | Net:$${netProfit.toFixed(2)}`);
 
                                     opportunities.push({
                                         type: 'stablecoin_flashloan_arbitrage',
@@ -2336,8 +2361,8 @@ class ArbitrageBot extends EventEmitter {
 
     // Extreme mode validation method
     _extremeModeCanExecute(opportunity) {
-        // Returns true if opportunity meets guaranteed trade threshold (example: opportunity.expectedProfitUsd >= 50)
-        return opportunity.expectedProfitUsd >= 50;
+        // Returns true if opportunity meets guaranteed trade threshold (allow trades above $10 profit)
+        return opportunity.expectedProfitUsd >= 10;
     }
 
     // G — DYNAMIC FLASHLOAN SIZING: Implement algorithm for flashAmount calculation
