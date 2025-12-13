@@ -1,9 +1,9 @@
 const Moralis = require("moralis").default;
 
 async function initMoralis(apiKey) {
-    if (!global.__MORALIS_STARTED__) {
+    if (!global.__MORALIS_INITIALIZED__) {
         await Moralis.start({ apiKey });
-        global.__MORALIS_STARTED__ = true;
+        global.__MORALIS_INITIALIZED__ = true;
         console.log("✅ Moralis API initialized for live DEX prices");
     } else {
         console.log("ℹ️ Moralis already initialized - skipping");

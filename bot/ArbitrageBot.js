@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { EventEmitter } = require('events');
-const { ethers, getAddress, JsonRpcProvider } = require('ethers');
+const { ethers, getAddress, JsonRpcProvider, ZeroAddress } = require('ethers');
 const { DEX_CONFIGS, TOKENS, TRADING_PAIRS } = require('../config/dex');
 const PriceFeed = require('../services/PriceFeed');
 const DexPriceFeed = require('../services/DexPriceFeed');
@@ -13,15 +13,17 @@ class ArbitrageBot extends EventEmitter {
         super();
 
         // Input validation
-        if (!provider) {
-            throw new Error('Provider is required for ArbitrageBot');
-        }
         if (!signer) {
             throw new Error('Signer is required for ArbitrageBot');
         }
 
-        // Create robust provider with retry logic and high limits
-        this.provider = this._createRobustProvider(provider);
+        // Create provider
+        this.provider = new JsonRpcProvider(process.env.RPC_URL);
+
+        // Hard guard immediately after creation
+        if (!this.provider || typeof this.provider.getBlockNumber !== "function") {
+            throw new Error("Invalid ethers provider — provider not initialized correctly");
+        }
         this.signer = signer;
         this.priceFeed = new DexPriceFeed(provider);
         this.flashProvider = new FlashProvider(provider, signer);
@@ -89,7 +91,7 @@ class ArbitrageBot extends EventEmitter {
         this.extremeGasBudgetUSD = 1.51;
         this.extremeMaxTrades = 2;
         this.extremeExecutedTrades = 0;
-        this.extremeGasWalletAddress = process.env.EXTREME_GAS_WALLET || null;
+        this.extremeGasWalletAddress = process.env.EXTREME_GAS_WALLET ? getAddress(process.env.EXTREME_GAS_WALLET) : null;
         this.extremeMinProfitUSD = options.extremeMinProfitUSD || 50;
         this.extremeModeStartTime = null;
     }
@@ -3003,6 +3005,8 @@ class ArbitrageBot extends EventEmitter {
                 return;
             }
 
+            const safeAddress = getAddress(walletAddress);
+
             // Check current balance
             const currentBalance = await this.provider.getBalance(this.signer.address);
             const minRequired = this.minBalanceRequired;
@@ -3018,14 +3022,14 @@ class ArbitrageBot extends EventEmitter {
 
                     // Send transaction to wallet address
                     const tx = await this.signer.sendTransaction({
-                        to: walletAddress,
+                        to: safeAddress,
                         value: leftoverProfit,
                         gasLimit: 21000, // Standard ETH transfer gas limit
                         gasPrice: await this.provider.getFeeData().gasPrice
                     });
 
                     const timestamp = new Date().toISOString();
-                    console.log(`[${timestamp}] ✅ PROFIT DEPOSITED: amount=${ethers.formatEther(leftoverProfit)} BNB ($${parseFloat(ethers.formatEther(leftoverProfit)) * 567}), wallet=${walletAddress}, txHash=${tx.hash}`);
+                    console.log(`[${timestamp}] ✅ PROFIT DEPOSITED: amount=${ethers.formatEther(leftoverProfit)} BNB ($${parseFloat(ethers.formatEther(leftoverProfit)) * 567}), wallet=${safeAddress}, txHash=${tx.hash}`);
 
                     // Wait for confirmation
                     await tx.wait();
