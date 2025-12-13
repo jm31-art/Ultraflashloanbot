@@ -37,7 +37,7 @@ async function main() {
     const tokenPriceUsd = 567; // Approximate BNB price
 
     // Flashloan contract address (deploy this first)
-    const flashloanContractAddress = process.env.FLASHLOAN_CONTRACT_ADDRESS;
+    const flashloanContractAddress = process.env.FLASHLOAN_ARB_CONTRACT;
 
     if (!flashloanContractAddress) {
       console.log("⚠️ FLASHLOAN_CONTRACT_ADDRESS not set - running in dry-run mode");
