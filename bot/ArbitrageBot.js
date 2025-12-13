@@ -94,6 +94,9 @@ class ArbitrageBot extends EventEmitter {
         this.extremeGasWalletAddress = process.env.EXTREME_GAS_WALLET ? getAddress(process.env.EXTREME_GAS_WALLET) : null;
         this.extremeMinProfitUSD = options.extremeMinProfitUSD || 50;
         this.extremeModeStartTime = null;
+
+        // Bind extreme mode function
+        this._extremeModeCanExecute = this._extremeModeCanExecute.bind(this);
     }
 
     _validateMinProfit(minProfit) {
@@ -723,7 +726,7 @@ class ArbitrageBot extends EventEmitter {
                 const router = new ethers.Contract(
                     DEX_CONFIGS.PANCAKESWAP.router,
                     ['function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) external returns (uint[] memory amounts)'],
-                    this.provider.provider
+                    this.provider
                 );
 
                 // Estimate gas for a typical swap transaction
@@ -2329,6 +2332,12 @@ class ArbitrageBot extends EventEmitter {
             dexes: [buyDex, sellDex],
             type: 'bundled_arbitrage'
         };
+    }
+
+    // Extreme mode validation method
+    _extremeModeCanExecute(opportunity) {
+        // Returns true if opportunity meets guaranteed trade threshold (example: opportunity.expectedProfitUsd >= 50)
+        return opportunity.expectedProfitUsd >= 50;
     }
 
     // G — DYNAMIC FLASHLOAN SIZING: Implement algorithm for flashAmount calculation

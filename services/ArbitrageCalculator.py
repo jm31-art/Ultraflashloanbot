@@ -69,18 +69,41 @@ def calculate_tri_profit(path_info: dict, flash_amount_usd: Decimal = Decimal("1
     return profit_usd.quantize(Decimal("0.01"))
 
 def scan_all_paths():
-    print(f"Scanning {len(TRI_PATHS)} triangular paths...")
+    import sys
+    print(f"Scanning {len(TRI_PATHS)} triangular paths...", file=sys.stderr)
     best = Decimal("0")
     best_path = None
+    opportunities = []
+
     for p in TRI_PATHS:
         profit = calculate_tri_profit(p)
         if profit > best:
             best = profit
             best_path = p
+
+        # Collect all opportunities with profit > 0
+        if profit > Decimal("0"):
+            opportunities.append({
+                "type": f"Triangular ({p['name']})",
+                "path": p["path"],
+                "profitPercent": float(profit),
+                "profitBNB": float(profit / Decimal("567")),  # Convert USD to BNB
+                "direction": "forward",
+                "startAmount": 10
+            })
+
     if best > Decimal("30"):
-        print(f"ARBITRAGE FOUND → {best_path['name']} | Profit ≈ ${best}")
+        print(f"ARBITRAGE FOUND → {best_path['name']} | Profit ≈ ${best}", file=sys.stderr)
     else:
-        print(f"No profitable arb right now (best: ${best})")
+        print(f"No profitable arb right now (best: ${best})", file=sys.stderr)
+
+    # Output only JSON to stdout
+    result = {
+        "opportunities": opportunities,
+        "bestProfit": float(best),
+        "timestamp": int(time.time() * 1000)
+    }
+    print(result)
     return best
 
 if __name__ == "__main__":
