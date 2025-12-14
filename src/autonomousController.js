@@ -10,6 +10,7 @@ import { provider } from './dex/routers.js';
 import { generateTriangularPaths } from './arbitrage/pathGenerator.js';
 import { runArbitrage } from './arbitrage/arbitrageEngine.js';
 import { VOLATILE_MODE } from './arbitrage/volatileModeConfig.js';
+import { monitoring } from './monitoring.js';
 
 class AutonomousController extends EventEmitter {
   constructor() {
@@ -61,6 +62,9 @@ class AutonomousController extends EventEmitter {
 
     // Check wallet safety
     await this.validateWalletSafety();
+
+    // Start monitoring system
+    monitoring.start();
 
     console.log('🤖 AUTONOMOUS CONTROLLER: Initialization complete');
     console.log('🤖 AUTONOMOUS CONTROLLER: Entering autonomous mode...');
@@ -294,7 +298,7 @@ class AutonomousController extends EventEmitter {
       }
 
     } catch (error) {
-      console.error('❌ AUTONOMOUS CONTROLLER: Execution error:', error.message);
+      await monitoring.logCriticalError(error, 'arbitrage_scan');
     }
 
     // Return to idle state
@@ -337,13 +341,16 @@ class AutonomousController extends EventEmitter {
   /**
    * Switch to NORMAL mode
    */
-  switchToNormalMode(reason) {
-    console.log(`🔄 AUTONOMOUS CONTROLLER: Switching to NORMAL arbitrage mode (${reason})`);
+  async switchToNormalMode(reason) {
+    const fromMode = this.currentMode;
     this.currentMode = 'NORMAL';
 
     // Reset EXTREME mode counters
     this.extremeTradesExecuted = 0;
     this.extremeModeStartTime = Date.now();
+
+    // Log mode transition
+    await monitoring.logModeTransition(fromMode, 'NORMAL', reason);
 
     // In NORMAL mode, the bot still uses flashloans but with more conservative settings
     // The arbitrage engine will handle the mode-specific logic

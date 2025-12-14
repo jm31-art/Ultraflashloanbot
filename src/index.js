@@ -51,12 +51,14 @@ async function main() {
     process.on('SIGINT', () => {
       console.log('\n🛑 Received SIGINT, shutting down gracefully...');
       autonomousController.stop();
+      monitoring.stop();
       process.exit(0);
     });
 
     process.on('SIGTERM', () => {
       console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
       autonomousController.stop();
+      monitoring.stop();
       process.exit(0);
     });
 

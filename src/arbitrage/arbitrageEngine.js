@@ -8,6 +8,7 @@ import { FLASHLOAN_PROVIDERS, getBestProvider, calculateFee } from "../flashloan
 import { submitPrivateTx, getPrivateRelayStatus } from "../mev/privateRelay.js";
 import { getExtremeModeConfig } from "./extremeModeConfig.js";
 import { VOLATILE_MODE, getRandomProfitThreshold, isPrivateExecutionAvailable, MAX_SLIPPAGE_PER_HOP, MAX_TOTAL_SLIPPAGE } from "./volatileModeConfig.js";
+import { monitoring } from "../monitoring.js";
 import { ethers } from "ethers";
 
 /**
@@ -242,14 +243,18 @@ export async function runArbitrage(paths, signer, flashloanContractAddress, auto
         }
       }
 
-      // AUTONOMOUS MODE: Track successful trades for mode switching
+      // AUTONOMOUS MODE: Track successful trades for mode switching and monitoring
       if (autonomousMode && result.success && isExtremeMode) {
         // Import autonomous controller to track trades
-        import('./autonomousController.js').then(({ autonomousController }) => {
+        import('./autonomousController.js').then(async ({ autonomousController }) => {
           autonomousController.extremeTradesExecuted++;
-          console.log(`🔥 REAL VOLATILE ARBITRAGE EXECUTED`);
-          console.log(`Net Profit: $${result.profit || 'unknown'}`);
-          console.log(`Mode: EXTREME (${autonomousController.extremeTradesExecuted}/2)`);
+
+          // Log successful trade execution
+          await monitoring.logTradeExecuted({
+            txHash: result.txHash,
+            netProfit: result.profit || 'unknown',
+            mode: 'EXTREME'
+          });
         });
       }
 
@@ -612,7 +617,9 @@ async function runVolatileArbitrage(paths, signer, flashloanContractAddress, pro
 
         // Check slippage guard
         if (sim.slippageCheck && !sim.slippageCheck.passes) {
-          console.log(`VOLATILE MODE: Slippage guard triggered — ${sim.slippageCheck.reason}`);
+          monitoring.logSkippedPath('slippage_violation', {
+            maxSlippage: sim.slippageCheck.totalSlippage?.toFixed(4) || sim.slippageCheck.perHopSlippage?.toFixed(4)
+          });
           continue;
         }
 
@@ -625,13 +632,16 @@ async function runVolatileArbitrage(paths, signer, flashloanContractAddress, pro
         const profit = calculateProfit(flashloanSize.amount, sim.finalOut, gasEstimate, tokenPriceUsd);
 
         if (!profit || profit.profitUsd < profitThreshold) {
+          monitoring.logSkippedPath('insufficient_profit', {
+            profit: profit?.profitUsd?.toFixed(2)
+          });
           continue; // Silent rejection
         }
 
         // Get best flashloan provider
         const provider = getBestProvider(path[0], Number(ethers.formatEther(flashloanSize.amount)) * tokenPriceUsd);
         if (!provider) {
-          console.log(`VOLATILE MODE: No suitable flashloan provider`);
+          monitoring.logSkippedPath('no_flashloan_provider');
           continue;
         }
 
@@ -641,15 +651,19 @@ async function runVolatileArbitrage(paths, signer, flashloanContractAddress, pro
         const netProfitUsd = Number(netProfitAfterFee) * tokenPriceUsd / 1e18;
 
         if (netProfitUsd < profitThreshold) {
+          monitoring.logSkippedPath('profit_below_threshold', {
+            profit: netProfitUsd.toFixed(2)
+          });
           continue; // Final profit check
         }
 
-        // VOLATILE ARBITRAGE FOUND - Execute privately
-        console.log(`\n🔥 REAL VOLATILE ARBITRAGE FOUND`);
-        console.log(`DEX: ${routerName}`);
-        console.log(`Path: ${path.join(" → ")} → ${path[0]}`);
-        console.log(`Flashloan: ${ethers.formatEther(flashloanSize.amount)} ${path[0]} (${flashloanSize.percentage}% of pool)`);
-        console.log(`Net Profit: $${netProfitUsd.toFixed(2)}`);
+        // VOLATILE ARBITRAGE FOUND - Log and execute privately
+        await monitoring.logTradeFound({
+          path: path,
+          flashloanSize: ethers.formatEther(flashloanSize.amount),
+          estimatedProfit: netProfitUsd.toFixed(2),
+          mode: 'VOLATILE_MEV'
+        });
 
         // PRIVATE EXECUTION ONLY
         const result = await executeVolatileArbitrage({
@@ -701,7 +715,10 @@ async function calculateLiquidityAwareFlashloanSize(router, path) {
       }
     }
 
-    if (reserves.length === 0) return null;
+    if (reserves.length === 0) {
+      monitoring.logSkippedPath('no_pool_reserves');
+      return null;
+    }
 
     // Find smallest reserve across all pools
     let minReserve = reserves[0];
@@ -719,6 +736,9 @@ async function calculateLiquidityAwareFlashloanSize(router, path) {
     // Minimum viable size check
     const minViableSize = ethers.parseEther('10'); // 10 tokens minimum
     if (flashloanAmount < minViableSize) {
+      monitoring.logSkippedPath('flashloan_too_small', {
+        flashloanSize: ethers.formatEther(flashloanAmount)
+      });
       return null;
     }
 
