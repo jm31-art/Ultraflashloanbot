@@ -1,11 +1,12 @@
 import { config } from "dotenv";
 import { initMoralis } from "./bootstrap/moralis.bootstrap.js";
 import { autonomousController } from "./autonomousController.js";
+import { monitoring } from "./monitoring.js";
 import { provider } from "./dex/routers.js";
 import { ethers } from "ethers";
 
-// Load .env from parent directory
-config({ path: "../.env" });
+// Load .env from current directory
+config({ path: ".env" });
 
 async function main() {
   try {

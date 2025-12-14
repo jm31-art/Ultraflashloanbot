@@ -1,0 +1,6 @@
+🤖 STARTING AUTONOMOUS ARBITRAGE BOT (VOLATILE/EXTREME MODE)
+==================================================
+✅ Moralis initialized ONCE (bootstrap)
+❌ FATAL ERROR - BOT SHUTDOWN: Error: PRIVATE_KEY not found in .env
+    at main (file:///Users/julianna/Ultraflashloanbot/src/index.js:21:13)
+🛑 AUTONOMOUS CONTROLLER: Stopping daemon mode
