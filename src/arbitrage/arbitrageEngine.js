@@ -6,7 +6,7 @@ import { mevGuard } from "./mevGuard.js";
 import { shouldRunExtremeMode, getCurrentBlock } from "./blockScheduler.js";
 import { FLASHLOAN_PROVIDERS, getBestProvider, calculateFee } from "../flashloan/providers.js";
 import { submitPrivateTx, getPrivateRelayStatus } from "../mev/privateRelay.js";
-import { shouldRunExtremeModeByTime, getTimeWindowInfo } from "./timeWindow.js";
+import { getExtremeModeConfig } from "./extremeModeConfig.js";
 import { ethers } from "ethers";
 
 /**
@@ -82,28 +82,24 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
     EXTREME_MODE.lastRunBlock = currentBlock;
   }
 
-  // TIME-BASED LIQUIDITY WINDOWS: Check if in low liquidity window for EXTREME MODE
+  // DYNAMIC EXTREME MODE CONFIG: Get time-based risk thresholds
+  let extremeConfig = null;
   if (isExtremeMode) {
-    const inTimeWindow = shouldRunExtremeModeByTime();
-    console.log(getTimeWindowInfo());
-
-    if (!inTimeWindow) {
-      console.log(`🕐 EXTREME MODE: Outside low liquidity window - skipping`);
-      return null;
-    }
+    extremeConfig = getExtremeModeConfig();
+    console.log(`⚡ EXTREME MODE ACTIVE | Profit ≥ $${extremeConfig.minProfitUsd} | Attempts: ${extremeConfig.maxAttempts}`);
   }
 
   console.log(`\n🚀 Running arbitrage engine (${isExtremeMode ? 'EXTREME' : 'NORMAL'} MODE)`);
-  console.log(`Attempts used: ${EXTREME_MODE.attemptsUsed}/${EXTREME_MODE.maxAttempts}`);
+  console.log(`Attempts used: ${EXTREME_MODE.attemptsUsed}/${extremeConfig?.maxAttempts || EXTREME_MODE.maxAttempts}`);
   console.log(`Block-based execution: ${isExtremeMode ? 'ENABLED' : 'N/A'}`);
-  console.log(`Time window: ${isExtremeMode ? 'ENABLED' : 'N/A'}`);
 
   // SINGLE PASS SCAN: No while loop, just one pass through all paths
   for (const [routerName, router] of Object.entries(ROUTERS)) {
     for (const path of paths) {
       // EXTREME MODE: Check attempt limit before processing each path
-      if (isExtremeMode && EXTREME_MODE.attemptsUsed >= EXTREME_MODE.maxAttempts) {
-        console.log(`🛑 EXTREME MODE: Max attempts reached (${EXTREME_MODE.maxAttempts})`);
+      const maxAttempts = isExtremeMode ? extremeConfig.maxAttempts : EXTREME_MODE.maxAttempts;
+      if (isExtremeMode && EXTREME_MODE.attemptsUsed >= maxAttempts) {
+        console.log(`🛑 EXTREME MODE ATTEMPT LIMIT REACHED`);
         EXTREME_MODE.completed = true;
         return null;
       }
@@ -147,6 +143,12 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
 
       if (!profit) continue;
 
+      // STRICT PROFIT THRESHOLD ENFORCEMENT: Check before any transaction preparation
+      const requiredMinProfit = isExtremeMode ? extremeConfig.minProfitUsd : mode.minProfitUsd;
+      if (!profit || profit.profitUsd < requiredMinProfit) {
+        continue;
+      }
+
       // Strict validation checks
       if (!await validateArbitrageConditions(router, path, amountInWei, sim, profit, mode, priceImpact)) {
         continue;
@@ -176,6 +178,7 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
       console.log(`Net Profit After Fees: $${optimalSize.netProfitUsd.toFixed(2)}`);
 
       // Execute flashloan arbitrage using private relay
+      console.log(`🚀 Executing EXTREME MODE trade (${EXTREME_MODE.attemptsUsed + 1}/${extremeConfig.maxAttempts})`);
       const result = await executeFlashloanArbitrage({
         asset: path[0],
         amountWei: amountInWei,
@@ -186,11 +189,11 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
         selectedProvider
       });
 
-      // Track attempts in extreme mode
+      // Track attempts in extreme mode ONLY when transaction is actually submitted
       if (isExtremeMode) {
         EXTREME_MODE.attemptsUsed++;
 
-        if (result.success || EXTREME_MODE.attemptsUsed >= EXTREME_MODE.maxAttempts) {
+        if (result.success || EXTREME_MODE.attemptsUsed >= extremeConfig.maxAttempts) {
           if (EXTREME_MODE.autoDisableAfter) {
             EXTREME_MODE.enabled = false;
             EXTREME_MODE.completed = true;
