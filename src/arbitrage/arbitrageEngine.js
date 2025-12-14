@@ -7,6 +7,7 @@ import { shouldRunExtremeMode, getCurrentBlock } from "./blockScheduler.js";
 import { FLASHLOAN_PROVIDERS, getBestProvider, calculateFee } from "../flashloan/providers.js";
 import { submitPrivateTx, getPrivateRelayStatus } from "../mev/privateRelay.js";
 import { getExtremeModeConfig } from "./extremeModeConfig.js";
+import { VOLATILE_MODE, getRandomProfitThreshold, isPrivateExecutionAvailable, MAX_SLIPPAGE_PER_HOP, MAX_TOTAL_SLIPPAGE } from "./volatileModeConfig.js";
 import { ethers } from "ethers";
 
 /**
@@ -92,6 +93,28 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
   console.log(`\n🚀 Running arbitrage engine (${isExtremeMode ? 'EXTREME' : 'NORMAL'} MODE)`);
   console.log(`Attempts used: ${EXTREME_MODE.attemptsUsed}/${extremeConfig?.maxAttempts || EXTREME_MODE.maxAttempts}`);
   console.log(`Block-based execution: ${isExtremeMode ? 'ENABLED' : 'N/A'}`);
+
+  // VOLATILE_MEV MODE: Run in parallel if enabled
+  if (VOLATILE_MODE.enabled) {
+    console.log(`\n⚡ VOLATILE_MEV MODE: Checking for arbitrage opportunities...`);
+
+    // Check private execution availability
+    const privateAvailable = await isPrivateExecutionAvailable();
+    if (!privateAvailable) {
+      console.log(`VOLATILE MODE: Private execution unavailable — aborting`);
+      return null;
+    }
+
+    // Get randomized profit threshold for this cycle
+    const volatileProfitThreshold = getRandomProfitThreshold();
+    console.log(`VOLATILE MODE: Profit threshold set to $${volatileProfitThreshold}`);
+
+    // Run VOLATILE_MEV scan
+    const volatileResult = await runVolatileArbitrage(paths, signer, flashloanContractAddress, volatileProfitThreshold);
+    if (volatileResult) {
+      return volatileResult;
+    }
+  }
 
   // SINGLE PASS SCAN: No while loop, just one pass through all paths
   let failedSizingCount = 0;
@@ -532,6 +555,210 @@ async function executeFlashloanArbitrage({
 
   } catch (error) {
     console.error(`❌ Flashloan arbitrage failed:`, error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+/**
+ * VOLATILE_MEV Mode: Professional arbitrage for volatile DEX environments
+ */
+async function runVolatileArbitrage(paths, signer, flashloanContractAddress, profitThreshold) {
+  let volatileAttempts = 0;
+  const maxVolatileAttempts = VOLATILE_MODE.maxAttemptsPerSession;
+
+  for (const [routerName, router] of Object.entries(ROUTERS)) {
+    for (const path of paths) {
+      // Check attempt limit
+      if (volatileAttempts >= maxVolatileAttempts) {
+        console.log(`VOLATILE MODE: Max attempts reached (${maxVolatileAttempts})`);
+        return null;
+      }
+
+      try {
+        // LIQUIDITY-AWARE FLASHLOAN SIZING: 1-3% of smallest pool reserve
+        const flashloanSize = await calculateLiquidityAwareFlashloanSize(router, path);
+        if (!flashloanSize) {
+          console.log(`VOLATILE MODE: Unsafe flashloan size — skipping path`);
+          continue;
+        }
+
+        // SIMULATION-FIRST EXECUTION: Check on-chain profitability
+        const sim = await simulateTriangular(router, path, flashloanSize.amount, true); // Enable slippage checking
+        if (!sim || sim.finalOut <= flashloanSize.amount) {
+          console.log(`VOLATILE MODE: Simulation not profitable — skipping path`);
+          continue;
+        }
+
+        // Check slippage guard
+        if (sim.slippageCheck && !sim.slippageCheck.passes) {
+          console.log(`VOLATILE MODE: Slippage guard triggered — ${sim.slippageCheck.reason}`);
+          continue;
+        }
+
+        // Calculate actual profit
+        const gasEstimate = await router.getAmountsOut.estimateGas(
+          flashloanSize.amount,
+          [path[0], path[1]]
+        );
+        const tokenPriceUsd = 567;
+        const profit = calculateProfit(flashloanSize.amount, sim.finalOut, gasEstimate, tokenPriceUsd);
+
+        if (!profit || profit.profitUsd < profitThreshold) {
+          continue; // Silent rejection
+        }
+
+        // Get best flashloan provider
+        const provider = getBestProvider(path[0], Number(ethers.formatEther(flashloanSize.amount)) * tokenPriceUsd);
+        if (!provider) {
+          console.log(`VOLATILE MODE: No suitable flashloan provider`);
+          continue;
+        }
+
+        // Calculate net profit after fees
+        const flashFee = calculateFee(provider, flashloanSize.amount);
+        const netProfitAfterFee = profit.profit - flashFee;
+        const netProfitUsd = Number(netProfitAfterFee) * tokenPriceUsd / 1e18;
+
+        if (netProfitUsd < profitThreshold) {
+          continue; // Final profit check
+        }
+
+        // VOLATILE ARBITRAGE FOUND - Execute privately
+        console.log(`\n🔥 REAL VOLATILE ARBITRAGE FOUND`);
+        console.log(`DEX: ${routerName}`);
+        console.log(`Path: ${path.join(" → ")} → ${path[0]}`);
+        console.log(`Flashloan: ${ethers.formatEther(flashloanSize.amount)} ${path[0]} (${flashloanSize.percentage}% of pool)`);
+        console.log(`Net Profit: $${netProfitUsd.toFixed(2)}`);
+
+        // PRIVATE EXECUTION ONLY
+        const result = await executeVolatileArbitrage({
+          asset: path[0],
+          amountWei: flashloanSize.amount,
+          router: router.target,
+          path: path,
+          flashloanContractAddress,
+          signer,
+          provider
+        });
+
+        if (result.success) {
+          volatileAttempts++;
+          return result;
+        }
+
+      } catch (error) {
+        // Silent error handling - don't consume attempts
+        continue;
+      }
+    }
+  }
+
+  console.log(`VOLATILE MODE: No qualifying arbitrage found`);
+  return null;
+}
+
+/**
+ * Calculate liquidity-aware flashloan size (1-3% of smallest pool reserve)
+ */
+async function calculateLiquidityAwareFlashloanSize(router, path) {
+  try {
+    // Query actual pool reserves
+    const reserves = [];
+    for (let i = 0; i < path.length - 1; i++) {
+      try {
+        const pairAddress = await router.factory.getPair(path[i], path[i + 1]);
+        if (pairAddress === ethers.ZeroAddress) continue;
+
+        const pairContract = new ethers.Contract(pairAddress, [
+          'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)'
+        ], provider);
+
+        const [reserve0, reserve1] = await pairContract.getReserves();
+        reserves.push(reserve0 < reserve1 ? reserve0 : reserve1); // Use smaller reserve
+      } catch {
+        continue;
+      }
+    }
+
+    if (reserves.length === 0) return null;
+
+    // Find smallest reserve across all pools
+    let minReserve = reserves[0];
+    for (let i = 1; i < reserves.length; i++) {
+      if (reserves[i] < minReserve) {
+        minReserve = reserves[i];
+      }
+    }
+
+    // Random size between 1-3% of smallest reserve
+    const [minPct, maxPct] = VOLATILE_MODE.flashloanSizeRange;
+    const randomPct = minPct + Math.random() * (maxPct - minPct);
+    const flashloanAmount = minReserve * BigInt(Math.floor(randomPct * 10000)) / 10000n;
+
+    // Minimum viable size check
+    const minViableSize = ethers.parseEther('10'); // 10 tokens minimum
+    if (flashloanAmount < minViableSize) {
+      return null;
+    }
+
+    return {
+      amount: flashloanAmount,
+      percentage: (randomPct * 100).toFixed(1),
+      minReserve: minReserve
+    };
+
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Execute VOLATILE arbitrage with private relay only
+ */
+async function executeVolatileArbitrage({
+  asset,
+  amountWei,
+  router,
+  path,
+  flashloanContractAddress,
+  signer,
+  provider
+}) {
+  try {
+    // PRIVATE EXECUTION ONLY - No public mempool fallback
+    console.log(`🔒 Executing via private relay only...`);
+
+    const tx = await flashloanProvider.executeFlashloan(
+      flashloanContractAddress,
+      asset,
+      amountWei,
+      { router, path }
+    );
+
+    // SUBMIT VIA PRIVATE RELAY (mandatory)
+    const result = await submitPrivateTx(tx, provider);
+
+    console.log(`✅ VOLATILE arbitrage executed privately: ${result.hash}`);
+
+    // Wait for confirmation
+    const receipt = await provider.waitForTransaction(result.hash);
+
+    if (receipt.status === 1) {
+      return {
+        success: true,
+        txHash: result.hash,
+        mode: "VOLATILE_MEV",
+        privateRelay: true
+      };
+    } else {
+      throw new Error("Transaction reverted");
+    }
+
+  } catch (error) {
+    console.error(`❌ VOLATILE arbitrage failed:`, error.message);
     return {
       success: false,
       error: error.message
