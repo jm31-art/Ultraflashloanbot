@@ -51,48 +51,55 @@ const NORMAL_MODE = {
   slippageBps: 50 // 0.5%
 };
 
-export async function runArbitrage(paths, signer, flashloanContractAddress) {
+export async function runArbitrage(paths, signer, flashloanContractAddress, autonomousMode = false) {
   const mode = EXTREME_MODE.enabled ? EXTREME_MODE : NORMAL_MODE;
   const isExtremeMode = EXTREME_MODE.enabled;
 
-  // ANTI-SPAM GUARD: Prevent accidental reruns of extreme mode
-  if (isExtremeMode && EXTREME_MODE.completed) {
-    console.log(`🚫 EXTREME MODE already completed - cannot rerun`);
-    return null;
-  }
-
-  // BLOCK-BASED EXECUTION: Check if enough blocks have passed for EXTREME MODE
-  if (isExtremeMode) {
-    const currentBlock = await getCurrentBlock(provider);
-    if (!currentBlock) {
-      console.log(`❌ Failed to get current block number`);
+  // AUTONOMOUS MODE: Skip anti-spam guards and block checks
+  if (!autonomousMode) {
+    // ANTI-SPAM GUARD: Prevent accidental reruns of extreme mode
+    if (isExtremeMode && EXTREME_MODE.completed) {
+      console.log(`🚫 EXTREME MODE already completed - cannot rerun`);
       return null;
     }
 
-    const shouldRun = shouldRunExtremeMode({
-      currentBlock,
-      lastRunBlock: EXTREME_MODE.lastRunBlock,
-      interval: 1 // Run once per block
-    });
+    // BLOCK-BASED EXECUTION: Check if enough blocks have passed for EXTREME MODE
+    if (isExtremeMode) {
+      const currentBlock = await getCurrentBlock(provider);
+      if (!currentBlock) {
+        console.log(`❌ Failed to get current block number`);
+        return null;
+      }
 
-    if (!shouldRun) {
-      console.log(`⏰ EXTREME MODE: Block ${currentBlock} - waiting for next block (last run: ${EXTREME_MODE.lastRunBlock || 'never'})`);
-      return null;
+      const shouldRun = shouldRunExtremeMode({
+        currentBlock,
+        lastRunBlock: EXTREME_MODE.lastRunBlock,
+        interval: 1 // Run once per block
+      });
+
+      if (!shouldRun) {
+        console.log(`⏰ EXTREME MODE: Block ${currentBlock} - waiting for next block (last run: ${EXTREME_MODE.lastRunBlock || 'never'})`);
+        return null;
+      }
+
+      EXTREME_MODE.lastRunBlock = currentBlock;
     }
-
-    EXTREME_MODE.lastRunBlock = currentBlock;
   }
 
   // DYNAMIC EXTREME MODE CONFIG: Get time-based risk thresholds
   let extremeConfig = null;
   if (isExtremeMode) {
     extremeConfig = getExtremeModeConfig();
-    console.log(`⚡ EXTREME MODE ACTIVE | Profit ≥ $${extremeConfig.minProfitUsd} | Attempts: ${extremeConfig.maxAttempts}`);
+    if (!autonomousMode) {
+      console.log(`⚡ EXTREME MODE ACTIVE | Profit ≥ $${extremeConfig.minProfitUsd} | Attempts: ${extremeConfig.maxAttempts}`);
+    }
   }
 
-  console.log(`\n🚀 Running arbitrage engine (${isExtremeMode ? 'EXTREME' : 'NORMAL'} MODE)`);
-  console.log(`Attempts used: ${EXTREME_MODE.attemptsUsed}/${extremeConfig?.maxAttempts || EXTREME_MODE.maxAttempts}`);
-  console.log(`Block-based execution: ${isExtremeMode ? 'ENABLED' : 'N/A'}`);
+  if (!autonomousMode) {
+    console.log(`\n🚀 Running arbitrage engine (${isExtremeMode ? 'EXTREME' : 'NORMAL'} MODE)`);
+    console.log(`Attempts used: ${EXTREME_MODE.attemptsUsed}/${extremeConfig?.maxAttempts || EXTREME_MODE.maxAttempts}`);
+    console.log(`Block-based execution: ${isExtremeMode ? 'ENABLED' : 'N/A'}`);
+  }
 
   // VOLATILE_MEV MODE: Run in parallel if enabled
   if (VOLATILE_MODE.enabled) {
@@ -222,7 +229,7 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
       });
 
       // Track attempts in extreme mode ONLY when transaction is actually submitted
-      if (isExtremeMode) {
+      if (isExtremeMode && !autonomousMode) {
         EXTREME_MODE.attemptsUsed++;
 
         if (result.success || EXTREME_MODE.attemptsUsed >= extremeConfig.maxAttempts) {
@@ -233,6 +240,17 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
             console.log(`Resuming NORMAL MODE arbitrage`);
           }
         }
+      }
+
+      // AUTONOMOUS MODE: Track successful trades for mode switching
+      if (autonomousMode && result.success && isExtremeMode) {
+        // Import autonomous controller to track trades
+        import('./autonomousController.js').then(({ autonomousController }) => {
+          autonomousController.extremeTradesExecuted++;
+          console.log(`🔥 REAL VOLATILE ARBITRAGE EXECUTED`);
+          console.log(`Net Profit: $${result.profit || 'unknown'}`);
+          console.log(`Mode: EXTREME (${autonomousController.extremeTradesExecuted}/2)`);
+        });
       }
 
       if (result.success) {

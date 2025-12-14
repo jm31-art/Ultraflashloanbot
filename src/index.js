@@ -1,7 +1,6 @@
 import { config } from "dotenv";
 import { initMoralis } from "./bootstrap/moralis.bootstrap.js";
-import { generateTriangularPaths } from "./arbitrage/pathGenerator.js";
-import { runArbitrage } from "./arbitrage/arbitrageEngine.js";
+import { autonomousController } from "./autonomousController.js";
 import { provider } from "./dex/routers.js";
 import { ethers } from "ethers";
 
@@ -10,6 +9,9 @@ config({ path: "../.env" });
 
 async function main() {
   try {
+    console.log('🤖 STARTING AUTONOMOUS ARBITRAGE BOT (VOLATILE/EXTREME MODE)');
+    console.log('==================================================');
+
     // Initialize Moralis once
     await initMoralis();
 
@@ -28,10 +30,6 @@ async function main() {
     const balanceUsd = Number(ethers.formatEther(balance)) * 567;
     console.log(`Wallet balance: ${ethers.formatEther(balance)} BNB ($${balanceUsd.toFixed(2)})`);
 
-    // Generate all triangular paths
-    const paths = generateTriangularPaths();
-    console.log(`Generated ${paths.length} triangular arbitrage paths`);
-
     // Flashloan contract address
     const flashloanContractAddress = process.env.FLASHLOAN_ARB_CONTRACT;
 
@@ -43,21 +41,56 @@ async function main() {
 
     console.log(`Flashloan contract: ${flashloanContractAddress}`);
 
-    // Run arbitrage engine (dynamic sizing, MEV protection, extreme mode)
-    const result = await runArbitrage(paths, signer, flashloanContractAddress);
+    // Initialize autonomous controller
+    await autonomousController.initialize(signer, flashloanContractAddress);
 
-    if (result) {
-      if (result.dryRun) {
-        console.log("Arbitrage opportunity found (dry run)!");
-      } else {
-        console.log("Arbitrage executed successfully!");
+    // Start autonomous operation
+    await autonomousController.start();
+
+    // Setup graceful shutdown
+    process.on('SIGINT', () => {
+      console.log('\n🛑 Received SIGINT, shutting down gracefully...');
+      autonomousController.stop();
+      process.exit(0);
+    });
+
+    process.on('SIGTERM', () => {
+      console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
+      autonomousController.stop();
+      process.exit(0);
+    });
+
+    // Handle uncaught exceptions (self-healing)
+    process.on('uncaughtException', (error) => {
+      console.error('❌ Uncaught exception:', error);
+      console.log('🔧 Attempting self-healing...');
+      // Don't exit - let the autonomous controller handle recovery
+    });
+
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error('❌ Unhandled rejection at:', promise, 'reason:', reason);
+      console.log('🔧 Attempting self-healing...');
+      // Don't exit - let the autonomous controller handle recovery
+    });
+
+    console.log('✅ AUTONOMOUS BOT STARTED SUCCESSFULLY');
+    console.log('💡 Bot will run 24/7 in the background');
+    console.log('💡 Check logs for execution updates');
+    console.log('💡 Press Ctrl+C to stop gracefully');
+
+    // Keep the process alive
+    setInterval(() => {
+      // Periodic status check
+      const status = autonomousController.getStatus();
+      if (status.isRunning) {
+        // Silent operation - no spam
       }
-    } else {
-      console.log("No arbitrage opportunities found.");
-    }
+    }, 300000); // Every 5 minutes
 
   } catch (error) {
-    console.error("Error:", error);
+    console.error("❌ FATAL ERROR - BOT SHUTDOWN:", error);
+    autonomousController.stop();
+    process.exit(1);
   }
 }
 
