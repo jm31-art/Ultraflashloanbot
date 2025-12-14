@@ -94,6 +94,9 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
   console.log(`Block-based execution: ${isExtremeMode ? 'ENABLED' : 'N/A'}`);
 
   // SINGLE PASS SCAN: No while loop, just one pass through all paths
+  let failedSizingCount = 0;
+  let passedDensityFilter = 0;
+
   for (const [routerName, router] of Object.entries(ROUTERS)) {
     for (const path of paths) {
       // EXTREME MODE: Check attempt limit before processing each path
@@ -104,14 +107,20 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
         return null;
       }
 
-      // Calculate optimal flashloan size dynamically
-      const optimalSize = await calculateOptimalFlashloanSize(router, path, mode);
+      // PROFIT DENSITY PREFILTER: Early rejection before expensive sizing
+      const densityCheck = await checkProfitDensity(router, path, mode);
+      if (!densityCheck.passes) {
+        failedSizingCount++;
+        continue;
+      }
+      passedDensityFilter++;
 
-      // FAIL FAST: If flashloan sizing fails in extreme mode, skip path (no attempt used)
+      // Calculate optimal flashloan size dynamically with improved granularity
+      const optimalSize = await calculateOptimalFlashloanSize(router, path, mode, isExtremeMode);
+
+      // FAIL FAST: If flashloan sizing fails, skip path (no attempt used)
       if (!optimalSize) {
-        if (isExtremeMode) {
-          console.log(`⚡ EXTREME MODE: Flashloan sizing failed - skipping path`);
-        }
+        failedSizingCount++;
         continue;
       }
 
@@ -209,6 +218,14 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
     }
   }
 
+  // AGGREGATED SIZING RESULTS LOGGING
+  if (failedSizingCount > 0) {
+    console.log(`⚡ Flashloan sizing failed on ${failedSizingCount} paths`);
+  }
+  if (passedDensityFilter > 0) {
+    console.log(`🔥 ${passedDensityFilter} paths passed density filter`);
+  }
+
   // EXTREME MODE: Mark as completed if no opportunities found
   if (isExtremeMode) {
     EXTREME_MODE.completed = true;
@@ -220,9 +237,46 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
 }
 
 /**
+ * PROFIT DENSITY PREFILTER: Early rejection before expensive sizing
+ */
+async function checkProfitDensity(router, path, mode) {
+  try {
+    // Quick price check to estimate gross profit potential
+    const sim = await simulateTriangular(router, path, ethers.parseEther('1')); // 1 token test
+    if (!sim || sim.finalOut <= ethers.parseEther('1')) {
+      return { passes: false, reason: 'no arbitrage potential' };
+    }
+
+    // Calculate estimated gross profit for $1,000 notional
+    const tokenPriceUsd = 567; // BNB approximation
+    const testAmountWei = ethers.parseEther('1');
+    const testAmountUsd = Number(ethers.formatEther(testAmountWei)) * tokenPriceUsd;
+
+    // Scale up to $1,000 equivalent
+    const scaleFactor = 1000 / testAmountUsd;
+    const scaledProfitWei = (sim.finalOut - testAmountWei) * BigInt(Math.floor(scaleFactor * 1000)) / 1000n;
+    const estimatedGrossProfitUsd = Number(ethers.formatEther(scaledProfitWei)) * tokenPriceUsd;
+
+    // Calculate profit density: profit per dollar of notional
+    const profitPerDollar = estimatedGrossProfitUsd / 1000;
+
+    // Reject if below minimum density threshold ($0.60 per $1,000 = 0.0006)
+    const minDensity = 0.0006;
+    if (profitPerDollar < minDensity) {
+      return { passes: false, reason: `profit density ${profitPerDollar.toFixed(6)} < ${minDensity}` };
+    }
+
+    return { passes: true, density: profitPerDollar, estimatedProfit: estimatedGrossProfitUsd };
+
+  } catch (error) {
+    return { passes: false, reason: `density check failed: ${error.message}` };
+  }
+}
+
+/**
  * Calculate optimal flashloan size with provider selection using BigInt math only
  */
-async function calculateOptimalFlashloanSize(router, path, mode) {
+async function calculateOptimalFlashloanSize(router, path, mode, isExtremeMode = false) {
   try {
     // Get pool reserves (simplified - would need actual pool contracts)
     // In production, query actual pool reserves for each hop
@@ -270,15 +324,34 @@ async function calculateOptimalFlashloanSize(router, path, mode) {
         continue;
       }
 
-      // Test different sizes to find optimal using BigInt arithmetic
-      const testSizes = [
-        providerMaxFlashloan / 4n,
-        providerMaxFlashloan / 2n,
-        (providerMaxFlashloan * 3n) / 4n,
-        providerMaxFlashloan
+      // ADAPTIVE LOAN BANDS: Replace coarse steps with granular sizing
+      const base = 1000n; // $1,000 base
+      const loanCandidates = [
+        base,                    // $1,000
+        base * 15n / 10n,       // $1,500
+        base * 2n,              // $2,000
+        base * 3n,              // $3,000
+        base * 4n,              // $4,000
+        base * 6n,              // $6,000
+        base * 8n,              // $8,000
+        base * 10n              // $10,000
       ];
 
-      for (const testSize of testSizes) {
+      // Convert USD amounts to token amounts
+      const tokenPriceApproxUsd = 567n; // BNB price approximation
+      const loanCandidatesWei = loanCandidates.map(usd =>
+        (usd * 10n ** 18n) / tokenPriceApproxUsd
+      );
+
+      // DYNAMICALLY CAP BY POOL LIQUIDITY: 18% of smallest pool
+      const poolLiquidityCap = minReserve * 18n / 100n;
+
+      // Filter candidates by provider and pool limits
+      const validCandidates = loanCandidatesWei.filter(candidate =>
+        candidate <= providerMaxFlashloan && candidate <= poolLiquidityCap
+      );
+
+      for (const testSize of validCandidates) {
         if (testSize <= 0n) continue;
 
         // Simulate to check profitability
@@ -313,6 +386,9 @@ async function calculateOptimalFlashloanSize(router, path, mode) {
         // Convert to USD for comparison
         const netProfitUsd = Number(netProfitAfterFee) * tokenPriceUsd / 1e18;
 
+        // NARROW SLIPPAGE BUFFER FOR EXTREME MODE: 0.25% instead of 0.5%
+        const slippageTolerance = isExtremeMode ? 0.0025 : mode.slippageBps / 10000;
+
         // Check if meets mode requirements (using Number only for logging)
         if (netProfitUsd >= mode.minProfitUsd &&
             netProfitUsd >= profit.gasUsd * mode.profitGasRatio &&
@@ -326,7 +402,8 @@ async function calculateOptimalFlashloanSize(router, path, mode) {
               simulation: sim,
               profit: profit,
               netProfitUsd: netProfitUsd,
-              flashFee: flashFee
+              flashFee: flashFee,
+              slippageTolerance: slippageTolerance
             };
             bestProvider = providerConfig;
           }
