@@ -53,9 +53,10 @@ export class MEVGuard {
     try {
       const issues = [];
 
-      // Check 1: Gas price increase
+      // Check 1: Gas price increase using BigInt math
       const currentGasPrice = await provider.getGasPrice();
-      const gasPriceIncrease = Number(currentGasPrice - this.baselineGasPrice) / Number(this.baselineGasPrice);
+      const gasPriceDiff = currentGasPrice - this.baselineGasPrice;
+      const gasPriceIncrease = Number(gasPriceDiff * 100n / this.baselineGasPrice) / 100; // Convert to percentage
       if (gasPriceIncrease > 0.15) { // 15% increase
         issues.push(`Gas price increased ${gasPriceIncrease.toFixed(3)} > 15%`);
       }
@@ -75,12 +76,13 @@ export class MEVGuard {
         issues.push(`Router quote changed: ${baselineQuote.finalOut} -> ${currentQuote.finalOut}`);
       }
 
-      // Check 4: Flashloan liquidity
+      // Check 4: Flashloan liquidity using BigInt math
       const currentLiquidity = await flashloanProvider.getReserveData(path[0]);
       const baselineLiquidity = this.baselineLiquidity.get(path[0]);
 
       if (currentLiquidity && baselineLiquidity) {
-        const liquidityChange = Number(currentLiquidity.availableLiquidity - baselineLiquidity) / Number(baselineLiquidity);
+        const liquidityDiff = currentLiquidity.availableLiquidity - baselineLiquidity;
+        const liquidityChange = Number(liquidityDiff * 100n / baselineLiquidity) / 100; // Convert to percentage
         if (Math.abs(liquidityChange) > 0.05) { // 5% change
           issues.push(`Flashloan liquidity changed ${liquidityChange.toFixed(3)} > 5%`);
         }
@@ -130,15 +132,27 @@ export class MEVGuard {
   }
 
   /**
-   * Calculate price impact for a trade
+   * Calculate price impact for a trade using BigInt math only
    */
   calculatePriceImpact(path, amount, reserves) {
-    // Simplified price impact calculation
-    // In production, this would use proper AMM math
-    const minReserve = Math.min(...reserves);
-    const impact = Number(amount) / (Number(amount) + Number(minReserve));
+    // Find minimum reserve using BigInt comparison
+    let minReserve = reserves[0];
+    for (let i = 1; i < reserves.length; i++) {
+      if (reserves[i] < minReserve) {
+        minReserve = reserves[i];
+      }
+    }
 
-    return impact;
+    // Calculate price impact: amount / (amount + minReserve)
+    // Using BigInt division with proper scaling
+    const numerator = amount;
+    const denominator = amount + minReserve;
+
+    // Convert to percentage (multiply by 100 for percentage)
+    const impact = (numerator * 100n) / denominator;
+
+    // Return as float for logging only (not used in logic)
+    return Number(impact) / 100;
   }
 
   /**

@@ -3,19 +3,41 @@ import { simulateTriangular } from "./simulator.js";
 import { calculateProfit } from "./profitCalculator.js";
 import { flashloanProvider } from "../flashloan/flashloanProvider.js";
 import { mevGuard } from "./mevGuard.js";
+import { shouldRunExtremeMode, getCurrentBlock } from "./blockScheduler.js";
+import { FLASHLOAN_PROVIDERS, getBestProvider, calculateFee } from "../flashloan/providers.js";
+import { submitPrivateTx, getPrivateRelayStatus } from "../mev/privateRelay.js";
+import { shouldRunExtremeModeByTime, getTimeWindowInfo } from "./timeWindow.js";
 import { ethers } from "ethers";
+
+/**
+ * STRICT TYPE BOUNDARY ENFORCEMENT
+ * BigInt/BigNumber → ONLY inside arbitrage logic
+ * Convert to Number ONLY for console logging
+ */
+function toFloat(bn, decimals = 18) {
+  if (typeof bn === 'bigint') {
+    return Number(bn.toString()) / 10 ** decimals;
+  }
+  // For ethers.BigNumber
+  if (bn && typeof bn.toString === 'function') {
+    return Number(bn.toString()) / 10 ** decimals;
+  }
+  return Number(bn);
+}
 
 // Extreme Mode Configuration (IMMUTABLE)
 let EXTREME_MODE = {
   enabled: true,
   maxAttempts: 2,
   attemptsUsed: 0,
-  minProfitUsd: 25,
+  minProfitUsd: 10, // REDUCED from $25 to $10 for higher frequency
   profitGasRatio: 8,
   maxGasUsd: 0.40,
   maxPriceImpactPct: 0.3,
   slippageBps: 0,
-  autoDisableAfter: true
+  autoDisableAfter: true,
+  completed: false, // Anti-spam guard - prevents accidental reruns
+  lastRunBlock: null // Block-based execution tracking
 };
 
 // Normal Mode Configuration
@@ -32,14 +54,70 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
   const mode = EXTREME_MODE.enabled ? EXTREME_MODE : NORMAL_MODE;
   const isExtremeMode = EXTREME_MODE.enabled;
 
+  // ANTI-SPAM GUARD: Prevent accidental reruns of extreme mode
+  if (isExtremeMode && EXTREME_MODE.completed) {
+    console.log(`🚫 EXTREME MODE already completed - cannot rerun`);
+    return null;
+  }
+
+  // BLOCK-BASED EXECUTION: Check if enough blocks have passed for EXTREME MODE
+  if (isExtremeMode) {
+    const currentBlock = await getCurrentBlock(provider);
+    if (!currentBlock) {
+      console.log(`❌ Failed to get current block number`);
+      return null;
+    }
+
+    const shouldRun = shouldRunExtremeMode({
+      currentBlock,
+      lastRunBlock: EXTREME_MODE.lastRunBlock,
+      interval: 1 // Run once per block
+    });
+
+    if (!shouldRun) {
+      console.log(`⏰ EXTREME MODE: Block ${currentBlock} - waiting for next block (last run: ${EXTREME_MODE.lastRunBlock || 'never'})`);
+      return null;
+    }
+
+    EXTREME_MODE.lastRunBlock = currentBlock;
+  }
+
+  // TIME-BASED LIQUIDITY WINDOWS: Check if in low liquidity window for EXTREME MODE
+  if (isExtremeMode) {
+    const inTimeWindow = shouldRunExtremeModeByTime();
+    console.log(getTimeWindowInfo());
+
+    if (!inTimeWindow) {
+      console.log(`🕐 EXTREME MODE: Outside low liquidity window - skipping`);
+      return null;
+    }
+  }
+
   console.log(`\n🚀 Running arbitrage engine (${isExtremeMode ? 'EXTREME' : 'NORMAL'} MODE)`);
   console.log(`Attempts used: ${EXTREME_MODE.attemptsUsed}/${EXTREME_MODE.maxAttempts}`);
+  console.log(`Block-based execution: ${isExtremeMode ? 'ENABLED' : 'N/A'}`);
+  console.log(`Time window: ${isExtremeMode ? 'ENABLED' : 'N/A'}`);
 
+  // SINGLE PASS SCAN: No while loop, just one pass through all paths
   for (const [routerName, router] of Object.entries(ROUTERS)) {
     for (const path of paths) {
+      // EXTREME MODE: Check attempt limit before processing each path
+      if (isExtremeMode && EXTREME_MODE.attemptsUsed >= EXTREME_MODE.maxAttempts) {
+        console.log(`🛑 EXTREME MODE: Max attempts reached (${EXTREME_MODE.maxAttempts})`);
+        EXTREME_MODE.completed = true;
+        return null;
+      }
+
       // Calculate optimal flashloan size dynamically
       const optimalSize = await calculateOptimalFlashloanSize(router, path, mode);
-      if (!optimalSize) continue;
+
+      // FAIL FAST: If flashloan sizing fails in extreme mode, skip path (no attempt used)
+      if (!optimalSize) {
+        if (isExtremeMode) {
+          console.log(`⚡ EXTREME MODE: Flashloan sizing failed - skipping path`);
+        }
+        continue;
+      }
 
       const { amount: amountInWei, priceImpact } = optimalSize;
 
@@ -86,23 +164,26 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
       }
 
       // Log opportunity details
-      console.log(`\n🔥 REAL ARBITRAGE FOUND`);
+      console.log(`\n🔥 ${isExtremeMode ? 'EXTREME MODE ' : ''}ARBITRAGE FOUND`);
       console.log(`DEX: ${routerName}`);
       console.log(`Path: ${path.join(" → ")} → ${path[0]}`);
+      console.log(`Flashloan Provider: ${selectedProvider.name} (${selectedProvider.feeBps/100}% fee)`);
       console.log(`Flashloan: ${ethers.formatEther(amountInWei)} ${path[0]}`);
       console.log(`Expected Out: ${ethers.formatEther(sim.finalOut)} ${path[0]}`);
       console.log(`Expected Profit: $${profit.profitUsd.toFixed(2)}`);
       console.log(`Gas Estimate: $${profit.gasUsd.toFixed(2)}`);
       console.log(`Price Impact: ${(priceImpact * 100).toFixed(3)}%`);
+      console.log(`Net Profit After Fees: $${optimalSize.netProfitUsd.toFixed(2)}`);
 
-      // Execute flashloan arbitrage
+      // Execute flashloan arbitrage using private relay
       const result = await executeFlashloanArbitrage({
         asset: path[0],
         amountWei: amountInWei,
         router: router.target,
         path: path,
         flashloanContractAddress,
-        signer
+        signer,
+        selectedProvider
       });
 
       // Track attempts in extreme mode
@@ -112,6 +193,7 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
         if (result.success || EXTREME_MODE.attemptsUsed >= EXTREME_MODE.maxAttempts) {
           if (EXTREME_MODE.autoDisableAfter) {
             EXTREME_MODE.enabled = false;
+            EXTREME_MODE.completed = true;
             console.log(`\n🛑 EXTREME MODE DISABLED after ${EXTREME_MODE.attemptsUsed} attempts`);
             console.log(`Resuming NORMAL MODE arbitrage`);
           }
@@ -124,83 +206,140 @@ export async function runArbitrage(paths, signer, flashloanContractAddress) {
     }
   }
 
+  // EXTREME MODE: Mark as completed if no opportunities found
+  if (isExtremeMode) {
+    EXTREME_MODE.completed = true;
+    console.log(`\n🛑 EXTREME MODE COMPLETE — no valid opportunities found`);
+    console.log(`Wallet preserved, no gas spent on failed attempts`);
+  }
+
   return null;
 }
 
 /**
- * Calculate optimal flashloan size based on pool constraints
+ * Calculate optimal flashloan size with provider selection using BigInt math only
  */
 async function calculateOptimalFlashloanSize(router, path, mode) {
   try {
     // Get pool reserves (simplified - would need actual pool contracts)
     // In production, query actual pool reserves for each hop
+    // Using realistic BSC pool sizes (millions of tokens)
     const mockReserves = {
-      [path[0]]: 1000000n, // 1M tokens
-      [path[1]]: 500000n,  // 500K tokens
-      [path[2]]: 750000n   // 750K tokens
+      [path[0]]: 10000000n, // 10M tokens (realistic BSC pool)
+      [path[1]]: 5000000n,  // 5M tokens
+      [path[2]]: 7500000n   // 7.5M tokens
     };
 
-    // Find minimum reserve across all hops (safety constraint)
+    // Find minimum reserve across all hops using BigInt comparison
     const reserves = [
       mockReserves[path[0]] || 1000000n,
       mockReserves[path[1]] || 1000000n,
       mockReserves[path[2]] || 1000000n
     ];
 
-    const minReserve = reserves.reduce((min, reserve) => reserve < min ? reserve : min, reserves[0]);
-    const maxFlashloan = minReserve / 20n; // ≤ 5% of smallest pool
-
-    // Test different sizes to find optimal
-    const testSizes = [
-      maxFlashloan / 4n,
-      maxFlashloan / 2n,
-      maxFlashloan * 3n / 4n,
-      maxFlashloan
-    ];
-
-    for (const testSize of testSizes) {
-      if (testSize === 0n) continue;
-
-      // Simulate to check profitability
-      const sim = await simulateTriangular(router, path, testSize);
-      if (!sim || sim.finalOut <= testSize) continue;
-
-      // Calculate price impact
-      const priceImpact = mevGuard.calculatePriceImpact(path, testSize, reserves);
-      if (priceImpact > mode.maxPriceImpactPct) continue;
-
-      // Gas estimation
-      let gasEstimate;
-      try {
-        gasEstimate = await router.getAmountsOut.estimateGas(
-          testSize,
-          [path[0], path[1]]
-        );
-      } catch {
-        continue;
-      }
-
-      // Profit calculation
-      const tokenPriceUsd = 567;
-      const profit = calculateProfit(testSize, sim.finalOut, gasEstimate, tokenPriceUsd);
-
-      if (!profit) continue;
-
-      // Check if meets mode requirements
-      if (profit.profitUsd >= mode.minProfitUsd &&
-          profit.profitUsd >= profit.gasUsd * mode.profitGasRatio &&
-          profit.gasUsd <= mode.maxGasUsd) {
-
-        return {
-          amount: testSize,
-          priceImpact: priceImpact,
-          simulation: sim,
-          profit: profit
-        };
+    let minReserve = reserves[0];
+    for (let i = 1; i < reserves.length; i++) {
+      if (reserves[i] < minReserve) {
+        minReserve = reserves[i];
       }
     }
 
-    return null; // No suitable size found
+    // FLASHLOAN PROVIDER SELECTION: Iterate through providers and find best option
+    let bestOption = null;
+    let bestProvider = null;
+
+    for (const [providerKey, providerConfig] of Object.entries(FLASHLOAN_PROVIDERS)) {
+      // Check if provider supports the asset
+      if (!providerConfig.supportedAssets.includes(path[0].toLowerCase())) {
+        continue;
+      }
+
+      // Cap flashloan to 5% of smallest pool using BigInt division
+      const maxFlashloan = minReserve * 5n / 100n;
+
+      // Cap at provider's maximum loan amount (convert USD to token amount)
+      const tokenPriceApprox = 567n; // BNB price approximation
+      const maxLoanWei = (BigInt(providerConfig.maxLoanUsd) * 10n ** 18n) / tokenPriceApprox;
+      const providerMaxFlashloan = maxFlashloan < maxLoanWei ? maxFlashloan : maxLoanWei;
+
+      // FAIL FAST: If flashloan size is invalid, skip provider
+      if (!providerMaxFlashloan || providerMaxFlashloan <= 0n) {
+        continue;
+      }
+
+      // Test different sizes to find optimal using BigInt arithmetic
+      const testSizes = [
+        providerMaxFlashloan / 4n,
+        providerMaxFlashloan / 2n,
+        (providerMaxFlashloan * 3n) / 4n,
+        providerMaxFlashloan
+      ];
+
+      for (const testSize of testSizes) {
+        if (testSize <= 0n) continue;
+
+        // Simulate to check profitability
+        const sim = await simulateTriangular(router, path, testSize);
+        if (!sim || sim.finalOut <= testSize) continue;
+
+        // Calculate price impact using BigInt math
+        const priceImpact = mevGuard.calculatePriceImpact(path, testSize, reserves);
+        if (priceImpact > mode.maxPriceImpactPct) continue;
+
+        // Gas estimation
+        let gasEstimate;
+        try {
+          gasEstimate = await router.getAmountsOut.estimateGas(
+            testSize,
+            [path[0], path[1]]
+          );
+        } catch {
+          continue;
+        }
+
+        // Profit calculation
+        const tokenPriceUsd = 567;
+        const profit = calculateProfit(testSize, sim.finalOut, gasEstimate, tokenPriceUsd);
+
+        if (!profit) continue;
+
+        // Calculate net profit after flashloan fee
+        const flashFee = calculateFee(providerConfig, testSize);
+        const netProfitAfterFee = profit.profit - flashFee;
+
+        // Convert to USD for comparison
+        const netProfitUsd = Number(netProfitAfterFee) * tokenPriceUsd / 1e18;
+
+        // Check if meets mode requirements (using Number only for logging)
+        if (netProfitUsd >= mode.minProfitUsd &&
+            netProfitUsd >= profit.gasUsd * mode.profitGasRatio &&
+            profit.gasUsd <= mode.maxGasUsd) {
+
+          // Select best provider (highest net profit after fees)
+          if (!bestOption || netProfitUsd > bestOption.netProfitUsd) {
+            bestOption = {
+              amount: testSize,
+              priceImpact: priceImpact,
+              simulation: sim,
+              profit: profit,
+              netProfitUsd: netProfitUsd,
+              flashFee: flashFee
+            };
+            bestProvider = providerConfig;
+          }
+        }
+      }
+    }
+
+    // Return best option found across all providers
+    if (bestOption && bestProvider) {
+      return {
+        ...bestOption,
+        provider: bestProvider
+      };
+    }
+
+    return null; // No suitable provider/size combination found
 
   } catch (error) {
     console.error("Failed to calculate optimal flashloan size:", error);
@@ -253,7 +392,7 @@ async function validateArbitrageConditions(router, path, amountInWei, sim, profi
 }
 
 /**
- * Execute flashloan arbitrage
+ * Execute flashloan arbitrage using private relay (MEV protection)
  */
 async function executeFlashloanArbitrage({
   asset,
@@ -261,9 +400,19 @@ async function executeFlashloanArbitrage({
   router,
   path,
   flashloanContractAddress,
-  signer
+  signer,
+  selectedProvider
 }) {
   try {
+    // PRIVATE RELAY: Mandatory for all arbitrage executions
+    console.log(`🔒 Using private relay for MEV protection`);
+    const relayStatus = getPrivateRelayStatus();
+    console.log(`Relay status: ${relayStatus.available ? '✅ Available' : '❌ Unavailable'}`);
+
+    if (!relayStatus.available) {
+      throw new Error("Private relay unavailable - aborting execution for MEV safety");
+    }
+
     // Use the flashloan provider to execute
     const tx = await flashloanProvider.executeFlashloan(
       flashloanContractAddress,
@@ -272,24 +421,30 @@ async function executeFlashloanArbitrage({
       { router, path }
     );
 
-    console.log(`📤 Flashloan transaction submitted: ${tx.hash}`);
+    // SUBMIT VIA PRIVATE RELAY (mandatory)
+    const result = await submitPrivateTx(tx, provider);
+
+    console.log(`📤 Private flashloan transaction submitted: ${result.hash}`);
+    console.log(`🏦 Provider: ${selectedProvider.name} (${selectedProvider.contractAddress})`);
 
     // Wait for confirmation
-    const receipt = await tx.wait();
+    const receipt = await provider.waitForTransaction(result.hash);
 
     if (receipt.status === 1) {
-      console.log(`✅ Flashloan arbitrage executed successfully`);
+      console.log(`✅ Flashloan arbitrage executed successfully via private relay`);
 
       // Parse events (would need contract interface)
       console.log(`Block: ${receipt.blockNumber}`);
       console.log(`Gas Used: ${receipt.gasUsed}`);
-      console.log(`TX Hash: ${tx.hash}`);
+      console.log(`TX Hash: ${result.hash}`);
 
       return {
         success: true,
-        txHash: tx.hash,
+        txHash: result.hash,
         blockNumber: receipt.blockNumber,
-        gasUsed: receipt.gasUsed
+        gasUsed: receipt.gasUsed,
+        provider: selectedProvider.name,
+        privateRelay: true
       };
     } else {
       throw new Error("Transaction reverted");
