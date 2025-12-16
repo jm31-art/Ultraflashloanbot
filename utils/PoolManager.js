@@ -1,5 +1,5 @@
-const { ethers } = require('ethers');
-const fs = require('fs');
+import { ethers } from 'ethers';
+import fs from 'fs';
 
 class PoolManager {
     constructor(provider) {
@@ -201,4 +201,4 @@ class PoolManager {
     }
 }
 
-module.exports = PoolManager;
+export default PoolManager;

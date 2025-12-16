@@ -1,5 +1,5 @@
-const { ethers } = require('ethers');
-const axios = require('axios');
+import { ethers } from 'ethers';
+import axios from 'axios';
 
 class FallbackPriceService {
     constructor() {
@@ -89,4 +89,4 @@ class FallbackPriceService {
     }
 }
 
-module.exports = new FallbackPriceService();
+export default new FallbackPriceService();

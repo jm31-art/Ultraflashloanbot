@@ -66,7 +66,7 @@ class ConfigurationError extends CustomError {
     }
 }
 
-module.exports = {
+export {
     CustomError,
     ValidationError,
     NetworkError,

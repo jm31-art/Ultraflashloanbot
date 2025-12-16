@@ -215,4 +215,4 @@ const PROTOCOLS = {
     }
 };
 
-module.exports = PROTOCOLS;
+export { PROTOCOLS };

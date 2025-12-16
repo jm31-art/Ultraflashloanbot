@@ -1,7 +1,7 @@
-const { ethers } = require('ethers');
-const axios = require('axios');
-const DexPriceFeed = require('./DexPriceFeed');
-const fallbackPriceService = require('./FallbackPriceService');
+import { ethers } from 'ethers';
+import axios from 'axios';
+import DexPriceFeed from './DexPriceFeed.js';
+import fallbackPriceService from './FallbackPriceService.js';
 
 const PAIR_ABI = [
     'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)',
@@ -66,7 +66,7 @@ class PriceFeed {
             }
 
             // Normalize addresses to checksum format
-            const normalizedToken0 = token0.address.toLowerCase() < token1.address.toLowerCase() 
+            const normalizedToken0 = token0.address.toLowerCase() < token1.address.toLowerCase()
                 ? ethers.getAddress(token0.address)
                 : ethers.getAddress(token1.address);
             const normalizedToken1 = token0.address.toLowerCase() < token1.address.toLowerCase()
@@ -95,22 +95,22 @@ class PriceFeed {
             const normalizedPair = ethers.getAddress(pairAddress);
             const pair = new ethers.Contract(normalizedPair, PAIR_ABI, this.provider);
             const reserves = await pair.getReserves();
-            
+
             // Handle zero reserves
             if (reserves[0].isZero() || reserves[1].isZero()) {
                 console.log(`Zero reserves for ${token0.symbol}/${token1.symbol} pair on ${dexConfig.name}`);
                 return null;
             }
-            
+
             // Use BigNumber for precise calculations
             const reserve0 = ethers.BigNumber.from(reserves[0]);
             const reserve1 = ethers.BigNumber.from(reserves[1]);
             const decimals0 = ethers.BigNumber.from(10).pow(token0.decimals);
             const decimals1 = ethers.BigNumber.from(10).pow(token1.decimals);
-            
+
             const price = reserve1.mul(decimals0).div(reserve0.mul(decimals1));
             return parseFloat(ethers.formatUnits(price, 0));
-            
+
         } catch (error) {
             if (error.message.includes('bad address checksum')) {
                 console.error(`Address checksum error for ${token0.symbol}/${token1.symbol}:`, {
@@ -128,7 +128,7 @@ class PriceFeed {
     async getCoinGeckoPrice(tokenId) {
         const maxRetries = 3;
         let retries = 0;
-        
+
         while (retries < maxRetries) {
             try {
                 const response = await axios.get(
@@ -452,7 +452,7 @@ class PriceFeed {
         try {
             const price = await super.getTokenPrice(token);
             if (price) return price;
-            
+
             // Use fallback if primary sources fail
             return await fallbackPriceService.getFallbackPrice(token);
         } catch (error) {
@@ -462,4 +462,4 @@ class PriceFeed {
     }
 }
 
-module.exports = PriceFeed;
+export default PriceFeed;

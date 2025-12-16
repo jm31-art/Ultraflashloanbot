@@ -1,16 +1,19 @@
-const { ethers } = require('ethers');
-const { BigNumber } = require('ethers');
-const SecureMEVProtector = require('./SecureMEVProtector');
-const PoolManager = require('./PoolManager');
-const fs = require('fs').promises;
-const path = require('path');
+import { ethers } from 'ethers';
+import { SecureMEVProtector } from './SecureMEVProtector.js';
+import PoolManager from './PoolManager.js';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 class TransactionVerifier {
     constructor(provider, signer, network = 'mainnet') {
         this.provider = provider;
         this.signer = signer;
         this.verifiedTxCache = new Map();
-        
+
         // Add slippage configuration for different pair types
         this.SLIPPAGE_CONFIG = {
             STABLE_PAIRS: {
@@ -32,7 +35,7 @@ class TransactionVerifier {
         // Dynamic profit threshold based on gas price
         this.BASE_PROFIT_THRESHOLD = ethers.parseEther('0.01'); // 0.01 BNB
         this.MAX_GAS_PRICE_GWEI = 15; // Base gas price threshold in gwei
-        
+
         this.mevProtector = new SecureMEVProtector(provider);
         this.poolManager = new PoolManager(provider, network);
     }
@@ -62,7 +65,7 @@ class TransactionVerifier {
 
             // Update gas price if needed
             if (mevAnalysis.useFlashbots || mevAnalysis.increasedGasPrice > transaction.gasPrice) {
-                transaction.gasPrice = BigNumber.from(mevAnalysis.increasedGasPrice);
+                transaction.gasPrice = ethers.BigNumber.from(mevAnalysis.increasedGasPrice);
                 console.log('Using Flashbots for MEV protection');
                 await this._logSecurityEvent('flashbots_protection_activated', {
                     txHash: this._getTransactionHash(transaction),
@@ -75,26 +78,26 @@ class TransactionVerifier {
             if (this._isFlashloanTransaction(transaction)) {
                 await this._verifyFlashloanParameters(transaction);
             }
-            
+
             // Simulate transaction
             const simResult = await this._simulateTransaction(transaction);
-            
+
             // Verify profitability
             await this._verifyProfitability(transaction, simResult);
-            
+
             // Verify gas costs
             await this._verifyGasCosts(transaction);
-            
+
             // Verify contract interactions
             await this._verifyContractInteractions(transaction);
-            
+
             // Cache verified transaction
             this.verifiedTxCache.set(this._getTransactionHash(transaction), {
                 timestamp: Date.now(),
                 verified: true,
                 mevProtection: mevAnalysis
             });
-            
+
             return {
                 verified: true,
                 gasEstimate: simResult.gasEstimate,
@@ -120,7 +123,7 @@ class TransactionVerifier {
         }
 
         // Verify value
-        if (transaction.value && !BigNumber.isBigNumber(transaction.value)) {
+        if (transaction.value && !ethers.BigNumber.isBigNumber(transaction.value)) {
             throw new Error('Invalid transaction value format');
         }
 
@@ -128,10 +131,10 @@ class TransactionVerifier {
         const currentGasPrice = (await this.provider.getFeeData()).gasPrice;
         const block = await this.provider.getBlock('latest');
         const baseFeePerGas = block.baseFeePerGas || currentGasPrice;
-        
+
         // Calculate minimum safe gas price (120% of base fee to resist sandwiching)
         const minSafeGasPrice = (baseFeePerGas * 120n) / 100n;
-        
+
         if (transaction.gasPrice &&
             BigInt(transaction.gasPrice) < minSafeGasPrice) {
             throw new Error('Gas price too low for sandwich resistance');
@@ -144,13 +147,13 @@ class TransactionVerifier {
     async _checkRecentBlocksForSimilarTxs(transaction) {
         const latestBlock = await this.provider.getBlockNumber();
         const numBlocksToCheck = 3; // Check last 3 blocks
-        
+
         for (let i = 0; i < numBlocksToCheck; i++) {
             const block = await this.provider.getBlock(latestBlock - i, true);
             if (!block) continue;
 
             for (const tx of block.transactions) {
-                if (tx.to === transaction.to && 
+                if (tx.to === transaction.to &&
                     tx.data.slice(0, 10) === transaction.data.slice(0, 10)) {
                     // Similar transaction found in recent blocks
                     throw new Error('Similar transaction detected in recent blocks - possible frontrunning attempt');
@@ -185,13 +188,13 @@ class TransactionVerifier {
 
             // Check for significant profit deviation (slippage)
             const profitDeviation = BigNumber.from(initialProfit).sub(BigNumber.from(nextBlockProfit)).abs();
-            
+
             // Get pair type and appropriate slippage tolerance
             const pairType = await this._determinePairType(transaction);
             const maxAllowedDeviation = BigNumber.from(initialProfit).mul(
                 Math.floor(this.SLIPPAGE_CONFIG[pairType].tolerance * 100)
             ).div(100);
-            
+
             if (profitDeviation.gt(maxAllowedDeviation)) {
                 throw new Error(`High slippage detected for ${pairType} - transaction may be vulnerable to sandwich attacks`);
             }
@@ -217,7 +220,7 @@ class TransactionVerifier {
         const adjustedThreshold = BigNumber.from(this.BASE_PROFIT_THRESHOLD).mul(
             Math.max(1, Math.floor(gasGwei / this.MAX_GAS_PRICE_GWEI))
         );
-        
+
         if (simResult.expectedProfit.lte(gasCost.add(adjustedThreshold))) {
             throw new Error(`Transaction not profitable after gas costs (${gasGwei} gwei)`);
         }
@@ -239,7 +242,7 @@ class TransactionVerifier {
         const block = await this.provider.getBlock('latest');
         const pendingBlock = await this.provider.getBlock('pending');
         const recentTxs = pendingBlock ? pendingBlock.transactions : [];
-        
+
         if (recentTxs.length > 0) {
             const competitiveGasPrice = await this._calculateCompetitiveGasPrice(recentTxs);
             if (BigInt(transaction.gasPrice) < competitiveGasPrice) {
@@ -307,17 +310,17 @@ class TransactionVerifier {
             '0x4a25d94a', // swapTokensForExactETH
             '0x18cbafe5', // swapExactTokensForETH
             '0xfb3bdb41', // swapETHForExactTokens
-            
+
             // Uniswap V3 specific
             '0xc04b8d59', // exactInputSingle
             '0x414bf389', // exactInput
             '0xdb3e2198', // exactOutputSingle
             '0xf28c0498', // exactOutput
-            
+
             // SushiSwap specific
             '0x022c0d9f', // swap
             '0x54cf2aeb', // swapExactTokensForTokensSupportingFeeOnTransferTokens
-            
+
             // Flashloan methods
             '0x5c11d795', // executeOperation
             '0x09424b2e', // executeArbitrage
@@ -370,7 +373,7 @@ class TransactionVerifier {
     async _calculateActualProfitLoss(receipt) {
         // Calculate actual gas cost
         const gasCost = BigNumber.from(receipt.gasUsed).mul(BigNumber.from(receipt.effectiveGasPrice));
-        
+
         // Decode transaction logs to find profit
         let profit = BigNumber.from(0);
         for (const log of receipt.logs) {
@@ -421,7 +424,7 @@ class TransactionVerifier {
             '0xab9c4b5d', // flashloan
             '0x51cff8d9'  // executeOperation (Aave V2)
         ]);
-        
+
         return flashloanMethods.has(methodId);
     }
 
@@ -429,16 +432,16 @@ class TransactionVerifier {
         try {
             // Decode flashloan parameters
             const params = this._decodeFlashloanParams(transaction.data);
-            
+
             // Verify loan amount is reasonable
             await this._verifyLoanAmount(params.amount, params.token);
-            
+
             // Check protocol fees
             await this._verifyProtocolFees(params);
-            
+
             // Verify token liquidity
             await this._verifyTokenLiquidity(params.token, params.amount);
-            
+
         } catch (error) {
             throw new Error(`Flashloan parameter verification failed: ${error.message}`);
         }
@@ -448,13 +451,13 @@ class TransactionVerifier {
         try {
             // Remove method signature
             const params = data.slice(10);
-            
+
             // Decode parameters based on known flashloan interfaces
             const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
                 ['address', 'uint256', 'bytes'],
                 '0x' + params
             );
-            
+
             return {
                 token: decoded[0],
                 amount: decoded[1],
@@ -476,7 +479,7 @@ class TransactionVerifier {
 
         // Convert to human readable
         const humanAmount = ethers.formatUnits(amount, decimals);
-        
+
         // Check if amount is suspiciously large
         if (parseFloat(humanAmount) > 1000000) { // 1M tokens
             throw new Error('Flashloan amount too large - high risk transaction');
@@ -486,7 +489,7 @@ class TransactionVerifier {
     async _verifyProtocolFees(params) {
         // Estimate protocol fees (0.09% for most protocols)
         const estimatedFee = BigNumber.from(params.amount).mul(9).div(10000);
-        
+
         // Get token balance of sender
         const tokenContract = new ethers.Contract(
             params.token,
@@ -494,7 +497,7 @@ class TransactionVerifier {
             this.provider
         );
         const balance = await tokenContract.balanceOf(this.signer.address);
-        
+
         // Verify we have enough to cover fees
         if (balance.lt(estimatedFee)) {
             throw new Error('Insufficient balance to cover flashloan fees');
@@ -507,14 +510,14 @@ class TransactionVerifier {
             let totalLiquidity = BigNumber.from(0);
             const pairType = await this._getPairType(token);
             const requiredRatio = this.SLIPPAGE_CONFIG[pairType].minLiquidityRatio;
-            
+
             // Enhanced liquidity verification with depth analysis
             const liquidityDepths = [];
-            
+
             for (const pool of pools) {
                 const liquidity = await this.poolManager.getLiquidityInPool(pool.address, token);
                 totalLiquidity = totalLiquidity.add(liquidity);
-                
+
                 // Analyze liquidity depth at different levels
                 const depths = await this._analyzeLiquidityDepth(pool, token, amount);
                 liquidityDepths.push({
@@ -522,12 +525,12 @@ class TransactionVerifier {
                     dex: pool.dex,
                     depths
                 });
-                
+
                 console.log(`Pool ${pool.dex} - ${pool.pair}: ${
                     ethers.formatEther(liquidity)} ${token} (Depth Analysis: ${
                     JSON.stringify(depths)})`);
             }
-            
+
             // Verify sufficient liquidity with pair-specific requirements
             const requiredLiquidity = BigNumber.from(amount).mul(Math.floor(requiredRatio * 100)).div(100);
             if (totalLiquidity.lt(requiredLiquidity)) {
@@ -535,7 +538,7 @@ class TransactionVerifier {
                     ethers.formatEther(requiredLiquidity)}, Available: ${
                     ethers.formatEther(totalLiquidity)}`);
             }
-            
+
             return {
                 totalLiquidity,
                 pools: pools.length,
@@ -551,7 +554,7 @@ class TransactionVerifier {
         // Analyze liquidity at different depth levels: 25%, 50%, 75%, 100% of trade amount
         const depthLevels = [0.25, 0.5, 0.75, 1.0];
         const depths = {};
-        
+
         for (const level of depthLevels) {
             const testAmount = BigNumber.from(amount).mul(Math.floor(level * 100)).div(100);
             const price = await this.poolManager.getTokenPrice(pool.address, token, testAmount);
@@ -560,7 +563,7 @@ class TransactionVerifier {
                 price: price.toString()
             };
         }
-        
+
         return depths;
     }
 
@@ -571,15 +574,15 @@ class TransactionVerifier {
 
     async _getPairType(token) {
         const tokenSymbol = await this._getTokenSymbol(token);
-        
+
         if (this.SLIPPAGE_CONFIG.STABLE_PAIRS.tokens.includes(tokenSymbol)) {
             return 'STABLE_PAIRS';
         }
-        
+
         if (tokenSymbol === this.SLIPPAGE_CONFIG.BNB_PAIRS.baseToken) {
             return 'BNB_PAIRS';
         }
-        
+
         return 'VOLATILE_PAIRS';
     }
 
@@ -610,4 +613,4 @@ class TransactionVerifier {
     }
 }
 
-module.exports = TransactionVerifier;
+export default TransactionVerifier;

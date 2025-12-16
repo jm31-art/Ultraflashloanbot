@@ -3,9 +3,13 @@
  * Provides real-time AI analysis for transaction protection
  */
 
-const { spawn } = require('child_process');
-const path = require('path');
-const EventEmitter = require('events');
+import { spawn } from 'child_process';
+import path from 'path';
+import { EventEmitter } from 'events';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 class AIMEVProtector extends EventEmitter {
     constructor(options = {}) {
@@ -224,7 +228,7 @@ class AIMEVProtector extends EventEmitter {
 // Export singleton instance
 const aiMEVProtector = new AIMEVProtector();
 
-module.exports = {
+export {
     AIMEVProtector,
     aiMEVProtector
 };

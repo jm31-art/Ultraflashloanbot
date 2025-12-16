@@ -1,25 +1,24 @@
-const Moralis = require("moralis").default;
+import { initMoralis, getMoralis } from '../src/bootstrap/moralis.bootstrap.js';
 
 /**
- * MoralisService - Singleton for Moralis API initialization
- * Prevents multiple initializations and [C0009] errors
+ * MoralisService - Wrapper for centralized Moralis initialization
+ * Uses the singleton bootstrap to prevent multiple initializations
  */
 class MoralisService {
     constructor() {
         this.initialized = false;
-        this.moralisClient = null;
         this.apiKey = null;
     }
 
     /**
-     * Initialize Moralis API (singleton pattern)
+     * Initialize Moralis API using centralized bootstrap
      * @param {string} apiKey - Moralis API key
      * @returns {Promise<Object>} Moralis client instance
      */
     async initialize(apiKey) {
         if (this.initialized) {
             console.log("ℹ️ Moralis already initialized - skipping");
-            return this.moralisClient;
+            return getMoralis();
         }
 
         if (!apiKey) {
@@ -27,15 +26,14 @@ class MoralisService {
         }
 
         try {
-            console.log("🔄 Initializing Moralis API...");
-            await Moralis.start({ apiKey });
+            console.log("🔄 Initializing Moralis API via bootstrap...");
+            await initMoralis();
 
             this.initialized = true;
             this.apiKey = apiKey;
-            this.moralisClient = Moralis;
 
-            console.log("✅ Moralis API initialized successfully");
-            return this.moralisClient;
+            console.log("✅ Moralis API initialized successfully via bootstrap");
+            return getMoralis();
 
         } catch (error) {
             console.error("❌ Failed to initialize Moralis:", error.message);
@@ -48,7 +46,10 @@ class MoralisService {
      * @returns {Object|null} Moralis client or null if not initialized
      */
     getClient() {
-        return this.moralisClient;
+        if (!this.initialized) {
+            return null;
+        }
+        return getMoralis();
     }
 
     /**
@@ -64,7 +65,6 @@ class MoralisService {
      */
     reset() {
         this.initialized = false;
-        this.moralisClient = null;
         this.apiKey = null;
     }
 }
@@ -72,4 +72,4 @@ class MoralisService {
 // Export singleton instance
 const moralisService = new MoralisService();
 
-module.exports = moralisService;
+export default moralisService;

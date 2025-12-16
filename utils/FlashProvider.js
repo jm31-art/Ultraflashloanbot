@@ -1,4 +1,6 @@
-const { ethers } = require("ethers");
+import { ethers } from "ethers";
+import poolAddresses from '../config/pool_addresses.json' with { type: 'json' };
+import { TOKENS } from '../config/dex.js';
 
 // ABIs for various protocols
 const UNISWAP_V3_POOL_ABI = [
@@ -477,7 +479,7 @@ class FlashProvider {
     // Get pool address from configuration
     getPoolAddress(protocol, tokenA, tokenB) {
         // Load pool addresses from config
-        const poolAddresses = require('../config/pool_addresses.json');
+        // const poolAddresses = require('../config/pool_addresses.json');
 
         // Handle both token objects and addresses
         let tokenASymbol, tokenBSymbol;
@@ -486,8 +488,7 @@ class FlashProvider {
             tokenASymbol = tokenA.symbol;
         } else if (typeof tokenA === 'string') {
             // Find token by address
-            const tokens = require('../config/dex').TOKENS;
-            const foundToken = Object.values(tokens).find(t => t.address.toLowerCase() === tokenA.toLowerCase());
+            const foundToken = Object.values(TOKENS).find(t => t.address.toLowerCase() === tokenA.toLowerCase());
             tokenASymbol = foundToken?.symbol;
         }
 
@@ -495,8 +496,7 @@ class FlashProvider {
             tokenBSymbol = tokenB.symbol;
         } else if (typeof tokenB === 'string') {
             // Find token by address
-            const tokens = require('../config/dex').TOKENS;
-            const foundToken = Object.values(tokens).find(t => t.address.toLowerCase() === tokenB.toLowerCase());
+            const foundToken = Object.values(TOKENS).find(t => t.address.toLowerCase() === tokenB.toLowerCase());
             tokenBSymbol = foundToken?.symbol;
         }
 
@@ -790,4 +790,4 @@ class FlashProvider {
     }
 }
 
-module.exports = FlashProvider;
+export default FlashProvider;

@@ -1,13 +1,14 @@
-require('dotenv').config();
-const { EventEmitter } = require('events');
-const { ethers, getAddress, JsonRpcProvider, ZeroAddress } = require('ethers');
-const { spawn } = require('child_process');
-const path = require('path');
+import dotenv from "dotenv";
+dotenv.config();
+import { EventEmitter } from 'events';
+import { ethers, getAddress, JsonRpcProvider, ZeroAddress } from 'ethers';
+import { spawn } from 'child_process';
+import path from 'path';
 
 // Import ABIs
-const ERC20_ABI = require('../abi/erc20.json');
-const ROUTER_ABI = require('../abi/router.json');
-const PAIR_ABI = require('../abi/pair.json');
+import ERC20_ABI from '../abi/erc20.json' with { type: 'json' };
+import ROUTER_ABI from '../abi/router.json' with { type: 'json' };
+import PAIR_ABI from '../abi/pair.json' with { type: 'json' };
 
 // BSC Configuration
 const BSC_RPC_URL = process.env.RPC_URL || 'https://bsc-dataseed.binance.org/';
@@ -328,7 +329,8 @@ class ArbitrageBot extends EventEmitter {
             console.log(`   DEX Prices:`);
 
             // Get prices for each pair
-            const priceFeed = new (require('../services/DexPriceFeed'))(this.provider);
+            const DexPriceFeed = (await import('../services/DexPriceFeed.js')).default;
+            const priceFeed = new DexPriceFeed(this.provider);
 
             try {
                 const prices1 = await priceFeed.getAllPrices(pair1);
@@ -800,7 +802,7 @@ class ArbitrageBot extends EventEmitter {
     async _getRealTimePrices() {
         try {
             // Import DexPriceFeed dynamically to avoid circular dependencies
-            const DexPriceFeed = require('../services/DexPriceFeed');
+            const DexPriceFeed = (await import('../services/DexPriceFeed.js')).default;
             const priceFeed = new DexPriceFeed(this.provider);
 
             const prices = {};
@@ -1037,4 +1039,4 @@ class ArbitrageBot extends EventEmitter {
     }
 }
 
-module.exports = ArbitrageBot;
+export default ArbitrageBot;

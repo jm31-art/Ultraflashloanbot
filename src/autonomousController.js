@@ -11,6 +11,10 @@ import { generateTriangularPaths } from './arbitrage/pathGenerator.js';
 import { runArbitrage } from './arbitrage/arbitrageEngine.js';
 import { VOLATILE_MODE } from './arbitrage/volatileModeConfig.js';
 import { monitoring } from './monitoring.js';
+import privateExecutionProvider from '../utils/PrivateExecutionProvider.js';
+import bundleBuilder from '../utils/BundleBuilder.js';
+import mevOpportunityComposer from '../utils/MEVOpportunityComposer.js';
+import privateGasStrategy from '../utils/PrivateGasStrategy.js';
 
 class AutonomousController extends EventEmitter {
   constructor() {
@@ -32,6 +36,13 @@ class AutonomousController extends EventEmitter {
     // Event tracking
     this.eventListeners = new Map();
     this.idleTimeout = null;
+
+    // Event debouncing and throttling
+    this.lastBlockProcessed = 0;
+    this.minBlocksBetweenScans = 1; // Minimum 1 block between scans
+    this.eventCooldownMs = 5000; // 5 second cooldown between events
+    this.lastEventTime = 0;
+    this.pendingExecution = false;
 
     // Paths and contracts (initialized once)
     this.paths = null;
@@ -218,12 +229,23 @@ class AutonomousController extends EventEmitter {
   }
 
   /**
-   * Handle new block events
+   * Handle new block events with debouncing
    */
   async handleBlockEvent(blockNumber) {
+    // Block throttling: ensure minimum blocks between scans
+    if (blockNumber - this.lastBlockProcessed < this.minBlocksBetweenScans) {
+      return;
+    }
+
+    // Event debouncing: prevent rapid-fire triggers
+    const now = Date.now();
+    if (now - this.lastEventTime < this.eventCooldownMs) {
+      return;
+    }
+
     // Check if we should run based on block interval
     if (blockNumber - this.lastExecutionBlock >= this.runOnceEveryNBlocks) {
-      this.triggerExecution('block');
+      this.triggerExecution('block', blockNumber);
     }
   }
 
@@ -246,10 +268,21 @@ class AutonomousController extends EventEmitter {
   }
 
   /**
-   * Trigger execution based on event
+   * Trigger execution based on event with deduplication
    */
-  triggerExecution(reason) {
+  triggerExecution(reason, blockNumber = null) {
     if (!this.isRunning) return;
+
+    // Prevent duplicate executions
+    if (this.pendingExecution) {
+      console.log(`⚠️ AUTONOMOUS CONTROLLER: Execution already pending, skipping ${reason} trigger`);
+      return;
+    }
+
+    // Update block tracking
+    if (blockNumber) {
+      this.lastBlockProcessed = blockNumber;
+    }
 
     // Clear idle timeout
     if (this.idleTimeout) {
@@ -257,17 +290,23 @@ class AutonomousController extends EventEmitter {
       this.idleTimeout = null;
     }
 
+    // Update event timing
+    this.lastEventTime = Date.now();
+
     // Randomize block interval for next run
     this.runOnceEveryNBlocks = Math.floor(Math.random() * 3) + 1; // 1-3 blocks
 
     console.log(`🎯 AUTONOMOUS CONTROLLER: Triggered by ${reason} event`);
 
-    // Execute arbitrage scan
-    this.executeArbitrageScan();
+    // Mark as pending and execute
+    this.pendingExecution = true;
+    this.executeArbitrageScan().finally(() => {
+      this.pendingExecution = false;
+    });
   }
 
   /**
-   * Execute arbitrage scan
+   * Execute arbitrage scan with MEV routing logic
    */
   async executeArbitrageScan() {
     try {
@@ -281,20 +320,33 @@ class AutonomousController extends EventEmitter {
       // Update execution block
       this.lastExecutionBlock = await provider.getBlockNumber();
 
-      // Run arbitrage engine in autonomous mode
-      const result = await runArbitrage(this.paths, this.signer, this.flashloanContractAddress, true);
+      // Get arbitrage opportunities
+      const arbOpportunities = await this._scanForArbitrageOpportunities();
 
-      if (result) {
-        // Successful execution
+      // Get liquidation opportunities
+      const liqOpportunities = await this._scanForLiquidationOpportunities();
+
+      // Evaluate combined MEV opportunities
+      const mevResult = await this._evaluateAndExecuteMEV(arbOpportunities, liqOpportunities);
+
+      if (mevResult) {
+        // MEV execution successful
         this.attemptsUsed24h++;
         this.lastSuccessfulTrade = Date.now();
-
-        // Check for mode switching
         this.checkModeSwitching();
-
-        console.log('✅ AUTONOMOUS CONTROLLER: Arbitrage executed successfully');
+        console.log('✅ AUTONOMOUS CONTROLLER: MEV executed successfully');
       } else {
-        console.log('🟡 AUTONOMOUS CONTROLLER: No opportunities found');
+        // Fallback to individual arbitrage execution
+        const result = await runArbitrage(this.paths, this.signer, this.flashloanContractAddress, true);
+
+        if (result) {
+          this.attemptsUsed24h++;
+          this.lastSuccessfulTrade = Date.now();
+          this.checkModeSwitching();
+          console.log('✅ AUTONOMOUS CONTROLLER: Arbitrage executed successfully');
+        } else {
+          console.log('🟡 AUTONOMOUS CONTROLLER: No opportunities found');
+        }
       }
 
     } catch (error) {
@@ -303,6 +355,101 @@ class AutonomousController extends EventEmitter {
 
     // Return to idle state
     this.enterIdleState();
+  }
+
+  /**
+   * Scan for arbitrage opportunities
+   * @private
+   */
+  async _scanForArbitrageOpportunities() {
+    try {
+      // This would integrate with the arbitrage engine to get opportunities
+      // For now, return empty array - will be implemented when arbitrage engine is updated
+      return [];
+    } catch (error) {
+      console.warn('⚠️ Arbitrage opportunity scan failed:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Scan for liquidation opportunities
+   * @private
+   */
+  async _scanForLiquidationOpportunities() {
+    try {
+      // This would integrate with the liquidation bot to get opportunities
+      // For now, return empty array - will be implemented when liquidation bot is updated
+      return [];
+    } catch (error) {
+      console.warn('⚠️ Liquidation opportunity scan failed:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Evaluate and execute MEV opportunities
+   * @private
+   */
+  async _evaluateAndExecuteMEV(arbOpportunities, liqOpportunities) {
+    try {
+      // Find best arbitrage opportunity
+      const bestArb = arbOpportunities.length > 0 ? arbOpportunities[0] : null;
+
+      // Find best liquidation opportunity
+      const bestLiq = liqOpportunities.length > 0 ? liqOpportunities[0] : null;
+
+      if (!bestArb && !bestLiq) {
+        return null; // No opportunities
+      }
+
+      // Evaluate combined opportunity
+      const composition = await mevOpportunityComposer.evaluateCombinedOpportunity(bestArb, bestLiq, privateGasStrategy);
+
+      if (!composition.shouldCompose) {
+        monitoring.logSkippedPath('mev_not_profitable', {
+          reason: composition.reason,
+          arbProfit: bestArb?.expectedProfitUSD || 0,
+          liqProfit: bestLiq?.expectedProfitUSD || 0
+        });
+        return null;
+      }
+
+      console.log(`🎯 ATOMIC MEV OPPORTUNITY: Combined profit $${composition.combinedProfit.toFixed(2)}`);
+
+      // Create execution plan
+      const executionPlan = mevOpportunityComposer.createExecutionPlan(composition);
+      if (!executionPlan) {
+        return null;
+      }
+
+      // Calculate gas parameters
+      const gasParams = await privateGasStrategy.calculateGasParameters({
+        bundleValueUSD: composition.combinedProfit,
+        profitMarginUSD: composition.combinedProfit,
+        isHighPriority: true
+      });
+
+      // Create and execute bundle
+      const bundleResult = await bundleBuilder.buildAndSubmitBundle({
+        transactions: [], // Will be populated by bundle builder
+        flashloanContract: this.flashloanContractAddress,
+        signer: this.signer,
+        opportunity: {
+          type: 'mev_bundle',
+          expectedProfit: composition.combinedProfit,
+          path: bestArb?.path || 'MEV_COMBO',
+          id: `mev_${Date.now()}`
+        }
+      });
+
+      return bundleResult;
+
+    } catch (error) {
+      console.error('❌ MEV evaluation failed:', error.message);
+      monitoring.logCriticalError(error, 'mev_evaluation');
+      return null;
+    }
   }
 
   /**

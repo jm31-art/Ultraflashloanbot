@@ -1,4 +1,5 @@
-require('dotenv').config();
+import dotenv from "dotenv";
+dotenv.config();
 
 // Global RPC URL validator
 function validateRpcUrl() {
@@ -49,8 +50,8 @@ process.on('uncaughtException', (error) => {
     // Continue execution - do not exit
 });
 
-const { ethers } = require('ethers');
-const UnifiedStrategyManager = require('./bot/UnifiedStrategyManager');
+import { ethers } from 'ethers';
+import UnifiedStrategyManager from './bot/UnifiedStrategyManager.js';
 
 async function main() {
     try {

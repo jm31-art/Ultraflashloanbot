@@ -31,6 +31,14 @@ class MonitoringSystem {
     // Safety tracking
     this.safetyViolations = new Map();
     this.lastHeartbeat = Date.now();
+
+    // LOGGING SANITY: Deduplication and rate-limiting
+    this.logCache = new Map(); // message -> last logged timestamp
+    this.logCooldownMs = 30000; // 30 seconds between identical logs
+    this.rateLimitCache = new Map(); // message type -> count in window
+    this.rateLimitWindowMs = 60000; // 1 minute window
+    this.rateLimitMaxPerWindow = 5; // Max 5 identical logs per minute
+    this.lastRateLimitReset = Date.now();
   }
 
   /**
@@ -69,7 +77,7 @@ class MonitoringSystem {
   }
 
   /**
-   * Start heartbeat monitoring
+   * Start heartbeat monitoring with deduplication
    */
   startHeartbeat() {
     this.heartbeatTimer = setInterval(async () => {
@@ -80,22 +88,29 @@ class MonitoringSystem {
 
         const heartbeatMsg = `⏱ VOLATILE MODE: Alive | Last check: ${timestamp} | Next scan: block #${nextBlock}`;
 
-        // Log to terminal
-        console.log(heartbeatMsg);
+        // Check deduplication for heartbeat (allow more frequent than other logs)
+        if (!this._shouldDeduplicateLog(heartbeatMsg, 'heartbeat')) {
+          // Log to terminal
+          console.log(heartbeatMsg);
 
-        // Append to heartbeat log
-        this.appendToLog('heartbeat.log', `${timestamp}: ${heartbeatMsg}\n`);
-
-        // Send to Telegram (optional, low priority)
-        if (this.telegramEnabled && Math.random() < 0.1) { // 10% chance to avoid spam
-          await this.sendTelegramMessage(`🤖 ${heartbeatMsg}`);
+          // Send to Telegram (optional, low priority)
+          if (this.telegramEnabled && Math.random() < 0.1) { // 10% chance to avoid spam
+            await this.sendTelegramMessage(`🤖 ${heartbeatMsg}`);
+          }
         }
+
+        // Always append to heartbeat log (for historical tracking)
+        this.appendToLog('heartbeat.log', `${timestamp}: ${heartbeatMsg}\n`);
 
         this.dailyStats.heartbeats++;
         this.lastHeartbeat = Date.now();
 
       } catch (error) {
-        console.error('❌ Heartbeat failed:', error.message);
+        // Deduplicate error logs too
+        const errorMsg = `❌ Heartbeat failed: ${error.message}`;
+        if (!this._shouldDeduplicateLog(errorMsg, 'heartbeat_error')) {
+          console.error(errorMsg);
+        }
       }
     }, this.heartbeatInterval);
   }
@@ -133,7 +148,7 @@ Estimated Profit: $${estimatedProfit}
     const { txHash, netProfit, mode } = details;
 
     const executedMsg = `
-✅ VOLATILE ARBITRAGE EXECUTED
+✅ ${mode === 'MEV_BUNDLE' ? 'MEV BUNDLE' : 'VOLATILE ARBITRAGE'} EXECUTED
 Mode: ${mode}
 Net Profit: $${netProfit}
 TX Hash: ${txHash}
@@ -153,15 +168,59 @@ TX Hash: ${txHash}
     // Log to trades file
     const timestamp = new Date().toISOString();
     this.appendToLog('trades.log', `${timestamp}: EXECUTED - ${executedMsg.replace(/\n/g, ' | ')}\n`);
+
+    // MEV-specific logging
+    if (mode === 'MEV_BUNDLE') {
+      this.appendToLog('mev_bundles.log', `${timestamp}: BUNDLE_EXECUTED - Hash: ${txHash} - Profit: $${netProfit}\n`);
+    }
   }
 
   /**
-   * Log skipped path with safety reason
+   * Check if log should be deduplicated (rate-limited)
+   * @private
+   */
+  _shouldDeduplicateLog(message, messageType = 'general') {
+    const now = Date.now();
+
+    // Reset rate limit window if needed
+    if (now - this.lastRateLimitReset > this.rateLimitWindowMs) {
+      this.rateLimitCache.clear();
+      this.lastRateLimitReset = now;
+    }
+
+    // Check rate limit for message type
+    const currentCount = this.rateLimitCache.get(messageType) || 0;
+    if (currentCount >= this.rateLimitMaxPerWindow) {
+      return true; // Rate limited
+    }
+
+    // Check deduplication cooldown
+    const lastLogged = this.logCache.get(message);
+    if (lastLogged && (now - lastLogged) < this.logCooldownMs) {
+      return true; // Deduplicated
+    }
+
+    // Update counters
+    this.rateLimitCache.set(messageType, currentCount + 1);
+    this.logCache.set(message, now);
+
+    return false; // Allow log
+  }
+
+  /**
+   * Log skipped path with safety reason (with deduplication)
    */
   logSkippedPath(reason, details = {}) {
     const { maxSlippage, flashloanSize, profit } = details;
 
     const skipMsg = `⚠️ Path skipped: reason=${reason} | MaxSlippage=${maxSlippage || 'N/A'} | FlashloanSize=$${flashloanSize || 'N/A'} | Profit=$${profit || 'N/A'}`;
+
+    // Check deduplication for skipped paths
+    if (this._shouldDeduplicateLog(skipMsg, `skipped_${reason}`)) {
+      // Still track in daily stats even if not logged
+      this.dailyStats.skippedPaths++;
+      return;
+    }
 
     // Only log to file, not terminal (to avoid spam)
     const timestamp = new Date().toISOString();
@@ -189,6 +248,100 @@ TX Hash: ${txHash}
 
     // Log to mode changes file
     this.appendToLog('modeChanges.log', `${new Date().toISOString()}: ${transitionMsg}\n`);
+  }
+
+  /**
+   * Log MEV bundle simulation
+   */
+  logMEVBundleSimulated(details) {
+    const { bundleId, simulationTime, success, profitEstimate } = details;
+
+    const simMsg = `🔬 MEV BUNDLE SIMULATED: ${bundleId} | Success: ${success} | Profit: $${profitEstimate} | Time: ${simulationTime}ms`;
+
+    if (!this._shouldDeduplicateLog(simMsg, 'mev_simulation')) {
+      console.log(simMsg);
+    }
+
+    this.appendToLog('mev_simulation.log', `${new Date().toISOString()}: ${simMsg}\n`);
+  }
+
+  /**
+   * Log MEV bundle submitted
+   */
+  async logMEVBundleSubmitted(details) {
+    const { bundleId, bundleHash, relay, profitEstimate } = details;
+
+    const submitMsg = `📤 MEV BUNDLE SUBMITTED: ${bundleId} | Hash: ${bundleHash} | Relay: ${relay} | Profit: $${profitEstimate}`;
+
+    console.log(submitMsg);
+
+    if (this.telegramEnabled) {
+      await this.sendTelegramMessage(`📤 ${submitMsg}`);
+    }
+
+    this.appendToLog('mev_submissions.log', `${new Date().toISOString()}: ${submitMsg}\n`);
+  }
+
+  /**
+   * Log MEV bundle included in block
+   */
+  async logMEVBundleIncluded(details) {
+    const { bundleId, bundleHash, blockNumber, profitActual, executionTime } = details;
+
+    const includeMsg = `✅ MEV BUNDLE INCLUDED: ${bundleId} | Hash: ${bundleHash} | Block: ${blockNumber} | Profit: $${profitActual} | Time: ${executionTime}ms`;
+
+    console.log(includeMsg);
+
+    if (this.telegramEnabled) {
+      await this.sendTelegramMessage(`✅ ${includeMsg}`);
+    }
+
+    this.appendToLog('mev_inclusions.log', `${new Date().toISOString()}: ${includeMsg}\n`);
+  }
+
+  /**
+   * Log MEV bundle rejected
+   */
+  logMEVBundleRejected(details) {
+    const { bundleId, reason, relay } = details;
+
+    const rejectMsg = `❌ MEV BUNDLE REJECTED: ${bundleId} | Reason: ${reason} | Relay: ${relay}`;
+
+    console.log(rejectMsg);
+
+    this.appendToLog('mev_rejections.log', `${new Date().toISOString()}: ${rejectMsg}\n`);
+  }
+
+  /**
+   * Log atomic MEV executed
+   */
+  async logAtomicMEVExecuted(details) {
+    const { arbitrageProfit, liquidationProfit, totalProfit, executionTime } = details;
+
+    const atomicMsg = `🎯 ATOMIC MEV EXECUTED: Arb: $${arbitrageProfit} | Liq: $${liquidationProfit} | Total: $${totalProfit} | Time: ${executionTime}ms`;
+
+    console.log(atomicMsg);
+
+    if (this.telegramEnabled) {
+      await this.sendTelegramMessage(`🎯 ${atomicMsg}`);
+    }
+
+    this.appendToLog('atomic_mev.log', `${new Date().toISOString()}: ${atomicMsg}\n`);
+  }
+
+  /**
+   * Log atomic MEV skipped
+   */
+  logAtomicMEVSkipped(details) {
+    const { reason, individualProfit, combinedProfit } = details;
+
+    const skipMsg = `⚠️ ATOMIC MEV SKIPPED: ${reason} | Individual: $${individualProfit} | Combined: $${combinedProfit}`;
+
+    if (!this._shouldDeduplicateLog(skipMsg, 'atomic_skip')) {
+      console.log(skipMsg);
+    }
+
+    this.appendToLog('atomic_mev_skips.log', `${new Date().toISOString()}: ${skipMsg}\n`);
   }
 
   /**

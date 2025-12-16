@@ -38,6 +38,14 @@ contract FlashloanArb is Ownable, Pausable {
         uint profit
     );
 
+    event MEVBundleExecuted(
+        address indexed initiator,
+        uint256 totalProfit,
+        uint256 arbitrageProfit,
+        uint256 liquidationProfit,
+        bool liquidationExecuted
+    );
+
     constructor() {
         safetyChecksEnabled = true;
         minProfit = 0;
@@ -162,6 +170,136 @@ contract FlashloanArb is Ownable, Pausable {
         emit TriArbExecuted(msg.sender, tokenA, tokenB, tokenC, amountIn, finalAmountA, profit);
 
         return (finalAmountA, profit);
+    }
+
+    /**
+     * Execute MEV Bundle: Atomic Arbitrage + Liquidation
+     */
+    function executeMEVBundle(
+        address arbitrageToken,
+        address[] calldata arbitragePath,
+        uint256 arbitrageAmountIn,
+        string memory arbitrageRouter,
+        address liquidationProtocol,
+        address liquidationUser,
+        address liquidationDebtAsset,
+        address liquidationCollateralAsset,
+        uint256 liquidationDebtToCover,
+        uint256 minTotalProfit
+    ) external whenNotPaused onlyOwner returns (uint256 totalProfit) {
+        require(arbitrageAmountIn > 0, "arbitrage amount = 0");
+
+        uint256 arbitrageProfit = 0;
+        uint256 liquidationProfit = 0;
+        bool liquidationExecuted = false;
+
+        // Track initial balance for profit calculation
+        uint256 initialBalance = address(this).balance;
+
+        // 1. Execute arbitrage first (if provided)
+        if (arbitragePath.length >= 3) {
+            arbitrageProfit = _executeArbitrage(arbitrageToken, arbitragePath, arbitrageAmountIn, arbitrageRouter);
+        }
+
+        // 2. Execute liquidation (if provided)
+        if (liquidationProtocol != address(0) && liquidationUser != address(0)) {
+            liquidationProfit = _executeLiquidation(
+                liquidationProtocol,
+                liquidationUser,
+                liquidationDebtAsset,
+                liquidationCollateralAsset,
+                liquidationDebtToCover
+            );
+            liquidationExecuted = true;
+        }
+
+        // 3. Calculate total profit
+        uint256 finalBalance = address(this).balance;
+        totalProfit = finalBalance - initialBalance;
+
+        // 4. Verify minimum profit requirement
+        require(totalProfit >= minTotalProfit, "total profit < minimum required");
+
+        // 5. Transfer profit to owner
+        if (totalProfit > 0) {
+            payable(owner()).transfer(totalProfit);
+        }
+
+        emit MEVBundleExecuted(
+            msg.sender,
+            totalProfit,
+            arbitrageProfit,
+            liquidationProfit,
+            liquidationExecuted
+        );
+
+        return totalProfit;
+    }
+
+    /**
+     * Internal arbitrage execution
+     */
+    function _executeArbitrage(
+        address token,
+        address[] calldata path,
+        uint256 amountIn,
+        string memory routerName
+    ) internal returns (uint256 profit) {
+        require(path.length >= 3, "path too short");
+
+        address router = routers[routerName];
+        require(router != address(0), "router not set");
+
+        IUniswapV2Router r = IUniswapV2Router(router);
+
+        // Transfer token from caller to contract
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amountIn);
+
+        // Execute triangular arbitrage
+        autoApproveIfNeeded(token, router, amountIn);
+
+        // A -> B -> C -> A
+        address[] memory fullPath = new address[](4);
+        fullPath[0] = path[0];
+        fullPath[1] = path[1];
+        fullPath[2] = path[2];
+        fullPath[3] = path[0];
+
+        uint256 deadline = block.timestamp + 300; // 5 minutes
+
+        uint[] memory amounts = r.swapExactTokensForTokens(
+            amountIn,
+            0, // No minimum out for internal call
+            fullPath,
+            address(this),
+            deadline
+        );
+
+        uint256 finalAmount = amounts[amounts.length - 1];
+        require(finalAmount >= amountIn, "arbitrage not profitable");
+
+        profit = finalAmount - amountIn;
+        return profit;
+    }
+
+    /**
+     * Internal liquidation execution
+     */
+    function _executeLiquidation(
+        address protocol,
+        address user,
+        address debtAsset,
+        address collateralAsset,
+        uint256 debtToCover
+    ) internal returns (uint256 profit) {
+        // This is a simplified liquidation call
+        // In production, this would call the actual lending protocol
+        // For now, return 0 as liquidation is handled externally
+
+        // TODO: Implement actual liquidation call to lending protocol
+        // This would require the lending protocol interface
+
+        return 0;
     }
 
     // Helper to approve router if needed

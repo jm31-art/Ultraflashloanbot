@@ -1,6 +1,6 @@
-const { ethers } = require("ethers");
-const PriceService = require("../services/PriceService");
-const FlashProvider = require("./FlashProvider");
+import { ethers } from "ethers";
+import PriceService from "../services/PriceService.js";
+import FlashProvider from "./FlashProvider.js";
 
 class ProfitCalculator {
     constructor(provider) {
@@ -217,4 +217,4 @@ class ProfitCalculator {
     }
 }
 
-module.exports = ProfitCalculator;
+export default ProfitCalculator;

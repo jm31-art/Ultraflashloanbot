@@ -1,6 +1,6 @@
-const { aiMEVProtector } = require('../ai/mev_protector');
-const crypto = require('crypto');
-const { MEVError, ValidationError } = require('./CustomError');
+import { aiMEVProtector } from '../ai/mev_protector.js';
+import crypto from 'crypto';
+import { MEVError, ValidationError } from './CustomError.js';
 
 class SecureMEVProtector {
     constructor(provider, options = {}) {
@@ -141,4 +141,4 @@ class SecureMEVProtector {
     }
 }
 
-module.exports = SecureMEVProtector;
+export { SecureMEVProtector };

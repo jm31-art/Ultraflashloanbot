@@ -1,7 +1,7 @@
-const { ethers } = require('ethers');
-const axios = require('axios');
-const moralisService = require('../utils/MoralisService');
-const { DEX_CONFIGS, TOKENS } = require('../config/dex');
+import { ethers } from 'ethers';
+import axios from 'axios';
+import moralisService from '../utils/MoralisService.js';
+import { DEX_CONFIGS, TOKENS } from '../config/dex.js';
 
 class DexPriceFeed {
     constructor(provider) {
@@ -607,4 +607,4 @@ class DexPriceFeed {
     }
 }
 
-module.exports = DexPriceFeed;
+export default DexPriceFeed;

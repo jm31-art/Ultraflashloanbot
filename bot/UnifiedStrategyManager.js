@@ -1,14 +1,15 @@
-require('dotenv').config();
-const { EventEmitter } = require('events');
-const { ethers } = require('ethers');
-const { TOKENS } = require('../config/dex');
-const ArbitrageBot = require('./ArbitrageBot');
-const LiquidationBot = require('./LiquidationBot');
-const NFTFlashLoanTrader = require('./NFTFlashLoanTrader');
-const CrossProtocolArbitrageScanner = require('./CrossProtocolArbitrageScanner');
-const StrategyRiskAssessor = require('../utils/StrategyRiskAssessor');
-const PerformanceDashboard = require('../utils/PerformanceDashboard');
-const PythonArbitrageCalculator = require('../services/PythonArbitrageCalculator');
+import dotenv from "dotenv";
+dotenv.config();
+import { EventEmitter } from 'events';
+import { ethers } from 'ethers';
+import { TOKENS } from '../config/dex.js';
+import ArbitrageBot from './ArbitrageBot.js';
+import LiquidationBot from './LiquidationBot.js';
+import NFTFlashLoanTrader from './NFTFlashLoanTrader.js';
+import CrossProtocolArbitrageScanner from './CrossProtocolArbitrageScanner.js';
+import StrategyRiskAssessor from '../utils/StrategyRiskAssessor.js';
+import PerformanceDashboard from '../utils/PerformanceDashboard.js';
+import PythonArbitrageCalculator from '../services/PythonArbitrageCalculator.js';
 
 // Multicoin Arbitrage Strategy - Randomly selects 2-4 coins for arbitrage
 class MulticoinArbitrageStrategy extends EventEmitter {
@@ -127,7 +128,7 @@ class MulticoinArbitrageStrategy extends EventEmitter {
 
     async _getPairPrices(pair) {
         // Use DexPriceFeed to get prices (now with Moralis integration)
-        const DexPriceFeed = require('../services/DexPriceFeed');
+        const DexPriceFeed = (await import('../services/DexPriceFeed.js')).default;
         const priceFeed = new DexPriceFeed(this.provider);
         return await priceFeed.getAllPrices(pair);
     }
@@ -1023,4 +1024,4 @@ class UnifiedStrategyManager extends EventEmitter {
     }
 }
 
-module.exports = UnifiedStrategyManager;
+export default UnifiedStrategyManager;

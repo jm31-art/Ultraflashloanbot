@@ -1,7 +1,7 @@
-const { ethers } = require('ethers');
-const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
+import { ethers } from 'ethers';
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
 
 class PriceService {
     constructor(provider = null) {
@@ -176,4 +176,4 @@ class PriceService {
     }
 }
 
-module.exports = PriceService;
+export default PriceService;

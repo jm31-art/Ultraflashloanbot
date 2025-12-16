@@ -1,14 +1,15 @@
-require('dotenv').config();
-const { EventEmitter } = require('events');
-const { ethers, getAddress } = require('ethers');
-const axios = require('axios');
-const PROTOCOLS = require('../config/protocols');
+import dotenv from "dotenv";
+dotenv.config();
+import { EventEmitter } from 'events';
+import { ethers, getAddress } from 'ethers';
+import axios from 'axios';
+import { PROTOCOLS } from '../config/protocols.js';
 const LENDING_PROTOCOLS = PROTOCOLS.LENDING_PROTOCOLS;
 const TOKENS = PROTOCOLS.TOKENS;
-const PriceFeed = require('../services/PriceFeed');
-const ProfitCalculator = require('../utils/ProfitCalculator');
-const TransactionVerifier = require('../utils/TransactionVerifier');
-const { monitoring } = require('../src/monitoring');
+import PriceFeed from '../services/PriceFeed.js';
+import ProfitCalculator from '../utils/ProfitCalculator.js';
+import TransactionVerifier from '../utils/TransactionVerifier.js';
+import { monitoring } from '../src/monitoring.js';
 
 // Subgraph endpoints for position discovery
 const SUBGRAPH_ENDPOINTS = {
@@ -1101,13 +1102,37 @@ class LiquidationBot extends EventEmitter {
 
     async _getPriceWithFallback(tokenAddress) {
         try {
+            // PRICE FEED HARDENING: Strict guards to prevent crashes
+
+            // Guard 1: Validate token address format
+            if (!tokenAddress || !ethers.isAddress(tokenAddress)) {
+                console.warn(`⚠️ Invalid token address: ${tokenAddress} - skipping`);
+                return null;
+            }
+
+            // Guard 2: Check if token exists in our configuration
+            const tokenSymbol = Object.keys(TOKENS).find(symbol =>
+                TOKENS[symbol].address.toLowerCase() === tokenAddress.toLowerCase()
+            );
+            if (!tokenSymbol) {
+                console.warn(`⚠️ Token ${tokenAddress} not in configuration - skipping`);
+                return null;
+            }
+
+            // Guard 3: Check token metadata
+            const tokenData = TOKENS[tokenSymbol];
+            if (!tokenData || !tokenData.decimals || tokenData.decimals <= 0) {
+                console.warn(`⚠️ Invalid token metadata for ${tokenSymbol} - skipping`);
+                return null;
+            }
+
             // Try primary price feed
             const price = await this.priceFeed.getPrice(tokenAddress);
-            if (price && price > 0) return price;
+            if (price && price > 0 && isFinite(price)) return price;
 
             // Fallback to CoinGecko or other sources
             // This would be implemented based on available price feeds
-            console.warn(`⚠️ Price unavailable for ${tokenAddress}, using fallback`);
+            console.warn(`⚠️ Price unavailable for ${tokenSymbol} (${tokenAddress}), using fallback`);
             return null;
         } catch (error) {
             console.warn(`⚠️ Price fetch failed for ${tokenAddress}:`, error.message);
@@ -1627,4 +1652,4 @@ class LiquidationBot extends EventEmitter {
     }
 }
 
-module.exports = LiquidationBot;
+export { LiquidationBot };

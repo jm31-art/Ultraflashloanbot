@@ -1,4 +1,4 @@
-const { ethers } = require('ethers');
+import { ethers } from 'ethers';
 
 function safeGetAddress(address) {
     if (!address) return address;
@@ -257,7 +257,7 @@ const TRADING_PAIRS = [
     ["USDT", "ADA"], ["USDC", "ADA"], ["BUSD", "ADA"]
 ];
 
-module.exports = {
+export {
     DEX_CONFIGS,
     TOKENS,
     TRADING_PAIRS
