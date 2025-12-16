@@ -4,6 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js",
+    "bot": "node src/index.js",
+    "trading": "node run_live_trading.js",
+    "monitor": "tail -f logs/trades.log",
+    "status": "node -e \"import { autonomousController } from './src/autonomousController.js'; console.log('🤖 Controller Status:', autonomousController.getStatus());\"",
+    "mev-status": "node -e \"import privateExecutionProvider from './utils/PrivateExecutionProvider.js'; import bundleBuilder from './utils/BundleBuilder.js'; console.log('🔒 Private Relay:', privateExecutionProvider.getStatus()); console.log('📦 Bundle Builder:', bundleBuilder.getStats());\"",
+    "stop": "pkill -f 'node src/index.js'",
+    "stop-all": "pkill -f 'node.*trading' && pkill -f 'autonomous'",
+    "logs": "ls -la logs/",
+    "clean": "rm -rf logs/*.log",
     "compile": "npx hardhat compile",
     "test": "npx hardhat test --config hardhat.config.cjs",
     "test:calculator": "node test_arbitrage_calculator.js",
@@ -13,9 +24,9 @@
     "run:auto:tri": "arbitrage_env\\Scripts\\python.exe self_discover_hybrid_bot.py --mode tri",
     "run:auto:liq": "arbitrage_env\\Scripts\\python.exe self_discover_hybrid_bot.py --mode liq",
     "run:auto:hybrid": "arbitrage_env\\Scripts\\python.exe self_discover_hybrid_bot.py --mode hybrid",
-    
+
     "run:printer": "python final_printer_2025.py",
-    
+
     "run:ai": "node -e \"console.log('AI-Powered Arbitrage Bot Starting...'); require('./ai/mev_protector').aiMEVProtector.initialize().then(() => console.log('AI Ready!')).catch(console.error);\" && npm run run:printer",
     "lint": "eslint . --ext .js"
   },
