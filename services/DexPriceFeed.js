@@ -62,24 +62,49 @@ class DexPriceFeed {
 
             const prices = {};
 
-            // Get prices from Moralis API (PRIMARY source for real-time DEX data)
+            // MORALIS FALLBACK: Try Moralis first, fallback to on-chain if empty
+            let dataSource = 'moralis';
+
             if (this.moralisInitialized) {
                 try {
                     const moralisPrices = await this._getMoralisDexPrices(token0Address, token1Address, pair);
-                    Object.assign(prices, moralisPrices);
-                    console.log(`✅ Moralis API provided ${Object.keys(moralisPrices).length} DEXes for ${pair}`);
+                    if (moralisPrices && Object.keys(moralisPrices).length > 0) {
+                        Object.assign(prices, moralisPrices);
+                        console.log(`✅ Moralis API provided ${Object.keys(moralisPrices).length} DEXes for ${pair}`);
+                    } else {
+                        // Moralis returned empty - fallback to on-chain
+                        dataSource = 'on_chain_fallback';
+                        console.log(`⚠️ Moralis returned no data for ${pair}, using on-chain fallback`);
+                        const dexPrices = await this._getDexPricesWithLiquidity(token0Address, token1Address);
+                        Object.assign(prices, dexPrices);
+                    }
                 } catch (error) {
-                    console.warn('Moralis price fetch failed, will still use on-chain as backup:', error.message);
+                    console.warn('Moralis price fetch failed, using on-chain fallback:', error.message);
+                    dataSource = 'on_chain_fallback';
+                    const dexPrices = await this._getDexPricesWithLiquidity(token0Address, token1Address);
+                    Object.assign(prices, dexPrices);
+                }
+            } else {
+                // Moralis not initialized - use on-chain
+                dataSource = 'on_chain';
+                const dexPrices = await this._getDexPricesWithLiquidity(token0Address, token1Address);
+                Object.assign(prices, dexPrices);
+            }
+
+            // If still no prices, try cached data (≤ 2 blocks old)
+            if (Object.keys(prices).length === 0) {
+                const cachedPrices = this._getCachedPrices(pair);
+                if (cachedPrices) {
+                    dataSource = 'cache_fallback';
+                    Object.assign(prices, cachedPrices);
+                    console.log(`📦 Using cached prices for ${pair} (${cachedPrices.length} DEXes)`);
                 }
             }
 
-            // Get prices from on-chain DEX queries (ALWAYS run as backup/supplement)
-            // This ensures we have data even if Moralis fails
-            const dexPrices = await this._getDexPricesWithLiquidity(token0Address, token1Address);
-            // Only add on-chain prices for DEXes not already covered by Moralis
-            for (const [dexName, dexData] of Object.entries(dexPrices)) {
-                if (!prices[dexName] && dexData) {
-                    prices[dexName] = dexData;
+            // Add data source metadata
+            for (const dexKey of Object.keys(prices)) {
+                if (prices[dexKey] && typeof prices[dexKey] === 'object') {
+                    prices[dexKey].dataSource = dataSource;
                 }
             }
 
@@ -599,6 +624,33 @@ class DexPriceFeed {
             console.error(`Failed to build swap tx for ${dexName}:`, error.message);
             throw error;
         }
+    }
+
+    /**
+     * Get cached prices (≤ 2 blocks old)
+     * @private
+     */
+    _getCachedPrices(pair) {
+        try {
+            const cacheKey = `prices_${pair}`;
+            const cached = this.cache.get(cacheKey);
+
+            if (cached && cached.data) {
+                const cacheAge = Date.now() - cached.timestamp;
+                const maxAge = 2 * 3000; // 2 blocks * 3 seconds per block (conservative)
+
+                if (cacheAge <= maxAge) {
+                    // Filter out timestamp and return only price data
+                    const prices = { ...cached.data };
+                    delete prices.timestamp;
+                    return prices;
+                }
+            }
+        } catch (error) {
+            // Silently fail
+        }
+
+        return null;
     }
 
     clearCache() {

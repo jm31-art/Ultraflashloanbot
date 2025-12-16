@@ -1,165 +1,276 @@
 /**
- * RPC Manager - Central RPC call management with rate limiting and adaptive backoff
- * Prevents RPC overload and handles rate limit errors gracefully
+ * RPC LOAD REDUCTION UTILITY
+ * Separates providers for logs vs execution, implements batching and backoff
  */
+
+import { ethers } from 'ethers';
 
 class RpcManager {
     constructor() {
-        this.callQueue = [];
-        this.activeCalls = 0;
-        this.maxConcurrentCalls = 5;
-        this.minInterval = 100; // Minimum 100ms between calls
-        this.lastCallTime = 0;
+        // Separate providers for different operations
+        this.logProvider = null; // For event listening and logs
+        this.execProvider = null; // For transactions and calls
+        this.backupProvider = null; // Fallback provider
 
-        // Adaptive backoff for rate limit errors
-        this.backoffMultiplier = 1.5;
-        this.maxBackoffTime = 30000; // 30 seconds max backoff
-        this.backoffTime = 1000; // Start with 1 second
+        // Batching configuration
+        this.batchSize = 10; // Max requests per batch
+        this.batchInterval = 100; // ms between batches
+        this.lastBatchTime = 0;
 
-        // Statistics
-        this.stats = {
-            totalCalls: 0,
-            successfulCalls: 0,
-            rateLimitErrors: 0,
-            otherErrors: 0,
-            averageResponseTime: 0
-        };
+        // Rate limiting and backoff
+        this.requestQueue = [];
+        this.processingQueue = false;
+        this.backoffMultiplier = 2;
+        this.maxBackoffDelay = 30000; // 30 seconds
+        this.currentBackoffDelay = 1000; // Start with 1 second
 
-        // Error patterns to detect rate limiting
-        this.rateLimitPatterns = [
-            'rate limit',
-            '429',
-            'too many requests',
-            'method eth_call in batch triggered rate limit',
-            'method eth_getLogs in batch triggered rate limit',
-            'method eth_getFilterChanges in batch triggered rate limit'
-        ];
+        // Request tracking
+        this.requestCounts = new Map(); // provider -> count in window
+        this.rateLimitWindow = 60000; // 1 minute
+        this.maxRequestsPerWindow = 100; // Conservative limit
+        this.lastResetTime = Date.now();
     }
 
     /**
-     * Execute an RPC call with rate limiting and retry logic
-     * @param {Function} callFn - Function that returns a Promise for the RPC call
-     * @param {Object} options - Options for the call
-     * @returns {Promise} Result of the RPC call
+     * Initialize providers
+     * @param {string} rpcUrl - Primary RPC URL
      */
-    async executeCall(callFn, options = {}) {
-        const maxRetries = options.maxRetries || 3;
-        let attempt = 0;
+    initialize(rpcUrl) {
+        try {
+            // LOG PROVIDER: For event listening (lower priority)
+            this.logProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+                batchMaxCount: 1, // No batching for logs
+                staticNetwork: true
+            });
 
-        while (attempt < maxRetries) {
+            // EXEC PROVIDER: For transactions and critical calls (higher priority)
+            this.execProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+                batchMaxCount: this.batchSize,
+                staticNetwork: true
+            });
+
+            // BACKUP PROVIDER: For fallback operations
+            this.backupProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+                batchMaxCount: 1,
+                staticNetwork: true
+            });
+
+            console.log('✅ RPC Manager initialized with separate providers');
+        } catch (error) {
+            console.error('❌ Failed to initialize RPC providers:', error.message);
+        }
+    }
+
+    /**
+     * Get provider for log operations
+     */
+    getLogProvider() {
+        return this.logProvider || this.execProvider;
+    }
+
+    /**
+     * Get provider for execution operations
+     */
+    getExecProvider() {
+        return this.execProvider || this.logProvider;
+    }
+
+    /**
+     * Get backup provider
+     */
+    getBackupProvider() {
+        return this.backupProvider || this.execProvider || this.logProvider;
+    }
+
+    /**
+     * Execute batched eth_getLogs requests
+     * @param {Array} logRequests - Array of log request objects
+     * @returns {Promise<Array>} Array of log responses
+     */
+    async batchGetLogs(logRequests) {
+        if (!Array.isArray(logRequests) || logRequests.length === 0) {
+            return [];
+        }
+
+        // Split into batches to avoid rate limits
+        const batches = this._chunkArray(logRequests, this.batchSize);
+        const results = [];
+
+        for (const batch of batches) {
             try {
-                // Wait for rate limit and queue management
-                await this._waitForSlot();
+                // Rate limiting check
+                await this._checkRateLimit('logs');
 
-                const startTime = Date.now();
-                this.activeCalls++;
-                this.stats.totalCalls++;
+                // Execute batch with backoff
+                const batchResults = await this._executeWithBackoff(async () => {
+                    const promises = batch.map(request =>
+                        this.getLogProvider().getLogs(request)
+                    );
+                    return await Promise.allSettled(promises);
+                });
 
-                const result = await callFn();
+                // Process results
+                for (const result of batchResults) {
+                    if (result.status === 'fulfilled') {
+                        results.push(result.value);
+                    } else {
+                        console.warn('⚠️ Batch log request failed:', result.reason.message);
+                        results.push([]); // Empty array for failed requests
+                    }
+                }
 
-                const responseTime = Date.now() - startTime;
-                this.stats.successfulCalls++;
-                this.stats.averageResponseTime =
-                    (this.stats.averageResponseTime + responseTime) / 2;
-
-                this.activeCalls--;
-                this.lastCallTime = Date.now();
-
-                return result;
+                // Delay between batches
+                await this._delayBetweenBatches();
 
             } catch (error) {
-                this.activeCalls--;
-
-                // Check if this is a rate limit error
-                const isRateLimit = this._isRateLimitError(error);
-
-                if (isRateLimit && attempt < maxRetries - 1) {
-                    this.stats.rateLimitErrors++;
-                    console.warn(`⚠️ RPC rate limit detected, backing off for ${this.backoffTime}ms (attempt ${attempt + 1}/${maxRetries})`);
-
-                    await this._backoff();
-                    attempt++;
-                    continue;
-                } else {
-                    this.stats.otherErrors++;
-                    throw error;
-                }
+                console.warn('⚠️ Batch execution failed:', error.message);
+                // Add empty results for failed batch
+                results.push(...new Array(batch.length).fill([]));
             }
         }
 
-        throw new Error(`RPC call failed after ${maxRetries} attempts`);
+        return results.flat();
     }
 
     /**
-     * Wait for an available slot in the call queue
+     * Execute critical call with retry and backoff
+     * @param {Function} callFn - Function that returns a promise
+     * @param {string} operation - Operation name for logging
+     * @returns {Promise} Call result
+     */
+    async executeCriticalCall(callFn, operation = 'critical_call') {
+        return await this._executeWithBackoff(async () => {
+            await this._checkRateLimit('exec');
+            return await callFn();
+        }, operation);
+    }
+
+    /**
+     * Execute with exponential backoff
      * @private
      */
-    async _waitForSlot() {
-        return new Promise((resolve) => {
-            const checkSlot = () => {
-                const timeSinceLastCall = Date.now() - this.lastCallTime;
+    async _executeWithBackoff(operation, context = 'operation') {
+        let attempt = 0;
+        let delay = this.currentBackoffDelay;
 
-                if (this.activeCalls < this.maxConcurrentCalls && timeSinceLastCall >= this.minInterval) {
-                    resolve();
-                } else {
-                    setTimeout(checkSlot, 50); // Check again in 50ms
+        while (attempt < 3) { // Max 3 attempts
+            try {
+                const result = await operation();
+                this.currentBackoffDelay = 1000; // Reset on success
+                return result;
+            } catch (error) {
+                attempt++;
+
+                if (error.message.includes('rate limit') || error.message.includes('429') ||
+                    error.message.includes('timeout') || error.code === 'TIMEOUT') {
+
+                    if (attempt < 3) {
+                        console.warn(`⚠️ ${context} rate limited, retrying in ${delay}ms (attempt ${attempt}/3)`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        delay = Math.min(delay * this.backoffMultiplier, this.maxBackoffDelay);
+                        continue;
+                    }
                 }
-            };
 
-            checkSlot();
-        });
+                // Non-retryable error or max attempts reached
+                throw error;
+            }
+        }
     }
 
     /**
-     * Check if an error is a rate limit error
+     * Check rate limits
      * @private
      */
-    _isRateLimitError(error) {
-        const errorMessage = error.message || error.toString();
-        return this.rateLimitPatterns.some(pattern =>
-            errorMessage.toLowerCase().includes(pattern.toLowerCase())
-        );
+    async _checkRateLimit(providerType) {
+        const now = Date.now();
+
+        // Reset window if needed
+        if (now - this.lastResetTime > this.rateLimitWindow) {
+            this.requestCounts.clear();
+            this.lastResetTime = now;
+        }
+
+        const currentCount = this.requestCounts.get(providerType) || 0;
+
+        if (currentCount >= this.maxRequestsPerWindow) {
+            const waitTime = this.rateLimitWindow - (now - this.lastResetTime);
+            console.warn(`⚠️ Rate limit reached for ${providerType}, waiting ${waitTime}ms`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            return; // Will retry after wait
+        }
+
+        this.requestCounts.set(providerType, currentCount + 1);
     }
 
     /**
-     * Implement exponential backoff for rate limit errors
+     * Delay between batches
      * @private
      */
-    async _backoff() {
-        await new Promise(resolve => setTimeout(resolve, this.backoffTime));
+    async _delayBetweenBatches() {
+        const now = Date.now();
+        const timeSinceLastBatch = now - this.lastBatchTime;
 
-        // Increase backoff time exponentially, but cap it
-        this.backoffTime = Math.min(
-            this.backoffTime * this.backoffMultiplier,
-            this.maxBackoffTime
-        );
+        if (timeSinceLastBatch < this.batchInterval) {
+            const delay = this.batchInterval - timeSinceLastBatch;
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+
+        this.lastBatchTime = now;
     }
 
     /**
-     * Reset backoff time after successful calls
+     * Chunk array into smaller arrays
+     * @private
      */
-    resetBackoff() {
-        this.backoffTime = 1000;
+    _chunkArray(array, size) {
+        const chunks = [];
+        for (let i = 0; i < array.length; i += size) {
+            chunks.push(array.slice(i, i + size));
+        }
+        return chunks;
     }
 
     /**
-     * Get statistics about RPC calls
+     * Get connection status
      */
-    getStats() {
-        return {
-            ...this.stats,
-            activeCalls: this.activeCalls,
-            backoffTime: this.backoffTime,
-            queueLength: this.callQueue.length
+    async getStatus() {
+        const status = {
+            logProvider: false,
+            execProvider: false,
+            backupProvider: false,
+            batchSize: this.batchSize,
+            currentBackoffDelay: this.currentBackoffDelay
         };
-    }
 
-    /**
-     * Clean shutdown
-     */
-    cleanup() {
-        this.callQueue = [];
-        this.activeCalls = 0;
+        try {
+            if (this.logProvider) {
+                await this.logProvider.getBlockNumber();
+                status.logProvider = true;
+            }
+        } catch (error) {
+            // Log provider down
+        }
+
+        try {
+            if (this.execProvider) {
+                await this.execProvider.getBlockNumber();
+                status.execProvider = true;
+            }
+        } catch (error) {
+            // Exec provider down
+        }
+
+        try {
+            if (this.backupProvider) {
+                await this.backupProvider.getBlockNumber();
+                status.backupProvider = true;
+            }
+        } catch (error) {
+            // Backup provider down
+        }
+
+        return status;
     }
 }
 

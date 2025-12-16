@@ -80,15 +80,97 @@ class LiquidationBot extends EventEmitter {
         // Shared gas manager integration
         this.sharedGasManager = options.sharedGasManager || null;
 
-        // TOKEN FILTERING: Filter out invalid tokens to prevent crashes
-        this.tokenList = Object.values(TOKENS).filter(t => t && ethers.isAddress(t.address));
+        // LIQUIDATION SCOPE NARROWING: Focus on high-volatility, newly listed, borrow-heavy assets
+        this.tokenList = this._narrowLiquidationScope(Object.values(TOKENS));
         if (this.tokenList.length === 0) {
-            console.warn("⚠️ No valid tokens found for liquidation scanning");
+            console.warn("⚠️ No qualifying tokens found for liquidation scanning");
         } else {
-            console.log(`✅ Filtered ${this.tokenList.length} valid tokens for liquidation scanning`);
+            console.log(`✅ Narrowed to ${this.tokenList.length} high-priority tokens for liquidation scanning`);
         }
 
         this.emit('initialized');
+    }
+
+    /**
+     * Narrow liquidation scope to high-priority assets
+     * @private
+     */
+    _narrowLiquidationScope(allTokens) {
+        const qualifyingTokens = [];
+
+        // HIGH-VOLATILITY COLLATERAL: Focus on volatile assets that make good collateral
+        const highVolatilityAssets = [
+            'WBNB', 'BTCB', 'ETH', 'CAKE', 'BAKE', 'BANANA'
+        ];
+
+        // NEWLY LISTED MARKETS: Recently added assets (within last 6 months)
+        const newlyListedAssets = [
+            // Add newly listed assets here as they become available
+        ];
+
+        // BORROW-HEAVY ASSETS: Assets commonly used as debt
+        const borrowHeavyAssets = [
+            'USDT', 'USDC', 'BUSD', 'DAI', 'FRAX'
+        ];
+
+        for (const token of allTokens) {
+            if (!token || !ethers.isAddress(token.address)) {
+                continue; // Skip invalid tokens
+            }
+
+            const symbol = token.symbol;
+            let qualifies = false;
+            let reason = '';
+
+            // Check high-volatility collateral
+            if (highVolatilityAssets.includes(symbol)) {
+                qualifies = true;
+                reason = 'high-volatility collateral';
+            }
+            // Check newly listed (placeholder logic)
+            else if (newlyListedAssets.includes(symbol)) {
+                qualifies = true;
+                reason = 'newly listed market';
+            }
+            // Check borrow-heavy assets
+            else if (borrowHeavyAssets.includes(symbol)) {
+                qualifies = true;
+                reason = 'borrow-heavy asset';
+            }
+            // Additional criteria: liquidation bonus > 5%
+            else if (this._hasAdequateLiquidationBonus(symbol)) {
+                qualifies = true;
+                reason = 'adequate liquidation bonus';
+            }
+
+            if (qualifies) {
+                qualifyingTokens.push({ ...token, qualificationReason: reason });
+                console.log(`🎯 Included ${symbol} for liquidation scanning (${reason})`);
+            } else {
+                console.log(`⏭️ Skipped ${symbol} for liquidation scanning (low priority)`);
+            }
+        }
+
+        return qualifyingTokens;
+    }
+
+    /**
+     * Check if asset has adequate liquidation bonus
+     * @private
+     */
+    _hasAdequateLiquidationBonus(symbol) {
+        // Protocol-specific liquidation bonuses
+        const liquidationBonuses = {
+            // Aave V3 typical bonuses
+            WBNB: 0.05, BTCB: 0.10, ETH: 0.08,
+            // Venus typical bonuses
+            CAKE: 0.05, BAKE: 0.05,
+            // Default minimum
+            default: 0.05
+        };
+
+        const bonus = liquidationBonuses[symbol] || liquidationBonuses.default;
+        return bonus >= 0.05; // 5% minimum threshold
     }
 
     async initialize() {

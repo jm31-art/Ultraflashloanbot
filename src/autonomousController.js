@@ -37,6 +37,10 @@ class AutonomousController extends EventEmitter {
     this.eventListeners = new Map();
     this.idleTimeout = null;
 
+    // EXECUTION LOCK OPTIMIZATION: Replace boolean with state enum
+    this.executionState = 'IDLE'; // IDLE | SIMULATING | EXECUTING
+    this.pendingTriggers = []; // Queue for coalescing triggers during simulation
+
     // Event debouncing and throttling
     this.lastBlockProcessed = 0;
     this.minBlocksBetweenScans = 1; // Minimum 1 block between scans
@@ -268,14 +272,14 @@ class AutonomousController extends EventEmitter {
   }
 
   /**
-   * Trigger execution based on event with deduplication
+   * Trigger execution based on event with state-based locking
    */
   triggerExecution(reason, blockNumber = null) {
     if (!this.isRunning) return;
 
-    // Prevent duplicate executions
-    if (this.pendingExecution) {
-      console.log(`⚠️ AUTONOMOUS CONTROLLER: Execution already pending, skipping ${reason} trigger`);
+    // EXECUTION LOCK OPTIMIZATION: State-based locking
+    if (this.executionState === 'EXECUTING') {
+      console.log(`⚠️ AUTONOMOUS CONTROLLER: Execution in progress, skipping ${reason} trigger`);
       return;
     }
 
@@ -298,11 +302,36 @@ class AutonomousController extends EventEmitter {
 
     console.log(`🎯 AUTONOMOUS CONTROLLER: Triggered by ${reason} event`);
 
-    // Mark as pending and execute
-    this.pendingExecution = true;
-    this.executeArbitrageScan().finally(() => {
-      this.pendingExecution = false;
-    });
+    // EXECUTION LOCK OPTIMIZATION: Allow coalescing during simulation
+    if (this.executionState === 'SIMULATING') {
+      // Queue trigger for after current simulation completes
+      this.pendingTriggers.push({ reason, blockNumber });
+      console.log(`📋 AUTONOMOUS CONTROLLER: Queued ${reason} trigger (simulation in progress)`);
+      return;
+    }
+
+    // Execute immediately
+    this._executeWithStateLock(reason);
+  }
+
+  /**
+   * Execute with state-based locking
+   * @private
+   */
+  async _executeWithStateLock(reason) {
+    try {
+      this.executionState = 'SIMULATING';
+      await this.executeArbitrageScan();
+    } finally {
+      this.executionState = 'IDLE';
+
+      // Process any queued triggers
+      if (this.pendingTriggers.length > 0) {
+        const nextTrigger = this.pendingTriggers.shift();
+        console.log(`🔄 AUTONOMOUS CONTROLLER: Processing queued trigger: ${nextTrigger.reason}`);
+        setImmediate(() => this.triggerExecution(nextTrigger.reason, nextTrigger.blockNumber));
+      }
+    }
   }
 
   /**

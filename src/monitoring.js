@@ -32,13 +32,16 @@ class MonitoringSystem {
     this.safetyViolations = new Map();
     this.lastHeartbeat = Date.now();
 
-    // LOGGING SANITY: Deduplication and rate-limiting
-    this.logCache = new Map(); // message -> last logged timestamp
+    // LOGGING SANITY: Per-block deduplication and throttling
+    this.blockLogCache = new Map(); // blockNumber -> Set of logged messages
+    this.currentBlockNumber = 0;
+    this.skipSummaryCache = new Map(); // skipReason -> count this block
     this.logCooldownMs = 30000; // 30 seconds between identical logs
     this.rateLimitCache = new Map(); // message type -> count in window
     this.rateLimitWindowMs = 60000; // 1 minute window
     this.rateLimitMaxPerWindow = 5; // Max 5 identical logs per minute
     this.lastRateLimitReset = Date.now();
+    this.debugMode = process.env.DEBUG === 'true';
   }
 
   /**
@@ -176,11 +179,25 @@ TX Hash: ${txHash}
   }
 
   /**
-   * Check if log should be deduplicated (rate-limited)
+   * Check if log should be deduplicated (per-block suppression)
    * @private
    */
-  _shouldDeduplicateLog(message, messageType = 'general') {
+  async _shouldDeduplicateLog(message, messageType = 'general') {
     const now = Date.now();
+
+    // Get current block number
+    try {
+      const currentBlock = await this.getCurrentBlock();
+      if (currentBlock !== this.currentBlockNumber) {
+        // New block - reset caches and log summaries
+        this._logBlockSummaries();
+        this.blockLogCache.clear();
+        this.skipSummaryCache.clear();
+        this.currentBlockNumber = currentBlock;
+      }
+    } catch (error) {
+      // Fallback to time-based if block check fails
+    }
 
     // Reset rate limit window if needed
     if (now - this.lastRateLimitReset > this.rateLimitWindowMs) {
@@ -194,35 +211,75 @@ TX Hash: ${txHash}
       return true; // Rate limited
     }
 
-    // Check deduplication cooldown
-    const lastLogged = this.logCache.get(message);
-    if (lastLogged && (now - lastLogged) < this.logCooldownMs) {
-      return true; // Deduplicated
+    // Check per-block deduplication
+    const blockMessages = this.blockLogCache.get(this.currentBlockNumber) || new Set();
+    if (blockMessages.has(message)) {
+      // Count skips for summary
+      if (messageType === 'skip') {
+        const skipCount = this.skipSummaryCache.get(message) || 0;
+        this.skipSummaryCache.set(message, skipCount + 1);
+      }
+      return true; // Already logged this block
+    }
+
+    // Check global deduplication cooldown (for non-skip messages)
+    if (messageType !== 'skip') {
+      const lastLogged = this.logCache.get(message);
+      if (lastLogged && (now - lastLogged) < this.logCooldownMs) {
+        return true; // Deduplicated
+      }
+      this.logCache.set(message, now);
     }
 
     // Update counters
     this.rateLimitCache.set(messageType, currentCount + 1);
-    this.logCache.set(message, now);
+    blockMessages.add(message);
+    this.blockLogCache.set(this.currentBlockNumber, blockMessages);
 
     return false; // Allow log
   }
 
   /**
-   * Log skipped path with safety reason (with deduplication)
+   * Log block summaries for skipped paths
+   * @private
    */
-  logSkippedPath(reason, details = {}) {
+  _logBlockSummaries() {
+    if (this.skipSummaryCache.size === 0) return;
+
+    const summaries = [];
+    for (const [reason, count] of this.skipSummaryCache) {
+      if (count > 1) {
+        summaries.push(`⏭ Skipped ${count} paths this block (${reason})`);
+      }
+    }
+
+    if (summaries.length > 0) {
+      console.log(`📊 Block ${this.currentBlockNumber} Summary:`);
+      summaries.forEach(summary => console.log(`   ${summary}`));
+    }
+  }
+
+  /**
+   * Log skipped path with safety reason (per-block deduplication)
+   */
+  async logSkippedPath(reason, details = {}) {
     const { maxSlippage, flashloanSize, profit } = details;
 
     const skipMsg = `⚠️ Path skipped: reason=${reason} | MaxSlippage=${maxSlippage || 'N/A'} | FlashloanSize=$${flashloanSize || 'N/A'} | Profit=$${profit || 'N/A'}`;
 
-    // Check deduplication for skipped paths
-    if (this._shouldDeduplicateLog(skipMsg, `skipped_${reason}`)) {
+    // Check per-block deduplication for skipped paths
+    if (await this._shouldDeduplicateLog(skipMsg, 'skip')) {
       // Still track in daily stats even if not logged
       this.dailyStats.skippedPaths++;
       return;
     }
 
-    // Only log to file, not terminal (to avoid spam)
+    // Log to terminal only in debug mode, always to file
+    if (this.debugMode) {
+      console.log(skipMsg);
+    }
+
+    // Always log to file for analysis
     const timestamp = new Date().toISOString();
     this.appendToLog('skippedPaths.log', `${timestamp}: ${skipMsg}\n`);
 
@@ -231,6 +288,52 @@ TX Hash: ${txHash}
     this.safetyViolations.set(reason, violationCount + 1);
 
     this.dailyStats.skippedPaths++;
+  }
+
+  /**
+   * Log real opportunity found (structured reporting)
+   */
+  async logOpportunityFound(opportunity) {
+    const {
+      type, // 'arbitrage' | 'liquidation' | 'mev_bundle'
+      path, // Token path or position details
+      flashloanSize, // Flashloan amount in USD
+      expectedProfit, // Expected profit in USD
+      executionMode, // 'private' | 'public'
+      additionalData = {}
+    } = opportunity;
+
+    const opportunityMsg = `
+💰 OPPORTUNITY FOUND
+Type: ${type.toUpperCase()}
+Path/Position: ${Array.isArray(path) ? path.join(' → ') : path}
+Flashloan: $${flashloanSize?.toFixed(2) || 'N/A'}
+Expected Profit: $${expectedProfit?.toFixed(2) || 'N/A'} (after gas & fees)
+Execution: ${executionMode?.toUpperCase() || 'UNKNOWN'}
+${Object.entries(additionalData).map(([key, value]) => `${key}: ${value}`).join('\n')}
+`.trim();
+
+    // Always log real opportunities to terminal (high priority)
+    console.log(opportunityMsg);
+
+    // Send to Telegram if enabled
+    if (this.telegramEnabled) {
+      await this.sendTelegramMessage(`💰 ${type.toUpperCase()} OPPORTUNITY: $${expectedProfit?.toFixed(2)} profit`);
+    }
+
+    // Log to opportunities file
+    const timestamp = new Date().toISOString();
+    this.appendToLog('opportunities.log', `${timestamp}: ${opportunityMsg.replace(/\n/g, ' | ')}\n`);
+
+    // Track opportunity metrics
+    this.dailyStats.opportunitiesFound++;
+    if (type === 'arbitrage') {
+      this.dailyStats.arbitrageOpportunities++;
+    } else if (type === 'liquidation') {
+      this.dailyStats.liquidationOpportunities++;
+    } else if (type === 'mev_bundle') {
+      this.dailyStats.mevOpportunities++;
+    }
   }
 
   /**
