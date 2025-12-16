@@ -10,6 +10,7 @@ import PriceFeed from '../services/PriceFeed.js';
 import ProfitCalculator from '../utils/ProfitCalculator.js';
 import TransactionVerifier from '../utils/TransactionVerifier.js';
 import { monitoring } from '../src/monitoring.js';
+import rpcManager from '../utils/RpcManager.js';
 
 // Subgraph endpoints for position discovery
 const SUBGRAPH_ENDPOINTS = {
@@ -789,28 +790,44 @@ class LiquidationBot extends EventEmitter {
             const currentBlock = await this.provider.getBlockNumber();
             const fromBlock = Math.max(0, currentBlock - 100);
 
-            // Query recent borrow events
+            // Query recent borrow events with RPC backoff
             const borrowFilter = contract.filters.Borrow ? contract.filters.Borrow() : null;
             if (borrowFilter) {
-                const borrowEvents = await contract.queryFilter(borrowFilter, fromBlock, currentBlock);
-                for (const event of borrowEvents.slice(-20)) { // Last 20 borrow events
-                    try {
-                        const position = await this._getPositionFromEvent(protocolName, event);
-                        if (position) positions.push(position);
-                    } catch (e) {
-                        // Skip invalid events
+                try {
+                    const borrowEvents = await rpcManager.executeCriticalCall(
+                        () => contract.queryFilter(borrowFilter, fromBlock, currentBlock),
+                        `borrow_events_${protocolName}`
+                    );
+                    for (const event of borrowEvents.slice(-20)) { // Last 20 borrow events
+                        try {
+                            const position = await this._getPositionFromEvent(protocolName, event);
+                            if (position) positions.push(position);
+                        } catch (e) {
+                            // Skip invalid events
+                        }
                     }
+                } catch (error) {
+                    console.warn(`⚠️ Failed to query borrow events for ${protocolName}: ${error.message}`);
+                    // Continue without borrow events - don't crash
                 }
             }
 
-            // Query recent liquidation events to find patterns
+            // Query recent liquidation events to find patterns with RPC backoff
             const liquidationFilter = contract.filters.LiquidationCall ? contract.filters.LiquidationCall() : null;
             if (liquidationFilter) {
-                const liquidationEvents = await contract.queryFilter(liquidationFilter, fromBlock, currentBlock);
-                // Use liquidation patterns to identify similar at-risk positions
-                const riskPatterns = this._analyzeLiquidationPatterns(liquidationEvents);
-                for (const pattern of riskPatterns) {
-                    positions.push(pattern);
+                try {
+                    const liquidationEvents = await rpcManager.executeCriticalCall(
+                        () => contract.queryFilter(liquidationFilter, fromBlock, currentBlock),
+                        `liquidation_events_${protocolName}`
+                    );
+                    // Use liquidation patterns to identify similar at-risk positions
+                    const riskPatterns = this._analyzeLiquidationPatterns(liquidationEvents);
+                    for (const pattern of riskPatterns) {
+                        positions.push(pattern);
+                    }
+                } catch (error) {
+                    console.warn(`⚠️ Failed to query liquidation events for ${protocolName}: ${error.message}`);
+                    // Continue without liquidation events - don't crash
                 }
             }
 

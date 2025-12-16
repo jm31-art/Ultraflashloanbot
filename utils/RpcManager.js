@@ -32,33 +32,41 @@ class RpcManager {
     }
 
     /**
-     * Initialize providers
-     * @param {string} rpcUrl - Primary RPC URL
+     * Initialize providers with private BSC RPC
+     * @param {string} rpcUrl - Primary RPC URL (should be private endpoint)
      */
     initialize(rpcUrl) {
-        try {
-            // LOG PROVIDER: For event listening (lower priority)
-            this.logProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
-                batchMaxCount: 1, // No batching for logs
-                staticNetwork: true
-            });
-
-            // EXEC PROVIDER: For transactions and critical calls (higher priority)
-            this.execProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
-                batchMaxCount: this.batchSize,
-                staticNetwork: true
-            });
-
-            // BACKUP PROVIDER: For fallback operations
-            this.backupProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
-                batchMaxCount: 1,
-                staticNetwork: true
-            });
-
-            console.log('✅ RPC Manager initialized with separate providers');
-        } catch (error) {
-            console.error('❌ Failed to initialize RPC providers:', error.message);
-        }
+      try {
+        // PRIVATE BSC RPC CONFIGURATION: Higher limits, better stability
+        const providerConfig = {
+          timeout: 30000,        // 30s timeout for stability
+          batchMaxDelay: 10,     // Faster batching
+          staticNetwork: true
+        };
+  
+        // LOG PROVIDER: For event listening (lower priority, no batching)
+        this.logProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+          ...providerConfig,
+          batchMaxCount: 1, // No batching for logs to avoid conflicts
+        });
+  
+        // EXEC PROVIDER: For transactions and critical calls (higher priority, batched)
+        this.execProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+          ...providerConfig,
+          batchMaxCount: this.batchSize,
+        });
+  
+        // BACKUP PROVIDER: For fallback operations (minimal config)
+        this.backupProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+          ...providerConfig,
+          batchMaxCount: 1,
+        });
+  
+        console.log('✅ RPC Manager initialized with private BSC endpoints');
+        console.log(`🔗 RPC URL: ${rpcUrl.replace(/\/v1\/[^\/]+/, '/v1/[API_KEY]')}`); // Hide API key
+      } catch (error) {
+        console.error('❌ Failed to initialize RPC providers:', error.message);
+      }
     }
 
     /**

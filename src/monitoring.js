@@ -33,6 +33,8 @@ class MonitoringSystem {
     this.lastHeartbeat = Date.now();
 
     // LOGGING SANITY: Per-block deduplication and throttling
+    this.logCache = new Map(); // message -> last logged timestamp
+    this.LOG_TTL_MS = 12000; // ~3 blocks TTL for deduplication
     this.blockLogCache = new Map(); // blockNumber -> Set of logged messages
     this.currentBlockNumber = 0;
     this.skipSummaryCache = new Map(); // skipReason -> count this block
@@ -222,11 +224,18 @@ TX Hash: ${txHash}
       return true; // Already logged this block
     }
 
-    // Check global deduplication cooldown (for non-skip messages)
+    // Check global deduplication cooldown with TTL (for non-skip messages)
     if (messageType !== 'skip') {
       const lastLogged = this.logCache.get(message);
-      if (lastLogged && (now - lastLogged) < this.logCooldownMs) {
-        return true; // Deduplicated
+      if (lastLogged) {
+        const timeSinceLastLog = now - lastLogged;
+        if (timeSinceLastLog < this.logCooldownMs) {
+          return true; // Deduplicated - within cooldown
+        }
+        // TTL expired, allow logging again
+        if (timeSinceLastLog > this.LOG_TTL_MS) {
+          this.logCache.delete(message); // Clean up expired entries
+        }
       }
       this.logCache.set(message, now);
     }
@@ -274,10 +283,9 @@ TX Hash: ${txHash}
       return;
     }
 
-    // Log to terminal only in debug mode, always to file
-    if (this.debugMode) {
-      console.log(skipMsg);
-    }
+    // PRE-AGGREGATION SUPPRESSION: Never log individual skip messages to terminal
+    // Only block summaries are shown (enforced in _logBlockSummaries)
+    // Individual logs go to file only for analysis
 
     // Always log to file for analysis
     const timestamp = new Date().toISOString();

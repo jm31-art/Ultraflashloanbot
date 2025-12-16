@@ -16,6 +16,10 @@ class DexPriceFeed {
         this.lastApiCall = 0;
         this.minApiInterval = 500; // Minimum 500ms between API calls
 
+        // DEX AVAILABILITY TRACKING: Mark DEXes as temporarily unavailable
+        this.dexUnavailableUntil = new Map(); // dexName -> timestamp when available again
+        this.currentBlock = 0;
+
         // DEX Router ABIs for price queries
         this.routerAbi = [
             'function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)',
@@ -53,11 +57,19 @@ class DexPriceFeed {
 
         try {
             const [token0, token1] = pair.split('/');
+
+            // TOKEN REGISTRY GUARD: Validate token metadata before use
+            if (!this._validateTokenInRegistry(token0) || !this._validateTokenInRegistry(token1)) {
+                await this._logInvalidTokenPair(pair);
+                return {}; // Return empty object, don't throw
+            }
+
             const token0Address = TOKENS[token0]?.address;
             const token1Address = TOKENS[token1]?.address;
 
             if (!token0Address || !token1Address) {
-                throw new Error(`Invalid token pair: ${pair}`);
+                await this._logInvalidTokenPair(pair);
+                return {}; // Return empty object, don't throw
             }
 
             const prices = {};
@@ -149,9 +161,17 @@ class DexPriceFeed {
             ];
 
             for (const dex of dexesToTry) {
+                // DEX AVAILABILITY CHECK: Skip if marked as temporarily unavailable
+                const unavailableUntil = this.dexUnavailableUntil.get(dex.name);
+                if (unavailableUntil && Date.now() < unavailableUntil) {
+                    console.log(`⏭️ Skipping ${dex.name} - marked unavailable until ${new Date(unavailableUntil).toISOString()}`);
+                    continue;
+                }
+
                 // Implement retry logic for throttling
                 let attempts = 0;
                 const maxAttempts = 3;
+                let dexReturnedData = false;
 
                 while (attempts < maxAttempts) {
                     try {
@@ -170,6 +190,7 @@ class DexPriceFeed {
                             }
 
                             console.log(`✅ Moralis fetched ${dex.alias} price for ${pair}: ${dexPrices.price.toFixed(6)}`);
+                            dexReturnedData = true;
                             break; // Success, exit retry loop
                         } else {
                             console.warn(`⚠️ Moralis returned no data for ${dex.name} on ${pair} (attempt ${attempts + 1})`);
@@ -185,6 +206,14 @@ class DexPriceFeed {
                             break; // Non-rate-limit error, don't retry
                         }
                     }
+                }
+
+                // DEX AVAILABILITY: Mark as temporarily unavailable if no data returned
+                if (!dexReturnedData) {
+                    // Mark unavailable for rest of current block + 2 more blocks
+                    const unavailableDuration = 3 * 3000; // 3 blocks * 3 seconds
+                    this.dexUnavailableUntil.set(dex.name, Date.now() + unavailableDuration);
+                    console.log(`🚫 Marked ${dex.name} as unavailable for ${unavailableDuration/1000}s`);
                 }
 
                 // Small delay between different DEXes
@@ -651,6 +680,30 @@ class DexPriceFeed {
         }
 
         return null;
+    }
+
+    /**
+     * Validate token exists in registry with required metadata
+     * @private
+     */
+    _validateTokenInRegistry(tokenSymbol) {
+        const tokenData = TOKENS[tokenSymbol];
+        if (!tokenData) return false;
+
+        // Check required fields
+        return tokenData.address &&
+               typeof tokenData.decimals === 'number' &&
+               tokenData.decimals > 0 &&
+               tokenData.symbol;
+    }
+
+    /**
+     * Log invalid token pair once per block
+     * @private
+     */
+    async _logInvalidTokenPair(pair) {
+        const { monitoring } = await import('../src/monitoring.js');
+        await monitoring.logSkippedPath('invalid_token_pair', { pair });
     }
 
     clearCache() {
