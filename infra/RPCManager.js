@@ -214,8 +214,9 @@ class RPCManager {
             // Test block number
             this._lastBlockNumber = await this._readProvider.getBlockNumber();
 
-            // Validate BSC mainnet (allow both mainnet and testnet)
-            if (this._chainId !== 56 && this._chainId !== 97) { // BSC mainnet or testnet
+            // Validate BSC mainnet/testnet (allow both)
+            const validChains = [56, 97]; // BSC mainnet and testnet
+            if (!validChains.includes(this._chainId)) {
                 throw new Error(`❌ Wrong network - expected BSC (56) or BSC Testnet (97), got ${this._chainId}`);
             }
 
