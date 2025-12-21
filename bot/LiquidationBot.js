@@ -10,7 +10,7 @@ import PriceFeed from '../services/PriceFeed.js';
 import ProfitCalculator from '../utils/ProfitCalculator.js';
 import TransactionVerifier from '../utils/TransactionVerifier.js';
 import { monitoring } from '../src/monitoring.js';
-import rpcManager from '../utils/RpcManager.js';
+import rpcManager from '../infra/RPCManager.js';
 
 // Subgraph endpoints for position discovery
 const SUBGRAPH_ENDPOINTS = {

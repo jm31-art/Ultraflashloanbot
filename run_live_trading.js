@@ -1,43 +1,9 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-// Global RPC URL validator
-function validateRpcUrl() {
-    const rpcUrl = process.env.BSC_RPC_URL || process.env.RPC_URL;
-
-    if (!rpcUrl) {
-        throw new Error('❌ CRITICAL: RPC_URL environment variable is missing. Please set BSC_RPC_URL or RPC_URL in your .env file.');
-    }
-
-    if (typeof rpcUrl !== 'string') {
-        throw new Error('❌ CRITICAL: RPC_URL must be a string value.');
-    }
-
-    const trimmedUrl = rpcUrl.trim();
-    if (trimmedUrl.length === 0) {
-        throw new Error('❌ CRITICAL: RPC_URL cannot be empty or only whitespace.');
-    }
-
-    // Check if URL has protocol, if not add https://
-    let validUrl = trimmedUrl;
-    if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
-        validUrl = 'https://' + trimmedUrl;
-        console.log(`📡 RPC URL missing protocol, auto-corrected to: ${validUrl}`);
-    }
-
-    // Basic URL validation (don't use new URL() to avoid clone errors)
-    try {
-        const urlPattern = /^https?:\/\/.+/;
-        if (!urlPattern.test(validUrl)) {
-            throw new Error('Invalid URL format');
-        }
-    } catch (error) {
-        throw new Error(`❌ CRITICAL: RPC_URL "${validUrl}" is not a valid URL format.`);
-    }
-
-    console.log(`✅ RPC URL validated: ${validUrl}`);
-    return validUrl;
-}
+import { ethers } from 'ethers';
+import UnifiedStrategyManager from './bot/UnifiedStrategyManager.js';
+import rpcManager from './infra/RPCManager.js';
 
 // L — ERROR HANDLING & NO-CRASH POLICY
 process.on('unhandledRejection', (reason, promise) => {
@@ -50,18 +16,15 @@ process.on('uncaughtException', (error) => {
     // Continue execution - do not exit
 });
 
-import { ethers } from 'ethers';
-import UnifiedStrategyManager from './bot/UnifiedStrategyManager.js';
-
 async function main() {
     try {
         // SILENT STARTUP - NO LOGS
 
-        // Validate RPC URL before any provider creation
-        const rpcUrl = validateRpcUrl();
+        // Initialize SINGLE RPC MANAGER (source of truth)
+        rpcManager.initialize();
 
-        // Initialize provider
-        const provider = new ethers.JsonRpcProvider(rpcUrl, undefined);
+        // Get provider from SINGLE source of truth
+        const provider = rpcManager.getReadProvider();
 
         // Initialize signer
         const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);

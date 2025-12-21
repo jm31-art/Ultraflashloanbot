@@ -4,7 +4,7 @@ import { autonomousController } from "./autonomousController.js";
 import { monitoring } from "./monitoring.js";
 import { provider } from "./dex/routers.js";
 import { ethers } from "ethers";
-import rpcManager from "../utils/RpcManager.js";
+import rpcManager from "../infra/RPCManager.js";
 
 // Load .env from current directory
 config({ path: ".env" });
@@ -79,11 +79,8 @@ async function main() {
     // Initialize Moralis once
     await initMoralis();
 
-    // Initialize RPC Manager with private BSC endpoint
-    const rpcUrl = process.env.RPC_URL || "https://bsc-mainnet.nodereal.io/v1/YOUR_API_KEY" ||
-                   "https://bsc-dataseed1.binance.org/" ||
-                   "https://bsc-dataseed.binance.org/";
-    rpcManager.initialize(rpcUrl);
+    // Initialize SINGLE RPC MANAGER (source of truth)
+    rpcManager.initialize();
 
     // Setup signer (use private key from env)
     const privateKey = process.env.PRIVATE_KEY;

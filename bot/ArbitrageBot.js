@@ -1,9 +1,10 @@
 import dotenv from "dotenv";
 dotenv.config();
 import { EventEmitter } from 'events';
-import { ethers, getAddress, JsonRpcProvider, ZeroAddress } from 'ethers';
+import { ethers, getAddress, ZeroAddress } from 'ethers';
 import { spawn } from 'child_process';
 import path from 'path';
+import rpcManager from '../infra/RPCManager.js';
 
 // Import ABIs
 import ERC20_ABI from '../abi/erc20.json' with { type: 'json' };
