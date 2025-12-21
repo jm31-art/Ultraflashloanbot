@@ -7,6 +7,9 @@
 import { EventEmitter } from 'events';
 import { ethers } from 'ethers';
 import { provider } from './dex/routers.js';
+
+// Get the actual provider instance
+const getProvider = () => provider();
 import { generateTriangularPaths } from './arbitrage/pathGenerator.js';
 import { runArbitrage } from './arbitrage/arbitrageEngine.js';
 import { VOLATILE_MODE } from './arbitrage/volatileModeConfig.js';
@@ -123,12 +126,12 @@ class AutonomousController extends EventEmitter {
   async setupEventListeners() {
     try {
       // Listen for new blocks
-      provider.on('block', (blockNumber) => {
+      getProvider().on('block', (blockNumber) => {
         this.handleBlockEvent(blockNumber);
       });
 
       // Listen for pending transactions (large swaps)
-      provider.on('pending', (tx) => {
+      getProvider().on('pending', (tx) => {
         this.handlePendingTransaction(tx);
       });
 
@@ -225,8 +228,8 @@ class AutonomousController extends EventEmitter {
    */
   clearEventListeners() {
     try {
-      provider.removeAllListeners('block');
-      provider.removeAllListeners('pending');
+      getProvider().removeAllListeners('block');
+      getProvider().removeAllListeners('pending');
     } catch (error) {
       console.error('❌ Error clearing event listeners:', error);
     }
@@ -258,7 +261,7 @@ class AutonomousController extends EventEmitter {
    */
   async handlePendingTransaction(txHash) {
     try {
-      const tx = await provider.getTransaction(txHash);
+      const tx = await getProvider().getTransaction(txHash);
       if (!tx) return;
 
       // Check for large swaps (> $10K equivalent)
@@ -347,7 +350,7 @@ class AutonomousController extends EventEmitter {
       }
 
       // Update execution block
-      this.lastExecutionBlock = await provider.getBlockNumber();
+      this.lastExecutionBlock = await getProvider().getBlockNumber();
 
       // Get arbitrage opportunities
       const arbOpportunities = await this._scanForArbitrageOpportunities();
@@ -568,10 +571,10 @@ class AutonomousController extends EventEmitter {
   async healthCheck() {
     try {
       // Check provider connection
-      await provider.getBlockNumber();
+      await getProvider().getBlockNumber();
 
       // Check wallet balance
-      const balance = await provider.getBalance(this.signer.address);
+      const balance = await getProvider().getBalance(this.signer.address);
       const balanceEth = Number(ethers.formatEther(balance));
 
       if (balanceEth < 0.001) { // Less than 0.001 BNB
@@ -597,7 +600,7 @@ class AutonomousController extends EventEmitter {
       await this.setupEventListeners();
 
       // Reset state
-      this.lastExecutionBlock = await provider.getBlockNumber();
+      this.lastExecutionBlock = await getProvider().getBlockNumber();
 
       console.log('✅ AUTONOMOUS CONTROLLER: Self-healing successful');
     } catch (error) {
@@ -610,7 +613,7 @@ class AutonomousController extends EventEmitter {
    * Validate wallet safety invariants
    */
   async validateWalletSafety() {
-    const balance = await provider.getBalance(this.signer.address);
+    const balance = await getProvider().getBalance(this.signer.address);
     const balanceEth = Number(ethers.formatEther(balance));
 
     if (balanceEth < 0.001) { // Less than 0.001 BNB (~$0.57) - minimum for gas

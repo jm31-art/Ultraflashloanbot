@@ -55,10 +55,11 @@ class RPCManager {
         // Validate connectivity
         this._validateConnectivity();
 
-        // Freeze the manager
-        this._freeze();
+        // NOTE: Freeze disabled during development to allow re-initialization
+        // TODO: Re-enable freeze in production for security
+        // this._freeze();
 
-        console.log('✅ RPC Manager initialized and frozen');
+        console.log('✅ RPC Manager initialized');
         console.log(`🔗 RPC URL: ${this._maskApiKey(this._rpcUrl)}`);
         console.log(`🔒 Private RPC: ${this._isPrivate ? 'YES (execution enabled)' : 'NO (scan-only mode)'}`);
 
@@ -213,9 +214,9 @@ class RPCManager {
             // Test block number
             this._lastBlockNumber = await this._readProvider.getBlockNumber();
 
-            // Validate BSC mainnet
+            // Validate BSC mainnet (allow both mainnet and testnet)
             if (this._chainId !== 56 && this._chainId !== 97) { // BSC mainnet or testnet
-                throw new Error(`❌ Wrong network - expected BSC (56), got ${this._chainId}`);
+                throw new Error(`❌ Wrong network - expected BSC (56) or BSC Testnet (97), got ${this._chainId}`);
             }
 
             this._connectivityValidated = true;
@@ -294,5 +295,8 @@ class RPCManager {
 
 // Export singleton instance
 const rpcManager = new RPCManager();
+
+// Global initialization flag for modules that need to check before accessing
+export const isRPCInitialized = () => rpcManager._initialized;
 
 export default rpcManager;

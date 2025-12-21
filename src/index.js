@@ -1,10 +1,19 @@
 import { config } from "dotenv";
 import { initMoralis } from "./bootstrap/moralis.bootstrap.js";
+import { initRPC } from "./bootstrap/rpc.bootstrap.js";
 import { autonomousController } from "./autonomousController.js";
 import { monitoring } from "./monitoring.js";
 import { provider } from "./dex/routers.js";
 import { ethers } from "ethers";
-import rpcManager from "../infra/RPCManager.js";
+
+// Initialize provider after RPC bootstrap
+let _provider = null;
+const getProvider = () => {
+  if (!_provider) {
+    _provider = provider();
+  }
+  return _provider;
+};
 
 // Load .env from current directory
 config({ path: ".env" });
@@ -79,8 +88,8 @@ async function main() {
     // Initialize Moralis once
     await initMoralis();
 
-    // Initialize SINGLE RPC MANAGER (source of truth)
-    rpcManager.initialize();
+    // Initialize RPC infrastructure FIRST (before any provider usage)
+    await initRPC();
 
     // Setup signer (use private key from env)
     const privateKey = process.env.PRIVATE_KEY;
@@ -88,12 +97,12 @@ async function main() {
       throw new Error("PRIVATE_KEY not found in .env");
     }
 
-    const signer = new ethers.Wallet(privateKey, provider);
+    const signer = new ethers.Wallet(privateKey, getProvider());
 
     console.log(`Signer address: ${signer.address}`);
 
     // Check wallet balance
-    const balance = await provider.getBalance(signer.address);
+    const balance = await getProvider().getBalance(signer.address);
     const balanceUsd = Number(ethers.formatEther(balance)) * 567;
     console.log(`Wallet balance: ${ethers.formatEther(balance)} BNB ($${balanceUsd.toFixed(2)})`);
 
