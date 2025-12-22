@@ -30,7 +30,8 @@ const PROTOCOLS = {
             router: '0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8',
             factory: '0x858E3312ED3A876947EA49D572A7C42DE08AF7EE0',
             fee: 0.001, // 0.1%
-            supportsFlashSwap: true
+            supportsFlashSwap: false, // Disabled due to API issues
+            enabled: false
         },
         BABYSWAP: {
             name: 'BabySwap',

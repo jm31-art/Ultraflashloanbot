@@ -76,8 +76,9 @@ class ArbitrageBot extends EventEmitter {
         // Low-balance bootstrapping for Extreme Mode
         this.bootstrapTradesExecuted = 0;
         this.maxBootstrapTrades = 2;
-        this.bootstrapProfitThreshold = 1.0; // $1 for first 2 trades
-        this.normalProfitThreshold = 15.0; // $15 after bootstrapping
+        this.bootstrapProfitThreshold = 2.0; // $2 for first 2 trades (micro-arbs)
+        this.normalProfitThreshold = 10.0; // $10 after bootstrapping
+        this.executionEnabled = true; // Enable real transaction execution
 
         // Python calculator path
         this.pythonCalculatorPath = path.join(__dirname, '../services/PythonArbitrageCalculator.py');
@@ -510,11 +511,19 @@ class ArbitrageBot extends EventEmitter {
                 return null;
             }
 
-            console.log(`🔥 EXECUTING TRADE: Triangular arbitrage ${pathSymbols.join(' → ')}`);
+            // EXECUTE REAL TRADE - EXTREME MODE MICRO-ARB
+            console.log(`🔥 EXTREME MODE: EXECUTING MICRO-ARB TRADE`);
+            console.log(`   Triangular arbitrage: ${pathSymbols.join(' → ')}`);
             console.log(`   Amount: ${amountIn} tokens`);
             console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)}`);
             console.log(`   Router: ${router}`);
             console.log(`   Wallet Balance: ${balanceEth.toFixed(6)} BNB`);
+            console.log(`   Bootstrap Progress: ${this.bootstrapTradesExecuted}/${this.maxBootstrapTrades} trades`);
+
+            if (!this.executionEnabled) {
+                console.log(`⚠️ Execution disabled - would execute trade here`);
+                return null;
+            }
 
             const result = await this._executeTriangularSwap(path, amountInWei, routerContract);
 
@@ -637,7 +646,9 @@ class ArbitrageBot extends EventEmitter {
                 gasPrice = maxGasPriceWei;
             }
 
-            // Execute the swap
+            // Execute REAL TRANSACTION - no simulation
+            console.log(`📤 Submitting real triangular arbitrage transaction...`);
+
             const tx = await routerContract.swapExactTokensForTokens(
                 amountInWei,
                 minAmountOut,
@@ -647,19 +658,27 @@ class ArbitrageBot extends EventEmitter {
                 { gasLimit: gasLimit, gasPrice: gasPrice }
             );
 
-            console.log(`📤 Triangular swap transaction submitted: ${tx.hash}`);
+            console.log(`✅ EXTREME MODE: Transaction submitted successfully!`);
+            console.log(`   TX Hash: ${tx.hash}`);
+            console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)}`);
 
             // Wait for confirmation
             const receipt = await tx.wait();
 
             if (receipt.status === 1) {
+                console.log(`💰 EXTREME MODE: MICRO-ARB COMPLETED SUCCESSFULLY!`);
+                console.log(`   TX Hash: ${tx.hash}`);
+                console.log(`   Gas Used: ${receipt.gasUsed}`);
+                console.log(`   Block: ${receipt.blockNumber}`);
                 return {
                     success: true,
                     txHash: tx.hash,
                     gasUsed: receipt.gasUsed,
-                    blockNumber: receipt.blockNumber
+                    blockNumber: receipt.blockNumber,
+                    profit: expectedProfitUSD
                 };
             } else {
+                console.log(`❌ EXTREME MODE: Transaction reverted`);
                 throw new Error('Transaction reverted');
             }
 
@@ -1007,13 +1026,20 @@ class ArbitrageBot extends EventEmitter {
                                 continue;
                             }
 
-                            // Check minimum profit threshold (bootstrap mode for low balance)
+                            // Check minimum profit threshold (Extreme Mode bootstrap for low balance)
                             const profitUSD = opportunity.expectedProfitUSD;
-                            const currentThreshold = (this.bootstrapTradesExecuted < this.maxBootstrapTrades) ?
-                                this.bootstrapProfitThreshold : this.normalProfitThreshold;
+                            const isBootstrapMode = this.bootstrapTradesExecuted < this.maxBootstrapTrades;
+                            const currentThreshold = isBootstrapMode ? this.bootstrapProfitThreshold : this.normalProfitThreshold;
 
                             if (profitUSD < currentThreshold) {
-                                console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below threshold $${currentThreshold} (${this.bootstrapTradesExecuted < this.maxBootstrapTrades ? 'bootstrap' : 'normal'} mode)`);
+                                console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below threshold $${currentThreshold} (${isBootstrapMode ? 'EXTREME bootstrap' : 'normal'} mode)`);
+                                continue;
+                            }
+
+                            // Additional check: ensure profit covers gas costs
+                            const estimatedGasCostUSD = 2.0; // Conservative $2 gas estimate
+                            if (profitUSD < estimatedGasCostUSD) {
+                                console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below gas cost $${estimatedGasCostUSD}`);
                                 continue;
                             }
 

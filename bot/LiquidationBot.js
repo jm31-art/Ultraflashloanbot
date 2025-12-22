@@ -298,13 +298,14 @@ class LiquidationBot extends EventEmitter {
                     flashloanAbi,
                     this.signer
                 );
-                console.log("✅ Flashloan liquidation contract initialized:", FLASHLOAN_CONTRACT_ADDRESS);
+                console.log("✅ Flashloan contract configured:", FLASHLOAN_CONTRACT_ADDRESS);
+                console.log("🔥 Ready for atomic liquidation execution");
             } catch (e) {
                 console.warn("⚠️ Failed to initialize flashloan contract:", e.message);
                 this.flashloanContract = null;
             }
         } else {
-            console.log("ℹ️ Flashloan contract not configured - using direct protocol calls");
+            console.log("ℹ️ Flashloan contract not set - using direct protocol calls");
             this.flashloanContract = null;
         }
     }
@@ -1429,14 +1430,23 @@ class LiquidationBot extends EventEmitter {
                 tx.gasPrice = gasApproval.gasPrice;
             }
 
-            // Execute transaction
-            console.log(`🔥 EXECUTING TRADE: Liquidation of ${opportunity.user}`);
+            // Execute REAL LIQUIDATION TRANSACTION
+            console.log(`🔥 EXECUTING LIQUIDATION: ${opportunity.user}`);
+            console.log(`   Protocol: ${protocolName}`);
             console.log(`   Debt Asset: ${opportunity.debtAsset}`);
             console.log(`   Collateral Asset: ${opportunity.collateralAsset}`);
             console.log(`   Amount: ${ethers.formatEther(amount)} tokens`);
             console.log(`   Expected Profit: $${profitAnalysis.expectedProfitUSD.toFixed(2)}`);
-            console.log(`🔥 Executing flashloan liquidation: ${ethers.formatEther(amount)} ${opportunity.debtAsset} → ${opportunity.collateralAsset}`);
+            console.log(`   Health Factor: ${opportunity.healthFactor.toFixed(3)}`);
+
+            if (this.flashloanContract) {
+                console.log(`🔥 Using flashloan contract for atomic execution`);
+            } else {
+                console.log(`🔥 Using direct protocol liquidation`);
+            }
+
             const txResponse = await this.signer.sendTransaction(tx);
+            console.log(`📤 LIQUIDATION: Transaction submitted: ${txResponse.hash}`);
 
             console.log(`✅ Liquidation transaction submitted: ${txResponse.hash}`);
 

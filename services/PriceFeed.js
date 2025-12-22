@@ -62,7 +62,7 @@ class PriceFeed {
         try {
             // Null checks for dexConfig
             if (!dexConfig || !dexConfig.factory || !dexConfig.name) {
-                console.warn(`⚠️ Invalid DEX config provided - skipping`);
+                // Silent skip for invalid configs
                 return null;
             }
 
