@@ -38,6 +38,20 @@ const PROTOCOLS = {
             factory: '0x86407bEa2078ea5f5EB5A52B2caA963bC7F27977',
             fee: 0.002, // 0.2%
             supportsFlashSwap: true
+        },
+        APESWAP: {
+            name: 'ApeSwap',
+            router: '0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7',
+            factory: '0x0841BD0B734E4F5853f0dD8d7Ea041c241fb0Da6',
+            fee: 0.002, // 0.2%
+            supportsFlashSwap: true
+        },
+        JULSWAP: {
+            name: 'JulSwap',
+            router: '0xbd67d157502A23309Db761c41965600c2Ec788bC',
+            factory: '0x553990F2CBA90272390f62C5BDb1681fFc899675',
+            fee: 0.002, // 0.2%
+            supportsFlashSwap: true
         }
     },
 

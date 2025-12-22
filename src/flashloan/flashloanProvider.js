@@ -1,47 +1,76 @@
 import { ethers } from "ethers";
 import { provider } from "../dex/routers.js";
 
-// Aave v3 BSC Pool contract
-const AAVE_POOL_ADDRESS = "0x6807dc923806fE8Fd134338EABCA509979a7e2205";
-const AAVE_POOL_ADDRESSES_PROVIDER = "0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e";
+// PancakeSwap Router for flash swaps (BSC mainnet)
+const PANCAKE_ROUTER_ADDRESS = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
 
-// Pool contract ABI (minimal)
-const POOL_ABI = [
-  "function flashLoanSimple(address receiverAddress, address asset, uint256 amount, bytes calldata params, uint16 referralCode) external",
-  "function getReserveData(address asset) external view returns (tuple(uint256, uint40, uint16, uint128, uint128, uint128, uint40, address, address, address, address, uint8))"
+// PancakeSwap Router ABI for flash swaps
+const PANCAKE_ROUTER_ABI = [
+  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
+  "function swapTokensForExactTokens(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
+  "function getAmountsOut(uint amountIn, address[] memory path) external view returns (uint[] memory amounts)",
+  "function getAmountsIn(uint amountOut, address[] memory path) external view returns (uint[] memory amounts)"
+];
+
+// Custom flashloan contract (if available)
+const FLASHLOAN_CONTRACT_ADDRESS = process.env.FLASHLOAN_ARB_CONTRACT || null;
+const FLASHLOAN_CONTRACT_ABI = [
+  "function executeFlashloanArbitrage(address asset, uint256 amount, address[] calldata path, address router, uint256 minProfit) external",
+  "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external"
 ];
 
 export class FlashloanProvider {
   constructor() {
-    this.pool = new ethers.Contract(AAVE_POOL_ADDRESS, POOL_ABI, provider);
+    this.pancakeRouter = new ethers.Contract(PANCAKE_ROUTER_ADDRESS, PANCAKE_ROUTER_ABI, provider);
+    this.flashloanContract = FLASHLOAN_CONTRACT_ADDRESS ?
+      new ethers.Contract(FLASHLOAN_CONTRACT_ADDRESS, FLASHLOAN_CONTRACT_ABI, provider) : null;
   }
 
   /**
-   * Execute flashloan with arbitrage parameters
+   * Execute flashloan with arbitrage parameters (PancakeSwap atomic swaps)
    */
   async executeFlashloan(
-    receiverAddress,
+    signer,
     asset,
     amount,
     arbitrageParams
   ) {
     try {
-      // Encode parameters for the receiver contract
-      const params = ethers.AbiCoder.defaultAbiCoder().encode(
-        ["address", "address[]"],
-        [arbitrageParams.router, arbitrageParams.path]
-      );
+      // For BSC/PancakeSwap, we use atomic swaps instead of traditional flash loans
+      // This requires the arbitrage contract to handle the flash swap logic
 
-      // Execute flashloan
-      const tx = await this.pool.flashLoanSimple(
-        receiverAddress,
-        asset,
-        amount,
-        params,
-        0 // referral code
-      );
+      if (this.flashloanContract) {
+        // Use custom flashloan contract if available
+        console.log(`🔥 EXECUTING FLASHLOAN: ${ethers.formatEther(amount)} ${asset} via custom contract`);
+        const tx = await this.flashloanContract.executeFlashloanArbitrage(
+          asset,
+          amount,
+          arbitrageParams.path,
+          arbitrageParams.router,
+          arbitrageParams.minProfit
+        );
+        return tx;
+      } else {
+        // Fallback to direct router swap (not atomic flashloan)
+        console.log(`⚠️ No flashloan contract - using direct swap`);
+        const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
 
-      return tx;
+        const routerContract = new ethers.Contract(
+          arbitrageParams.router,
+          PANCAKE_ROUTER_ABI,
+          signer
+        );
+
+        const tx = await routerContract.swapExactTokensForTokens(
+          amount,
+          arbitrageParams.amountOutMin,
+          arbitrageParams.path,
+          signer.address,
+          deadline
+        );
+
+        return tx;
+      }
     } catch (error) {
       console.error("Flashloan execution failed:", error);
       throw error;

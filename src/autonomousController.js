@@ -26,9 +26,14 @@ class AutonomousController extends EventEmitter {
     // Runtime state
     this.isRunning = false;
     this.automationMode = true; // Always enabled for autonomous operation
-    this.currentMode = 'EXTREME'; // Start in EXTREME mode
+    this.currentMode = 'EXTREME'; // Start in EXTREME mode for bootstrapping
     this.lastExecutionBlock = 0;
     this.runOnceEveryNBlocks = 1; // Default, will be randomized
+
+    // Bootstrapping configuration
+    this.bootstrapMode = true;
+    this.bootstrapTradesCompleted = 0;
+    this.bootstrapTargetTrades = 2;
 
     // Attempt management (24h lifecycle)
     this.attemptsUsed24h = 0;

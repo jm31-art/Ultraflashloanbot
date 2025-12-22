@@ -60,9 +60,27 @@ class PriceFeed {
 
     async getPriceFromDex(dexConfig, token0, token1) {
         try {
+            // Null checks for dexConfig
+            if (!dexConfig || !dexConfig.factory || !dexConfig.name) {
+                console.warn(`⚠️ Invalid DEX config provided - skipping`);
+                return null;
+            }
+
             // Skip if same token
             if (token0.address.toLowerCase() === token1.address.toLowerCase()) {
                 return 1; // Price ratio is 1:1 for same token
+            }
+
+            // Validate token addresses
+            if (!token0.address || !token1.address || !ethers.isAddress(token0.address) || !ethers.isAddress(token1.address)) {
+                console.warn(`⚠️ Invalid token addresses provided - skipping`);
+                return null;
+            }
+
+            // Skip invalid factory addresses
+            if (dexConfig.factory === '0x0000000000000000000000000000000000000000' || !ethers.isAddress(dexConfig.factory)) {
+                console.warn(`⚠️ Invalid factory address for ${dexConfig.name} - skipping`);
+                return null;
             }
 
             // Normalize addresses to checksum format

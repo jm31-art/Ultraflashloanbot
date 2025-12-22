@@ -290,19 +290,22 @@ class LiquidationBot extends EventEmitter {
             try {
                 const flashloanAbi = [
                     "function executeLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit) external",
-                    "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external"
+                    "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external",
+                    "function executeFlashloanArbitrage(address asset, uint256 amount, address[] calldata path, address router, uint256 minProfit) external"
                 ];
                 this.flashloanContract = new ethers.Contract(
                     FLASHLOAN_CONTRACT_ADDRESS,
                     flashloanAbi,
                     this.signer
                 );
-                console.log("✅ Flashloan liquidation contract initialized");
+                console.log("✅ Flashloan liquidation contract initialized:", FLASHLOAN_CONTRACT_ADDRESS);
             } catch (e) {
                 console.warn("⚠️ Failed to initialize flashloan contract:", e.message);
+                this.flashloanContract = null;
             }
         } else {
-            console.warn("⚠️ Flashloan contract not configured - liquidations will use direct protocol calls");
+            console.log("ℹ️ Flashloan contract not configured - using direct protocol calls");
+            this.flashloanContract = null;
         }
     }
 

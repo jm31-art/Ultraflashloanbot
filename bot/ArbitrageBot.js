@@ -73,6 +73,12 @@ class ArbitrageBot extends EventEmitter {
         this.successfulTrades = 0;
         this.pythonProcessRunning = false; // Prevent multiple Python processes
 
+        // Low-balance bootstrapping for Extreme Mode
+        this.bootstrapTradesExecuted = 0;
+        this.maxBootstrapTrades = 2;
+        this.bootstrapProfitThreshold = 1.0; // $1 for first 2 trades
+        this.normalProfitThreshold = 15.0; // $15 after bootstrapping
+
         // Python calculator path
         this.pythonCalculatorPath = path.join(__dirname, '../services/PythonArbitrageCalculator.py');
 
@@ -493,10 +499,22 @@ class ArbitrageBot extends EventEmitter {
             }
 
             // Execute the triangular arbitrage
+            // Check wallet balance for gas before executing
+            const balance = await this.provider.getBalance(this.signer.address);
+            const balanceEth = parseFloat(ethers.formatEther(balance));
+            const estimatedGasCost = 0.001; // Conservative 0.001 BNB gas estimate
+
+            if (balanceEth < estimatedGasCost) {
+                console.log(`⚠️ Insufficient balance for gas: ${balanceEth} BNB < ${estimatedGasCost} BNB required`);
+                console.log(`   Skipping trade - waiting for balance to recover`);
+                return null;
+            }
+
             console.log(`🔥 EXECUTING TRADE: Triangular arbitrage ${pathSymbols.join(' → ')}`);
             console.log(`   Amount: ${amountIn} tokens`);
             console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)}`);
             console.log(`   Router: ${router}`);
+            console.log(`   Wallet Balance: ${balanceEth.toFixed(6)} BNB`);
 
             const result = await this._executeTriangularSwap(path, amountInWei, routerContract);
 
@@ -505,8 +523,16 @@ class ArbitrageBot extends EventEmitter {
                 console.log(`   Actual Profit: $${expectedProfitUSD.toFixed(2)}`);
                 console.log(`   Transaction: ${result.txHash}`);
                 console.log(`   Status: executed ✅`);
+
                 this.totalTrades++;
                 this.successfulTrades++;
+                this.bootstrapTradesExecuted++;
+
+                // Check if we've completed bootstrapping
+                if (this.bootstrapTradesExecuted >= this.maxBootstrapTrades) {
+                    console.log(`🚀 Bootstrapping complete! Switched to normal profit threshold: $${this.normalProfitThreshold}`);
+                }
+
                 return result;
             } else {
                 console.error('❌ Triangular arbitrage execution failed');
@@ -981,11 +1007,13 @@ class ArbitrageBot extends EventEmitter {
                                 continue;
                             }
 
-                            // Check minimum profit threshold
+                            // Check minimum profit threshold (bootstrap mode for low balance)
                             const profitUSD = opportunity.expectedProfitUSD;
+                            const currentThreshold = (this.bootstrapTradesExecuted < this.maxBootstrapTrades) ?
+                                this.bootstrapProfitThreshold : this.normalProfitThreshold;
 
-                            if (profitUSD < this.minProfitUSD) {
-                                console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below minimum $${this.minProfitUSD}`);
+                            if (profitUSD < currentThreshold) {
+                                console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below threshold $${currentThreshold} (${this.bootstrapTradesExecuted < this.maxBootstrapTrades ? 'bootstrap' : 'normal'} mode)`);
                                 continue;
                             }
 
