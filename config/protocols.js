@@ -41,42 +41,55 @@ const PROTOCOLS = {
         }
     },
 
-    // Lending Protocols
+    // Lending Protocols (BSC Mainnet)
     LENDING_PROTOCOLS: {
+        // AAVE V3 on BSC - DISABLED: Not properly configured for BSC
         AAVE: {
             name: 'AAVE',
-            pool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
-            lendingPool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
-            incentivesController: '0x929EC64c34a17401F460460D4B9390518E5B473e',
-            supportsFlashLoan: true,
-            flashLoanFee: 0.0009 // 0.09%
+            pool: '0x0000000000000000000000000000000000000000', // Invalid - AAVE V3 not active on BSC
+            lendingPool: '0x0000000000000000000000000000000000000000', // Invalid
+            incentivesController: '0x0000000000000000000000000000000000000000', // Invalid
+            supportsFlashLoan: false,
+            enabled: false // Disable AAVE on BSC
         },
+        // Compound on BSC - DISABLED: Not active on BSC
         COMPOUND: {
             name: 'Compound',
-            comptroller: '0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B',
-            priceOracle: '0x922018674c12a7F0D394ebEEf9B58F186CdE13c1',
-            supportsFlashLoan: false
+            comptroller: '0x0000000000000000000000000000000000000000', // Invalid - Compound not on BSC
+            priceOracle: '0x0000000000000000000000000000000000000000', // Invalid
+            supportsFlashLoan: false,
+            enabled: false // Disable Compound on BSC
         },
+        // Venus Protocol - ACTIVE on BSC
         VENUS: {
             name: 'Venus',
             comptroller: '0xfD36E2c2a6789Db23113685031d7F16329158384',
             priceOracle: '0xd8B6dA2bfEC71D684D3E2a2FC9492Ddad5C3787F',
-            supportsFlashLoan: false
+            supportsFlashLoan: false,
+            enabled: true // Enable Venus on BSC
         },
+        // Cream Finance - DISABLED: Not active on BSC
         CREAM: {
             name: 'Cream Finance',
-            comptroller: '0x3d5BC3c8d13dcB8bF317092d84783c2697AE9258',
-            supportsFlashLoan: false
+            comptroller: '0x0000000000000000000000000000000000000000', // Invalid - Cream not on BSC
+            supportsFlashLoan: false,
+            enabled: false // Disable Cream on BSC
         }
     },
 
     // Flash Loan Providers
     FLASH_LOAN_PROVIDERS: {
+        PANCAKESWAP: {
+            name: 'PancakeSwap Flash Swap',
+            address: '0x10ED43C718714eb63d5aA57B78B54704E256024E', // PancakeSwap Router
+            fee: 0.0025, // 0.25% swap fee
+            maxAmount: '100000000000000000000000' // 100k BNB equivalent
+        },
         AAVE: {
             name: 'AAVE Flash Loans',
-            address: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
+            address: '0x0000000000000000000000000000000000000000', // Disabled on BSC
             fee: 0.0009, // 0.09%
-            maxAmount: '115792089237316195423570985008687907853269984665640564039457584007913129639935' // uint256 max
+            maxAmount: '0'
         },
         DODO: {
             name: 'DODO Flash Loans',

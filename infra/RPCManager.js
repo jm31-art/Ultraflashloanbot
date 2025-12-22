@@ -290,6 +290,34 @@ class RPCManager {
     }
 
     /**
+     * Execute critical call with retry logic
+     * @param {Function} callFn - The call function to execute
+     * @param {string} operation - Operation name for logging
+     * @param {number} maxRetries - Maximum retry attempts
+     */
+    async executeCriticalCall(callFn, operation = 'unknown', maxRetries = 3) {
+        let lastError;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const result = await callFn();
+                return result;
+            } catch (error) {
+                lastError = error;
+                console.warn(`⚠️ ${operation} failed (attempt ${attempt}/${maxRetries}):`, error.message);
+
+                if (attempt < maxRetries) {
+                    // Exponential backoff: 1s, 2s, 4s
+                    const delay = Math.pow(2, attempt - 1) * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+
+        throw new Error(`❌ ${operation} failed after ${maxRetries} attempts: ${lastError.message}`);
+    }
+
+    /**
      * Mask API key in logs
      * @private
      */

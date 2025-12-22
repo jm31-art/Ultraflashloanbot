@@ -199,8 +199,10 @@ class LiquidationBot extends EventEmitter {
     async _initializeLendingContracts() {
         // Initialize Aave V3 with proper address validation
         const AAVE_LENDING_POOL = LENDING_PROTOCOLS.AAVE?.pool || LENDING_PROTOCOLS.AAVE?.lendingPool;
-        if (!AAVE_LENDING_POOL || !ethers.isAddress(AAVE_LENDING_POOL)) {
-            console.warn("⚠️ AAVE lending pool address missing or invalid - skipping AAVE");
+        const aaveEnabled = LENDING_PROTOCOLS.AAVE?.enabled !== false;
+
+        if (!aaveEnabled || !AAVE_LENDING_POOL || !ethers.isAddress(AAVE_LENDING_POOL) || AAVE_LENDING_POOL === '0x0000000000000000000000000000000000000000') {
+            console.log("ℹ️ AAVE protocol disabled or not configured for BSC - skipping AAVE");
         } else {
             try {
                 const checksummedAddress = getAddress(AAVE_LENDING_POOL);
@@ -222,16 +224,15 @@ class LiquidationBot extends EventEmitter {
             }
         }
 
-        // Initialize Compound V3 (skip if not properly configured)
-        if (LENDING_PROTOCOLS.COMPOUND && LENDING_PROTOCOLS.COMPOUND.comet) {
-            if (typeof LENDING_PROTOCOLS.COMPOUND.comet !== "string") {
-                console.warn("⚠️ Skipping Compound - invalid comet address type");
-            } else {
-                try {
-                    LENDING_PROTOCOLS.COMPOUND.comet = getAddress(LENDING_PROTOCOLS.COMPOUND.comet);
-                } catch (e) {
-                    console.warn("⚠️ Non-checksummed Compound comet address:", LENDING_PROTOCOLS.COMPOUND.comet);
-                }
+        // Initialize Compound V3 (skip if not properly configured or disabled)
+        const compoundEnabled = LENDING_PROTOCOLS.COMPOUND?.enabled !== false;
+        if (!compoundEnabled || !LENDING_PROTOCOLS.COMPOUND || !LENDING_PROTOCOLS.COMPOUND.comet || LENDING_PROTOCOLS.COMPOUND.comet === '0x0000000000000000000000000000000000000000') {
+            console.log("ℹ️ Compound protocol disabled or not configured for BSC - skipping Compound");
+        } else if (typeof LENDING_PROTOCOLS.COMPOUND.comet !== "string") {
+            console.warn("⚠️ Skipping Compound - invalid comet address type");
+        } else {
+            try {
+                LENDING_PROTOCOLS.COMPOUND.comet = getAddress(LENDING_PROTOCOLS.COMPOUND.comet);
 
                 const compoundAbi = [
                     "function getHealthFactor(address account) view returns (uint256)",
@@ -248,21 +249,20 @@ class LiquidationBot extends EventEmitter {
                     this.provider
                 );
                 console.log("✅ Compound V3 initialized");
+            } catch (e) {
+                console.warn("⚠️ Failed to initialize Compound contract:", e.message);
             }
-        } else {
-            console.log("ℹ️ Compound V3 not configured - skipping initialization");
         }
 
         // Initialize Venus Protocol
-        if (LENDING_PROTOCOLS.VENUS && LENDING_PROTOCOLS.VENUS.comptroller) {
-            if (typeof LENDING_PROTOCOLS.VENUS.comptroller !== "string") {
-                console.warn("⚠️ Skipping Venus - invalid comptroller address type");
-            } else {
-                try {
-                    LENDING_PROTOCOLS.VENUS.comptroller = getAddress(LENDING_PROTOCOLS.VENUS.comptroller);
-                } catch (e) {
-                    console.warn("⚠️ Non-checksummed Venus comptroller address:", LENDING_PROTOCOLS.VENUS.comptroller);
-                }
+        const venusEnabled = LENDING_PROTOCOLS.VENUS?.enabled !== false;
+        if (!venusEnabled || !LENDING_PROTOCOLS.VENUS || !LENDING_PROTOCOLS.VENUS.comptroller || LENDING_PROTOCOLS.VENUS.comptroller === '0x0000000000000000000000000000000000000000') {
+            console.log("ℹ️ Venus protocol disabled or not configured for BSC - skipping Venus");
+        } else if (typeof LENDING_PROTOCOLS.VENUS.comptroller !== "string") {
+            console.warn("⚠️ Skipping Venus - invalid comptroller address type");
+        } else {
+            try {
+                LENDING_PROTOCOLS.VENUS.comptroller = getAddress(LENDING_PROTOCOLS.VENUS.comptroller);
 
                 const venusAbi = [
                     "function getAccountLiquidity(address account) view returns (uint256, uint256, uint256)",
@@ -270,9 +270,9 @@ class LiquidationBot extends EventEmitter {
                     "function markets(address) view returns (bool, uint256, bool)",
                     "function oracle() view returns (address)",
                     "function getAssetsIn(address) view returns (address[])",
-                    "event Borrow(address borrower, uint256 borrowAmount, uint256 accountBorrows, uint256 totalBorrows)",
-                    "event RepayBorrow(address payer, address borrower, uint256 repayAmount, uint256 accountBorrows, uint256 totalBorrows)",
-                    "event LiquidateBorrow(address liquidator, address borrower, uint256 repayAmount, address cTokenCollateral, uint256 seizeTokens)"
+                    "event Borrow(address borrower, uint borrowAmount, uint accountBorrows, uint totalBorrows)",
+                    "event RepayBorrow(address payer, address borrower, uint repayAmount, uint accountBorrows, uint totalBorrows)",
+                    "event LiquidateBorrow(address liquidator, address borrower, uint repayAmount, address cTokenCollateral, uint seizeTokens)"
                 ];
                 this.lendingContracts.VENUS = new ethers.Contract(
                     LENDING_PROTOCOLS.VENUS.comptroller,
@@ -280,9 +280,9 @@ class LiquidationBot extends EventEmitter {
                     this.provider
                 );
                 console.log("✅ Venus Protocol initialized");
+            } catch (e) {
+                console.warn("⚠️ Failed to initialize Venus contract:", e.message);
             }
-        } else {
-            console.log("ℹ️ Venus Protocol not configured - skipping initialization");
         }
 
         // Initialize flashloan contract for atomic liquidations
@@ -1427,6 +1427,11 @@ class LiquidationBot extends EventEmitter {
             }
 
             // Execute transaction
+            console.log(`🔥 EXECUTING TRADE: Liquidation of ${opportunity.user}`);
+            console.log(`   Debt Asset: ${opportunity.debtAsset}`);
+            console.log(`   Collateral Asset: ${opportunity.collateralAsset}`);
+            console.log(`   Amount: ${ethers.formatEther(amount)} tokens`);
+            console.log(`   Expected Profit: $${profitAnalysis.expectedProfitUSD.toFixed(2)}`);
             console.log(`🔥 Executing flashloan liquidation: ${ethers.formatEther(amount)} ${opportunity.debtAsset} → ${opportunity.collateralAsset}`);
             const txResponse = await this.signer.sendTransaction(tx);
 

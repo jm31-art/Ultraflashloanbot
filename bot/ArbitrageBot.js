@@ -493,19 +493,24 @@ class ArbitrageBot extends EventEmitter {
             }
 
             // Execute the triangular arbitrage
+            console.log(`🔥 EXECUTING TRADE: Triangular arbitrage ${pathSymbols.join(' → ')}`);
+            console.log(`   Amount: ${amountIn} tokens`);
+            console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)}`);
+            console.log(`   Router: ${router}`);
+
             const result = await this._executeTriangularSwap(path, amountInWei, routerContract);
 
             if (result && result.success) {
                 console.log(`💰 Triangular arbitrage completed successfully!`);
-                console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)}`);
+                console.log(`   Actual Profit: $${expectedProfitUSD.toFixed(2)}`);
                 console.log(`   Transaction: ${result.txHash}`);
-                console.log(`   Status: executed`);
+                console.log(`   Status: executed ✅`);
                 this.totalTrades++;
                 this.successfulTrades++;
                 return result;
             } else {
                 console.error('❌ Triangular arbitrage execution failed');
-                console.log(`   Status: failed`);
+                console.log(`   Status: failed ❌`);
                 this.totalTrades++;
                 return null;
             }
