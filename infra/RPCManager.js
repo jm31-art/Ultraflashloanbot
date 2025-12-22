@@ -209,10 +209,14 @@ class RPCManager {
             console.log('🔍 Validating RPC connectivity...');
 
             // Test chain ID
-            this._chainId = await this._readProvider.getNetwork().then(network => network.chainId);
+            const network = await this._readProvider.getNetwork();
+            this._chainId = Number(network.chainId); // Ensure it's a number
 
             // Test block number
             this._lastBlockNumber = await this._readProvider.getBlockNumber();
+
+            // Debug logging
+            console.log(`🔍 Chain ID: ${this._chainId} (type: ${typeof this._chainId})`);
 
             // Validate BSC mainnet/testnet (allow both)
             const validChains = [56, 97]; // BSC mainnet and testnet
