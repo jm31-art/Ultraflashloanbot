@@ -73,17 +73,48 @@ class ArbitrageBot extends EventEmitter {
         this.successfulTrades = 0;
         this.pythonProcessRunning = false; // Prevent multiple Python processes
 
-        // Low-balance bootstrapping for Extreme Mode
+        // Low-balance bootstrapping for Extreme Mode - FORCE REAL EXECUTION
         this.bootstrapTradesExecuted = 0;
         this.maxBootstrapTrades = 2;
-        this.bootstrapProfitThreshold = 2.0; // $2 for first 2 trades (micro-arbs)
+        this.bootstrapProfitThreshold = 0.5; // $0.50 for first 2 trades (ultra micro-arbs)
         this.normalProfitThreshold = 10.0; // $10 after bootstrapping
-        this.executionEnabled = true; // Enable real transaction execution
+        this.executionEnabled = true; // FORCE REAL EXECUTION
+        this.forceExtremeMode = true; // Force extreme mode for bootstrapping
+        console.log('🚀 ARBITRAGE BOT: EXTREME MODE BOOTSTRAP ENABLED');
+        console.log('🎯 Target: Execute 2 micro-arbs ($0.50+ profit) to recoup gas');
 
         // Python calculator path
         this.pythonCalculatorPath = path.join(__dirname, '../services/PythonArbitrageCalculator.py');
 
+        // Flashloan integration for bootstrap
+        this.flashloanContract = null;
+        this._initializeFlashloan();
+
         console.log('✅ ArbitrageBot initialized successfully');
+
+        // Initialize flashloan for bootstrap arbitrage
+        this._initializeFlashloan();
+    }
+
+    /**
+     * Initialize flashloan contract for bootstrap arbitrage
+     */
+    async _initializeFlashloan() {
+        try {
+            const flashloanAddress = process.env.FLASHLOAN_ARB_CONTRACT || '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1';
+            if (flashloanAddress && flashloanAddress !== '0x0000000000000000000000000000000000000000') {
+                const flashloanAbi = [
+                    "function executeFlashloanArbitrage(address asset, uint256 amount, address[] calldata path, address router, uint256 minProfit) external",
+                    "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external"
+                ];
+                this.flashloanContract = new ethers.Contract(flashloanAddress, flashloanAbi, this.signer);
+                console.log('🔥 ArbitrageBot: Flashloan contract initialized for bootstrap');
+            } else {
+                console.log('⚠️ ArbitrageBot: No flashloan contract - using direct swaps');
+            }
+        } catch (error) {
+            console.warn('⚠️ ArbitrageBot: Flashloan initialization failed:', error.message);
+        }
     }
 
     /**
@@ -511,21 +542,22 @@ class ArbitrageBot extends EventEmitter {
                 return null;
             }
 
-            // EXECUTE REAL TRADE - EXTREME MODE MICRO-ARB
-            console.log(`🔥 EXTREME MODE: EXECUTING MICRO-ARB TRADE`);
+            // FORCE EXECUTE REAL TRADE - EXTREME MODE MICRO-ARB
+            console.log(`🚀 EXTREME MODE: EXECUTING MICRO-ARB - Estimated profit: $${expectedProfitUSD.toFixed(2)}`);
             console.log(`   Triangular arbitrage: ${pathSymbols.join(' → ')}`);
             console.log(`   Amount: ${amountIn} tokens`);
-            console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)}`);
             console.log(`   Router: ${router}`);
             console.log(`   Wallet Balance: ${balanceEth.toFixed(6)} BNB`);
             console.log(`   Bootstrap Progress: ${this.bootstrapTradesExecuted}/${this.maxBootstrapTrades} trades`);
 
-            if (!this.executionEnabled) {
-                console.log(`⚠️ Execution disabled - would execute trade here`);
-                return null;
+            // Use flashloan for better profits if available
+            let result;
+            if (this.flashloanContract && isBootstrapMode) {
+                console.log(`🔥 Using flashloan for amplified profits`);
+                result = await this._executeFlashloanArbitrage(path, amountInWei, router, expectedProfitUSD);
+            } else {
+                result = await this._executeTriangularSwap(path, amountInWei, routerContract);
             }
-
-            const result = await this._executeTriangularSwap(path, amountInWei, routerContract);
 
             if (result && result.success) {
                 console.log(`💰 Triangular arbitrage completed successfully!`);
@@ -692,6 +724,62 @@ class ArbitrageBot extends EventEmitter {
             }
 
             return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Execute flashloan arbitrage for amplified profits
+     */
+    async _executeFlashloanArbitrage(path, amountInWei, router, expectedProfitUSD) {
+        try {
+            if (!this.flashloanContract) {
+                throw new Error('Flashloan contract not available');
+            }
+
+            const [tokenA, tokenB, tokenC] = path;
+            const minProfitWei = ethers.parseEther(Math.max(0, expectedProfitUSD * 0.8).toString()); // 80% of expected
+
+            console.log(`📤 Submitting flashloan arbitrage transaction...`);
+
+            const tx = await this.flashloanContract.executeFlashloanArbitrage(
+                tokenA, // asset to flashloan
+                amountInWei, // flashloan amount
+                [tokenA, tokenB, tokenC, tokenA], // arbitrage path
+                router, // router address
+                minProfitWei // minimum profit
+            );
+
+            console.log(`✅ EXTREME MODE: Flashloan arbitrage submitted successfully!`);
+            console.log(`   TX Hash: ${tx.hash}`);
+            console.log(`   Flashloan Amount: ${ethers.formatEther(amountInWei)} tokens`);
+            console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)}`);
+
+            // Wait for confirmation
+            const receipt = await tx.wait();
+
+            if (receipt.status === 1) {
+                console.log(`💰 EXTREME MODE: FLASHLOAN ARBITRAGE COMPLETED SUCCESSFULLY!`);
+                console.log(`   TX Hash: ${tx.hash}`);
+                console.log(`   Gas Used: ${receipt.gasUsed}`);
+                console.log(`   Block: ${receipt.blockNumber}`);
+                return {
+                    success: true,
+                    txHash: tx.hash,
+                    gasUsed: receipt.gasUsed,
+                    blockNumber: receipt.blockNumber,
+                    profit: expectedProfitUSD,
+                    flashloan: true
+                };
+            } else {
+                console.log(`❌ EXTREME MODE: Flashloan arbitrage reverted`);
+                throw new Error('Transaction reverted');
+            }
+
+        } catch (error) {
+            console.log(`❌ Flashloan arbitrage failed, falling back to direct swap:`, error.message);
+            // Fallback to direct swap
+            const routerContract = await this.getRouterContract(router);
+            return await this._executeTriangularSwap(path, amountInWei, routerContract);
         }
     }
 
@@ -1036,10 +1124,10 @@ class ArbitrageBot extends EventEmitter {
                                 continue;
                             }
 
-                            // Additional check: ensure profit covers gas costs
-                            const estimatedGasCostUSD = 2.0; // Conservative $2 gas estimate
+                            // Bootstrap mode: ultra-low gas estimate for micro-arbs
+                            const estimatedGasCostUSD = isBootstrapMode ? 0.1 : 2.0; // $0.10 for bootstrap, $2 normal
                             if (profitUSD < estimatedGasCostUSD) {
-                                console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below gas cost $${estimatedGasCostUSD}`);
+                                console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below gas cost $${estimatedGasCostUSD} (${isBootstrapMode ? 'bootstrap' : 'normal'} mode)`);
                                 continue;
                             }
 

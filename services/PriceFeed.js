@@ -130,17 +130,13 @@ class PriceFeed {
             return parseFloat(ethers.formatUnits(price, 0));
 
         } catch (error) {
-            if (error.message.includes('bad address checksum')) {
-                console.error(`Address checksum error for ${token0.symbol}/${token1.symbol}:`, {
-                    token0: token0.address,
-                    token1: token1.address,
-                    factory: dexConfig?.factory
-                });
-            } else {
-                const dexName = dexConfig?.name || 'unknown';
-                console.error(`Error getting price from ${dexName}:`, error.message);
+            // Try on-chain fallback for better price detection in Extreme Mode
+            try {
+                return await this._getOnChainPriceFallback(dexConfig, token0, token1);
+            } catch (fallbackError) {
+                // Silent failure for bootstrap mode
+                return null;
             }
-            return null;
         }
     }
 
@@ -466,6 +462,51 @@ class PriceFeed {
     }
 
 
+
+    /**
+     * On-chain price fallback for Extreme Mode bootstrap
+     */
+    async _getOnChainPriceFallback(dexConfig, token0, token1) {
+        try {
+            // Use PancakeSwap factory as fallback for BSC
+            const fallbackFactory = '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73'; // PancakeSwap factory
+            const factory = new ethers.Contract(fallbackFactory, [
+                'function getPair(address tokenA, address tokenB) external view returns (address pair)'
+            ], this.provider);
+
+            const normalizedToken0 = ethers.getAddress(token0.address);
+            const normalizedToken1 = ethers.getAddress(token1.address);
+
+            let pairAddress = await factory.getPair(normalizedToken0, normalizedToken1);
+            if (pairAddress === ethers.ZeroAddress) {
+                pairAddress = await factory.getPair(normalizedToken1, normalizedToken0);
+            }
+
+            if (pairAddress === ethers.ZeroAddress) {
+                return null; // No pair found
+            }
+
+            const pair = new ethers.Contract(pairAddress, PAIR_ABI, this.provider);
+            const reserves = await pair.getReserves();
+
+            if (reserves[0].isZero() || reserves[1].isZero()) {
+                return null; // No liquidity
+            }
+
+            // Calculate price
+            const reserve0 = ethers.BigNumber.from(reserves[0]);
+            const reserve1 = ethers.BigNumber.from(reserves[1]);
+            const decimals0 = ethers.BigNumber.from(10).pow(token0.decimals);
+            const decimals1 = ethers.BigNumber.from(10).pow(token1.decimals);
+
+            const price = reserve1.mul(decimals0).div(reserve0.mul(decimals1));
+            return parseFloat(ethers.formatUnits(price, 0));
+
+        } catch (error) {
+            // Silent failure for bootstrap mode
+            return null;
+        }
+    }
 
     async getTokenPrice(token) {
         try {

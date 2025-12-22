@@ -30,12 +30,14 @@ class AutonomousController extends EventEmitter {
     this.lastExecutionBlock = 0;
     this.runOnceEveryNBlocks = 1; // Default, will be randomized
 
-    // Bootstrapping configuration for low-balance operation
+    // Bootstrapping configuration for low-balance operation - FORCE EXTREME MODE
     this.bootstrapMode = true;
     this.bootstrapTradesCompleted = 0;
     this.bootstrapTargetTrades = 2;
-    console.log('🔥 AUTONOMOUS CONTROLLER: Starting in EXTREME MODE (bootstrap)');
-    console.log('🎯 Target: 2 micro-arb trades to recoup gas costs');
+    this.forceExtremeMode = true; // Force extreme mode until bootstrap complete
+    console.log('🔥 AUTONOMOUS CONTROLLER: FORCE STARTING IN EXTREME MODE (bootstrap)');
+    console.log('🎯 Target: Execute 2 micro-arb trades ($0.50+ profit) to recoup gas');
+    console.log('🚀 Will use flashloans for amplified profits when available');
 
     // Attempt management (24h lifecycle)
     this.attemptsUsed24h = 0;
