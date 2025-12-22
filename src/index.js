@@ -133,7 +133,7 @@ async function main() {
       console.log('🔥 Initializing Liquidation Bot...');
       const liquidationModule = await import('../bot/LiquidationBot.js');
       const { LiquidationBot } = liquidationModule;
-      liquidationBot = new LiquidationBot(provider, signer, {
+      liquidationBot = new LiquidationBot(getProvider(), signer, {
         sharedGasManager: autonomousController.getGasManager ? autonomousController.getGasManager() : null
       });
 

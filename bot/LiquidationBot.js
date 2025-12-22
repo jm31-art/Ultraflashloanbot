@@ -370,38 +370,74 @@ class LiquidationBot extends EventEmitter {
         try {
             switch (protocolName.toUpperCase()) {
                 case 'AAVE':
-                    // Listen for borrow events that might create liquidation opportunities
+                    // Try event subscription, fall back to polling if not supported
                     if (contract.filters.Borrow) {
-                        const borrowListener = contract.on('Borrow', async (reserve, user, onBehalfOf, amount, referralCode, event) => {
-                            await this._handleBorrowEvent(protocolName, user, event);
-                        });
-                        listeners.push(borrowListener);
+                        try {
+                            const borrowListener = contract.on('Borrow', async (reserve, user, onBehalfOf, amount, referralCode, event) => {
+                                await this._handleBorrowEvent(protocolName, user, event);
+                            });
+                            listeners.push(borrowListener);
+                        } catch (subscriptionError) {
+                            if (subscriptionError.message.includes('contract runner does not support subscribing')) {
+                                console.log(`📊 ${protocolName}: Event subscription not supported, using polling fallback`);
+                                // Polling will be handled in _scanRecentEvents
+                            } else {
+                                throw subscriptionError;
+                            }
+                        }
                     }
                     break;
 
                 case 'VENUS':
-                    // Listen for borrow events
+                    // Try event subscription, fall back to polling if not supported
                     if (contract.filters.Borrow) {
-                        const borrowListener = contract.on('Borrow', async (borrower, borrowAmount, accountBorrows, totalBorrows, event) => {
-                            await this._handleBorrowEvent(protocolName, borrower, event);
-                        });
-                        listeners.push(borrowListener);
+                        try {
+                            const borrowListener = contract.on('Borrow', async (borrower, borrowAmount, accountBorrows, totalBorrows, event) => {
+                                await this._handleBorrowEvent(protocolName, borrower, event);
+                            });
+                            listeners.push(borrowListener);
+                        } catch (subscriptionError) {
+                            if (subscriptionError.message.includes('contract runner does not support subscribing')) {
+                                console.log(`📊 ${protocolName}: Event subscription not supported, using polling fallback`);
+                                // Polling will be handled in _scanRecentEvents
+                            } else {
+                                throw subscriptionError;
+                            }
+                        }
                     }
                     break;
 
                 case 'COMPOUND':
-                    // Listen for supply/withdraw events that affect collateral
+                    // Try event subscription, fall back to polling if not supported
                     if (contract.filters.Supply) {
-                        const supplyListener = contract.on('Supply', async (from, dst, amount, event) => {
-                            await this._handleCollateralChangeEvent(protocolName, dst, event);
-                        });
-                        listeners.push(supplyListener);
+                        try {
+                            const supplyListener = contract.on('Supply', async (from, dst, amount, event) => {
+                                await this._handleCollateralChangeEvent(protocolName, dst, event);
+                            });
+                            listeners.push(supplyListener);
+                        } catch (subscriptionError) {
+                            if (subscriptionError.message.includes('contract runner does not support subscribing')) {
+                                console.log(`📊 ${protocolName}: Event subscription not supported, using polling fallback`);
+                                // Polling will be handled in _scanRecentEvents
+                            } else {
+                                throw subscriptionError;
+                            }
+                        }
                     }
                     if (contract.filters.Withdraw) {
-                        const withdrawListener = contract.on('Withdraw', async (src, to, amount, event) => {
-                            await this._handleCollateralChangeEvent(protocolName, src, event);
-                        });
-                        listeners.push(withdrawListener);
+                        try {
+                            const withdrawListener = contract.on('Withdraw', async (src, to, amount, event) => {
+                                await this._handleCollateralChangeEvent(protocolName, src, event);
+                            });
+                            listeners.push(withdrawListener);
+                        } catch (subscriptionError) {
+                            if (subscriptionError.message.includes('contract runner does not support subscribing')) {
+                                console.log(`📊 ${protocolName}: Event subscription not supported, using polling fallback`);
+                                // Polling will be handled in _scanRecentEvents
+                            } else {
+                                throw subscriptionError;
+                            }
+                        }
                     }
                     break;
             }

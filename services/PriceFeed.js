@@ -116,10 +116,11 @@ class PriceFeed {
                 console.error(`Address checksum error for ${token0.symbol}/${token1.symbol}:`, {
                     token0: token0.address,
                     token1: token1.address,
-                    factory: dexConfig.factory
+                    factory: dexConfig?.factory
                 });
             } else {
-                console.error(`Error getting price from ${dexConfig.name}:`, error.message);
+                const dexName = dexConfig?.name || 'unknown';
+                console.error(`Error getting price from ${dexName}:`, error.message);
             }
             return null;
         }
