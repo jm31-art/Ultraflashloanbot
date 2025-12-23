@@ -47,18 +47,8 @@ class MempoolWatcher extends EventEmitter {
 
                 this.wsProvider = new ethers.WebSocketProvider(wsUrl);
 
-                // Set up event handlers
-                this.wsProvider.on('error', (error) => {
-                    console.log(`📡 MEMPOOL WS ERROR: ${error.message} - Reconnecting...`);
-                    this.isWatching = false;
-                    this._scheduleReconnect();
-                });
-
-                this.wsProvider.on('close', () => {
-                    console.log('📡 MEMPOOL WS CLOSED: Reconnecting...');
-                    this.isWatching = false;
-                    this._scheduleReconnect();
-                });
+                // Note: WebSocket event handlers not supported by ethers WebSocketProvider
+                // Connection will be tested and monitored via periodic health checks
 
                 // Monitor pending transactions
                 this.wsProvider.on('pending', async (txHash) => {
