@@ -48,12 +48,6 @@ class MempoolWatcher extends EventEmitter {
                 this.wsProvider = new ethers.WebSocketProvider(wsUrl);
 
                 // Set up event handlers
-                this.wsProvider.on('open', () => {
-                    console.log('📡 MEMPOOLWATCHER: Connected successfully');
-                    this.isWatching = true;
-                    this.reconnectAttempts = 0;
-                });
-
                 this.wsProvider.on('error', (error) => {
                     console.log(`📡 MEMPOOL WS ERROR: ${error.message} - Reconnecting...`);
                     this.isWatching = false;
@@ -78,22 +72,15 @@ class MempoolWatcher extends EventEmitter {
                     }
                 });
 
-                // Wait for connection
-                await new Promise((resolve, reject) => {
-                    const timeout = setTimeout(() => {
-                        reject(new Error('Connection timeout'));
-                    }, 10000); // 10 second timeout
-
-                    this.wsProvider.on('open', () => {
-                        clearTimeout(timeout);
-                        resolve();
-                    });
-
-                    this.wsProvider.on('error', () => {
-                        clearTimeout(timeout);
-                        reject(new Error('Connection failed'));
-                    });
-                });
+                // Test connection by making a simple call
+                try {
+                    await this.wsProvider.getBlockNumber();
+                    console.log('📡 MEMPOOLWATCHER: Connected successfully');
+                    this.isWatching = true;
+                    this.reconnectAttempts = 0;
+                } catch (error) {
+                    throw new Error('Connection test failed');
+                }
 
                 console.log('📡 MempoolWatcher: Active - monitoring DEX transactions');
                 return; // Success, exit the loop
