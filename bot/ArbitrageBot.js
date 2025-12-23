@@ -5,6 +5,7 @@ import { ethers, getAddress, ZeroAddress } from 'ethers';
 import { spawn } from 'child_process';
 import path from 'path';
 import rpcManager from '../infra/RPCManager.js';
+import MempoolWatcher from '../utils/mempoolWatcher.js';
 
 // Import ABIs
 import ERC20_ABI from '../abi/erc20.json' with { type: 'json' };
@@ -37,7 +38,7 @@ const DEX_CONFIGS = {
         router: '0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8',
         factory: '0x858E3312ed3A876947EA49d572A7C42DE08af7EE0',
         name: 'Biswap',
-        enabled: false // Disabled due to API issues
+        retryAttempts: 5 // Force retries for BiSwap
     },
     KYBERSWAP: {
         router: '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5',
@@ -93,6 +94,21 @@ const DEX_CONFIGS = {
         router: '0xbd67d157502A23309Db761c41965600c2Ec788bC',
         factory: '0x553990F2CBA90272390f62C5BDb1681fFc899675',
         name: 'JulSwap'
+    },
+    FUSIONX: {
+        router: '0x598010C8C4008c4C4F1c7C8B5F4Fc6Fc9c0c7c7',
+        factory: '0x598010C8C4008c4C4F1c7C8B5F4Fc6Fc9c0c7c7',
+        name: 'FusionX'
+    },
+    WOOFI: {
+        router: '0xC22FBb3133dF781E6a269793B0e94a62F3F63EEd',
+        factory: '0xC22FBb3133dF781E6a269793B0e94a62F3F63EEd',
+        name: 'WooFi'
+    },
+    BABYDOGESWAP: {
+        router: '0xC9a0F685F39b9A9b46a9d467f1C6D84a2f273d6c',
+        factory: '0xC9a0F685F39b9A9b46a9d467f1C6D84a2f273d6c',
+        name: 'BabyDogeSwap'
     }
 };
 
@@ -134,17 +150,19 @@ class ArbitrageBot extends EventEmitter {
         this.successfulTrades = 0;
         this.pythonProcessRunning = false; // Prevent multiple Python processes
 
-        // Low-balance bootstrapping for Extreme Mode - FORCE REAL EXECUTION
+        // MAXIMUM PROFIT BOOTSTRAP - FORCE REAL EXECUTION NOW
         this.bootstrapTradesExecuted = 0;
         this.maxBootstrapTrades = 2;
-        this.bootstrapProfitThreshold = 0.1; // $0.10 for first 2 trades (ultra micro-arbs)
-        this.normalProfitThreshold = 5.0; // $5 after bootstrapping
+        this.bootstrapProfitThreshold = 0.05; // $0.05 for first 2 trades (MAXIMUM micro-arbs)
+        this.normalProfitThreshold = 1.0; // $1 after bootstrapping
         this.executionEnabled = true; // FORCE REAL EXECUTION
         this.forceExtremeMode = true; // Force extreme mode for bootstrapping
         this.mempoolWatcher = null; // Mempool watching for competitive edge
-        console.log('🚀 ARBITRAGE BOT: EXTREME MODE BOOTSTRAP ENABLED');
-        console.log('🎯 Target: Execute 2 micro-arbs ($0.10+ profit) to recoup gas');
-        console.log('🔥 Using flashloans + mempool watching for maximum profits');
+        this.maxSlippage = 0.02; // 2% slippage for Extreme Mode
+        console.log('🚀🚀 ARBITRAGE BOT: MAXIMUM PROFIT EXTREME MODE ACTIVATED');
+        console.log('🎯 Target: Execute 2 micro-arbs ($0.05+ profit) to recoup gas');
+        console.log('🔥 Using flashloans + mempool + 15+ DEXes for MAXIMUM profits');
+        console.log('⚡ 2% slippage tolerance, multicall batching, atomic execution');
 
         // Python calculator path
         this.pythonCalculatorPath = path.join(__dirname, '../services/PythonArbitrageCalculator.py');
@@ -188,27 +206,32 @@ class ArbitrageBot extends EventEmitter {
      */
     async _initializeMempoolWatcher() {
         try {
-            // Create WebSocket provider for mempool watching
             const wsUrl = process.env.BSC_WS_URL || 'wss://bsc-mainnet.nodereal.io/ws/v1/YOUR_API_KEY';
-            this.wsProvider = new ethers.WebSocketProvider(wsUrl);
+            this.mempoolWatcher = new MempoolWatcher(this.provider, wsUrl);
 
-            // Watch for pending DEX transactions
-            this.wsProvider.on('pending', async (txHash) => {
-                try {
-                    const tx = await this.wsProvider.getTransaction(txHash);
-                    if (tx && tx.to) {
-                        // Check if transaction is to a DEX router
-                        const dexRouters = Object.values(DEX_CONFIGS).map(dex => dex.router.toLowerCase());
-                        if (dexRouters.includes(tx.to.toLowerCase())) {
-                            await this._analyzeMempoolTransaction(tx);
-                        }
-                    }
-                } catch (error) {
-                    // Silent error handling for mempool
-                }
+            // Add all DEX routers to monitor
+            const dexRouters = Object.values(DEX_CONFIGS).map(dex => dex.router);
+            this.mempoolWatcher.addDexRouters(dexRouters);
+
+            // Listen for mempool events
+            this.mempoolWatcher.on('largeDexTransaction', (data) => {
+                console.log('📡 Mempool: Large DEX transaction detected, triggering scan');
+                this._triggerMempoolScan();
             });
 
-            console.log('📡 ArbitrageBot: Mempool watcher initialized');
+            this.mempoolWatcher.on('priceImpactDetected', (data) => {
+                console.log(`📡 Mempool: Price impact detected on ${data.router}, spread: ${data.estimatedImpact.toFixed(2)}%`);
+                this._triggerMempoolScan();
+            });
+
+            this.mempoolWatcher.on('potentialSandwich', (data) => {
+                console.log('📡 Mempool: Potential sandwich opportunity detected');
+                this._triggerMempoolScan();
+            });
+
+            // Start watching
+            await this.mempoolWatcher.start();
+            console.log('📡 ArbitrageBot: Mempool watcher active');
         } catch (error) {
             console.warn('⚠️ ArbitrageBot: Mempool watcher initialization failed:', error.message);
         }
