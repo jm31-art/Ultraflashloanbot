@@ -92,7 +92,7 @@ class LiquidationBot extends EventEmitter {
         }
 
         // AI Prediction setup for liquidation hunting
-        this.aiPredictorPath = path.join(__dirname, '../ai/mev_protector.py');
+        this.aiPredictorPath = path.join(process.cwd(), 'ai/mev_protector.py');
         this.predictionCache = new Map();
         this.predictionThreshold = 0.7; // 70% confidence threshold
 

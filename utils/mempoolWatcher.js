@@ -33,6 +33,13 @@ class MempoolWatcher extends EventEmitter {
             console.log('📡 MempoolWatcher: Starting WebSocket connection...');
             this.wsProvider = new ethers.WebSocketProvider(this.wsUrl);
 
+            // Handle WebSocket errors gracefully
+            this.wsProvider.on('error', (error) => {
+                console.warn('⚠️ MempoolWatcher: WebSocket error (continuing without mempool watching):', error.message);
+                this.isWatching = false;
+                this.emit('error', error);
+            });
+
             // Monitor pending transactions
             this.wsProvider.on('pending', async (txHash) => {
                 try {
@@ -49,8 +56,9 @@ class MempoolWatcher extends EventEmitter {
             console.log('📡 MempoolWatcher: Active - monitoring DEX transactions');
 
         } catch (error) {
-            console.error('❌ MempoolWatcher: Failed to start:', error.message);
-            this.emit('error', error);
+            console.warn('⚠️ MempoolWatcher: Failed to start (continuing without mempool watching):', error.message);
+            this.isWatching = false;
+            // Don't emit error to prevent system crash
         }
     }
 
