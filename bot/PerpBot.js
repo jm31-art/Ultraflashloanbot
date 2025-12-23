@@ -38,15 +38,31 @@ class PerpBot extends EventEmitter {
     async start() {
         if (this.isRunning) return;
         this.isRunning = true;
-        console.log('🚀 PerpBot: Starting funding rate arbitrage');
+        console.log('🚀 PerpBot: Starting funding rate arbitrage (independent async)');
 
+        // Run independently without blocking
+        this._startIndependentScanning();
+    }
+
+    /**
+     * Start independent scanning loop (non-blocking)
+     */
+    _startIndependentScanning() {
         // Initial scan
-        await this.scanFundingRates();
-
-        // Set up periodic scanning
-        setInterval(async () => {
+        setTimeout(async () => {
             if (this.isRunning) {
                 await this.scanFundingRates();
+            }
+        }, 1000); // Start after 1 second
+
+        // Set up periodic scanning
+        this.scanTimer = setInterval(async () => {
+            if (this.isRunning) {
+                try {
+                    await this.scanFundingRates();
+                } catch (error) {
+                    console.warn('⚠️ PerpBot: Scan error (continuing):', error.message);
+                }
             }
         }, this.scanInterval);
     }
@@ -123,6 +139,10 @@ class PerpBot extends EventEmitter {
 
     stop() {
         this.isRunning = false;
+        if (this.scanTimer) {
+            clearInterval(this.scanTimer);
+            this.scanTimer = null;
+        }
         console.log('🛑 PerpBot: Stopped');
     }
 

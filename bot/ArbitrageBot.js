@@ -153,7 +153,7 @@ class ArbitrageBot extends EventEmitter {
         // MAXIMUM PROFIT BOOTSTRAP - FORCE REAL EXECUTION NOW
         this.bootstrapTradesExecuted = 0;
         this.maxBootstrapTrades = 2;
-        this.bootstrapProfitThreshold = 0.05; // $0.05 for first 2 trades (MAXIMUM micro-arbs)
+        this.bootstrapProfitThreshold = 0.20; // $0.20 for first 2 trades (ultra-low threshold)
         this.normalProfitThreshold = 1.0; // $1 after bootstrapping
         this.executionEnabled = true; // FORCE REAL EXECUTION
         this.forceExtremeMode = true; // Force extreme mode for bootstrapping

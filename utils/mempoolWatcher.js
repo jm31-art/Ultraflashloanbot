@@ -5,12 +5,23 @@ class MempoolWatcher extends EventEmitter {
     constructor(provider, wsUrl) {
         super();
         this.provider = provider;
-        this.wsUrl = wsUrl || 'wss://bsc-mainnet.nodereal.io/ws/v1/YOUR_API_KEY';
+        // Try multiple WebSocket URLs for better connectivity
+        this.wsUrls = [
+            wsUrl || process.env.BSC_WS_URL,
+            'wss://bsc-mainnet.nodereal.io/ws/v1/' + (process.env.NODEREAL_API_KEY || 'YOUR_API_KEY'),
+            'wss://open-platform.nodereal.io/ws/' + (process.env.NODEREAL_API_KEY || 'YOUR_API_KEY') + '/bsc/',
+            'wss://bsc-ws-node.nariox.org:443', // Public fallback
+            'wss://bsc.publicnode.com' // Another public fallback
+        ].filter(url => url && !url.includes('YOUR_API_KEY')); // Filter out invalid URLs
+
         this.wsProvider = null;
         this.isWatching = false;
         this.dexRouters = new Set();
         this.largeTxThreshold = ethers.parseEther('0.001'); // 0.001 BNB threshold
-        console.log('📡 MempoolWatcher: Initialized');
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
+        this.reconnectInterval = 5000; // 5 seconds
+        console.log('📡 MempoolWatcher: Initialized with fallback URLs');
     }
 
     /**
@@ -24,42 +35,95 @@ class MempoolWatcher extends EventEmitter {
     }
 
     /**
-     * Start mempool watching
+     * Start mempool watching with fallback URLs and auto-reconnection
      */
     async start() {
         if (this.isWatching) return;
 
-        try {
-            console.log('📡 MempoolWatcher: Starting WebSocket connection...');
-            this.wsProvider = new ethers.WebSocketProvider(this.wsUrl);
+        for (let i = 0; i < this.wsUrls.length; i++) {
+            try {
+                const wsUrl = this.wsUrls[i];
+                console.log(`📡 MempoolWatcher: Attempting connection to ${wsUrl}...`);
 
-            // Handle WebSocket errors gracefully
-            this.wsProvider.on('error', (error) => {
-                console.warn('⚠️ MempoolWatcher: WebSocket error (continuing without mempool watching):', error.message);
-                this.isWatching = false;
-                this.emit('error', error);
-            });
+                this.wsProvider = new ethers.WebSocketProvider(wsUrl);
 
-            // Monitor pending transactions
-            this.wsProvider.on('pending', async (txHash) => {
-                try {
-                    const tx = await this.wsProvider.getTransaction(txHash);
-                    if (tx && tx.to && this.dexRouters.has(tx.to.toLowerCase())) {
-                        await this._analyzeDexTransaction(tx);
+                // Set up event handlers
+                this.wsProvider.on('open', () => {
+                    console.log('📡 MEMPOOLWATCHER: Connected successfully');
+                    this.isWatching = true;
+                    this.reconnectAttempts = 0;
+                });
+
+                this.wsProvider.on('error', (error) => {
+                    console.log(`📡 MEMPOOL WS ERROR: ${error.message} - Reconnecting...`);
+                    this.isWatching = false;
+                    this._scheduleReconnect();
+                });
+
+                this.wsProvider.on('close', () => {
+                    console.log('📡 MEMPOOL WS CLOSED: Reconnecting...');
+                    this.isWatching = false;
+                    this._scheduleReconnect();
+                });
+
+                // Monitor pending transactions
+                this.wsProvider.on('pending', async (txHash) => {
+                    try {
+                        const tx = await this.wsProvider.getTransaction(txHash);
+                        if (tx && tx.to && this.dexRouters.has(tx.to.toLowerCase())) {
+                            await this._analyzeDexTransaction(tx);
+                        }
+                    } catch (error) {
+                        // Silent error handling
                     }
-                } catch (error) {
-                    // Silent error handling
-                }
-            });
+                });
 
-            this.isWatching = true;
-            console.log('📡 MempoolWatcher: Active - monitoring DEX transactions');
+                // Wait for connection
+                await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        reject(new Error('Connection timeout'));
+                    }, 10000); // 10 second timeout
 
-        } catch (error) {
-            console.warn('⚠️ MempoolWatcher: Failed to start (continuing without mempool watching):', error.message);
-            this.isWatching = false;
-            // Don't emit error to prevent system crash
+                    this.wsProvider.on('open', () => {
+                        clearTimeout(timeout);
+                        resolve();
+                    });
+
+                    this.wsProvider.on('error', () => {
+                        clearTimeout(timeout);
+                        reject(new Error('Connection failed'));
+                    });
+                });
+
+                console.log('📡 MempoolWatcher: Active - monitoring DEX transactions');
+                return; // Success, exit the loop
+
+            } catch (error) {
+                console.warn(`⚠️ MempoolWatcher: Failed to connect to ${this.wsUrls[i]}:`, error.message);
+                continue; // Try next URL
+            }
         }
+
+        // All URLs failed
+        console.warn('⚠️ MempoolWatcher: All WebSocket URLs failed - continuing without mempool watching');
+        this._scheduleReconnect();
+    }
+
+    /**
+     * Schedule reconnection attempt
+     */
+    _scheduleReconnect() {
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            console.warn('⚠️ MempoolWatcher: Max reconnection attempts reached');
+            return;
+        }
+
+        this.reconnectAttempts++;
+        console.log(`📡 MempoolWatcher: Scheduling reconnection in ${this.reconnectInterval/1000}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+
+        setTimeout(() => {
+            this.start();
+        }, this.reconnectInterval);
     }
 
     /**
@@ -81,7 +145,7 @@ class MempoolWatcher extends EventEmitter {
         try {
             // Check if transaction value is significant (> 0.001 BNB)
             if (tx.value && tx.value > this.largeTxThreshold) {
-                console.log(`📡 MempoolWatcher: Large DEX transaction detected (${ethers.formatEther(tx.value)} BNB)`);
+                console.log(`📡 MEMPOOL: LARGE DEX TX DETECTED (${ethers.formatEther(tx.value)} BNB) - TRIGGERING IMMEDIATE SCAN!`);
 
                 // Emit event for arbitrage bot to trigger immediate scan
                 this.emit('largeDexTransaction', {

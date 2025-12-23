@@ -1,10 +1,13 @@
 import { ethers } from "ethers";
 import { provider } from "../dex/routers.js";
 
-// Aave V3 BSC Pool contract (primary flashloan provider)
+// Custom Flashloan Contract (PRIMARY - always active)
+const CUSTOM_FLASHLOAN_ADDRESS = "0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1";
+
+// Aave V3 BSC Pool contract (fallback)
 const AAVE_V3_POOL_ADDRESS = "0x6807dc923806fE8Fd134338EABCA509979a7e2205";
 
-// Aave V3 BSC Pool contract (alternative address)
+// Aave V3 BSC Pool contract (alternative fallback)
 const AAVE_V3_POOL_ADDRESS_ALT = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4e2";
 const AAVE_V3_POOL_ABI = [
   "function flashLoanSimple(address receiverAddress, address asset, uint256 amount, bytes calldata params, uint16 referralCode) external",
@@ -20,18 +23,52 @@ const PANCAKE_ROUTER_ABI = [
   "function getAmountsIn(uint amountOut, address[] memory path) external view returns (uint[] memory amounts)"
 ];
 
-// Custom flashloan contract (if available)
-const FLASHLOAN_CONTRACT_ADDRESS = process.env.FLASHLOAN_ARB_CONTRACT || '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1';
+// Custom flashloan contract (ALWAYS ACTIVE)
+const FLASHLOAN_CONTRACT_ADDRESS = '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1';
 const FLASHLOAN_CONTRACT_ABI = [
   "function executeFlashloanArbitrage(address asset, uint256 amount, address[] calldata path, address router, uint256 minProfit) external",
-  "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external"
+  "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external",
+  "function flashLoan(address asset, uint256 amount, address receiver, bytes calldata params) external",
+  "function borrow(address asset, uint256 amount) external",
+  "function repay(address asset, uint256 amount) external",
+  "event Borrow(address indexed asset, address indexed borrower, uint256 amount)",
+  "event Repay(address indexed asset, address indexed borrower, uint256 amount)"
 ];
 
 export class FlashloanProvider {
   constructor() {
     this.pancakeRouter = new ethers.Contract(PANCAKE_ROUTER_ADDRESS, PANCAKE_ROUTER_ABI, provider);
-    this.flashloanContract = FLASHLOAN_CONTRACT_ADDRESS ?
-      new ethers.Contract(FLASHLOAN_CONTRACT_ADDRESS, FLASHLOAN_CONTRACT_ABI, provider) : null;
+    // Always initialize flashloan contract
+    this.flashloanContract = new ethers.Contract(FLASHLOAN_CONTRACT_ADDRESS, FLASHLOAN_CONTRACT_ABI, provider);
+    console.log('🔥 FLASHLOAN: Contract initialized at', FLASHLOAN_CONTRACT_ADDRESS);
+  }
+
+  /**
+   * Borrow flashloan amount
+   */
+  async borrowFlashloan(signer, asset, amount) {
+    try {
+      console.log(`FLASHLOAN: Borrowed ${ethers.formatEther(amount)} ${asset} for trade`);
+      const tx = await this.flashloanContract.connect(signer).borrow(asset, amount);
+      return tx;
+    } catch (error) {
+      console.error('❌ Flashloan borrow failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Repay flashloan amount
+   */
+  async repayFlashloan(signer, asset, amount) {
+    try {
+      console.log(`FLASHLOAN: Repaying ${ethers.formatEther(amount)} ${asset}`);
+      const tx = await this.flashloanContract.connect(signer).repay(asset, amount);
+      return tx;
+    } catch (error) {
+      console.error('❌ Flashloan repay failed:', error.message);
+      throw error;
+    }
   }
 
   /**
