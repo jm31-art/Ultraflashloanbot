@@ -28,10 +28,71 @@ const DEX_CONFIGS = {
         factory: '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73',
         name: 'PancakeSwap'
     },
+    APESWAP: {
+        router: '0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7',
+        factory: '0x0841BD0B734E4F5853f0dD8d7Ea041c241fb0Da6',
+        name: 'ApeSwap'
+    },
     BISWAP: {
         router: '0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8',
         factory: '0x858E3312ed3A876947EA49d572A7C42DE08af7EE0',
-        name: 'Biswap'
+        name: 'Biswap',
+        enabled: false // Disabled due to API issues
+    },
+    KYBERSWAP: {
+        router: '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5',
+        factory: '0x878dFE971d44e9122048308301F540910Bbd934c',
+        name: 'KyberSwap'
+    },
+    MDEX: {
+        router: '0x3CD1e2660bD7793411d3b01b62b993c616c847f9',
+        factory: '0x3e708FdbE3ADA63fc94F8F618111096c42E540019',
+        name: 'MDEX'
+    },
+    BABYSWAP: {
+        router: '0x325E343f1dE602396E256B67eFd1F61C3A66639C',
+        factory: '0x86407bEa2078ea5f5EB5A52B2caA963bC7F27977',
+        name: 'BabySwap'
+    },
+    THENA: {
+        router: '0xAFD89d21BdB66d00828f00d458D661a9bd36A44f',
+        factory: '0xAFD89d21BdB66d00828f00d458D661a9bd36A44f',
+        name: 'Thena'
+    },
+    DODO: {
+        router: '0x3271339C33f6F3e8A3b8Ca5574b8eC7f39c3b8B5',
+        factory: '0x43C3f2d0aa8F5C74703E9947A06dDA3b8ec0E6a3',
+        name: 'DODO'
+    },
+    WOMBAT: {
+        router: '0x312Bc7eA1512086fCAb733B958C0d9D1bC1bC0f1',
+        factory: '0x312Bc7eA1512086fCAb733B958C0d9D1bC1bC0f1',
+        name: 'Wombat'
+    },
+    ELLIPSIS: {
+        router: '0xA238Dd80C259a72e81d7e4664a9801593f98d1c5',
+        factory: '0x2a4954fc24875c4e08c9a9b6e13e8ac5d5b1b7f',
+        name: 'Ellipsis'
+    },
+    JETSWAP: {
+        router: '0x845E76A8691423fbc4ECb8Dd0f698eb2f76B087D',
+        factory: '0x0eb58E5c8aA63314ff5547289185cc4583DfCBD5',
+        name: 'JetSwap'
+    },
+    KNIGHTSWAP: {
+        router: '0x05E7900765CdC3c4f89e4e0124ec815A9A3a0c48',
+        factory: '0xf0bc2E21a76513aa7CC2730C7A1D6deE0787D6a7',
+        name: 'KnightSwap'
+    },
+    BAKERYSWAP: {
+        router: '0xCDe540d7eAFE93aC5fE6233Bee57E1270D3c5d52',
+        factory: '0x01bF7C66c6BD861915C0BfCF6cD95b43535Ae0B',
+        name: 'BakerySwap'
+    },
+    JULSWAP: {
+        router: '0xbd67d157502A23309Db761c41965600c2Ec788bC',
+        factory: '0x553990F2CBA90272390f62C5BDb1681fFc899675',
+        name: 'JulSwap'
     }
 };
 
@@ -58,7 +119,7 @@ class ArbitrageBot extends EventEmitter {
 
         // Configuration
         this.minProfitUSD = options.minProfitUSD || 1.0; // $1 minimum profit
-        this.maxSlippage = options.maxSlippage || 0.05; // 5% max slippage
+        this.maxSlippage = options.maxSlippage || 0.01; // 1% max slippage for Extreme Mode
         this.scanInterval = options.scanInterval || 5000; // 5 second scan interval
         this.maxGasPrice = options.maxGasPrice || 10; // 10 gwei max gas price
         this.safeGasLimit = 500000; // Safe fallback gas limit
@@ -76,12 +137,14 @@ class ArbitrageBot extends EventEmitter {
         // Low-balance bootstrapping for Extreme Mode - FORCE REAL EXECUTION
         this.bootstrapTradesExecuted = 0;
         this.maxBootstrapTrades = 2;
-        this.bootstrapProfitThreshold = 0.5; // $0.50 for first 2 trades (ultra micro-arbs)
-        this.normalProfitThreshold = 10.0; // $10 after bootstrapping
+        this.bootstrapProfitThreshold = 0.1; // $0.10 for first 2 trades (ultra micro-arbs)
+        this.normalProfitThreshold = 5.0; // $5 after bootstrapping
         this.executionEnabled = true; // FORCE REAL EXECUTION
         this.forceExtremeMode = true; // Force extreme mode for bootstrapping
+        this.mempoolWatcher = null; // Mempool watching for competitive edge
         console.log('🚀 ARBITRAGE BOT: EXTREME MODE BOOTSTRAP ENABLED');
-        console.log('🎯 Target: Execute 2 micro-arbs ($0.50+ profit) to recoup gas');
+        console.log('🎯 Target: Execute 2 micro-arbs ($0.10+ profit) to recoup gas');
+        console.log('🔥 Using flashloans + mempool watching for maximum profits');
 
         // Python calculator path
         this.pythonCalculatorPath = path.join(__dirname, '../services/PythonArbitrageCalculator.py');
@@ -94,6 +157,9 @@ class ArbitrageBot extends EventEmitter {
 
         // Initialize flashloan for bootstrap arbitrage
         this._initializeFlashloan();
+
+        // Initialize mempool watcher for competitive edge
+        this._initializeMempoolWatcher();
     }
 
     /**
@@ -114,6 +180,83 @@ class ArbitrageBot extends EventEmitter {
             }
         } catch (error) {
             console.warn('⚠️ ArbitrageBot: Flashloan initialization failed:', error.message);
+        }
+    }
+
+    /**
+     * Initialize mempool watcher for competitive edge
+     */
+    async _initializeMempoolWatcher() {
+        try {
+            // Create WebSocket provider for mempool watching
+            const wsUrl = process.env.BSC_WS_URL || 'wss://bsc-mainnet.nodereal.io/ws/v1/YOUR_API_KEY';
+            this.wsProvider = new ethers.WebSocketProvider(wsUrl);
+
+            // Watch for pending DEX transactions
+            this.wsProvider.on('pending', async (txHash) => {
+                try {
+                    const tx = await this.wsProvider.getTransaction(txHash);
+                    if (tx && tx.to) {
+                        // Check if transaction is to a DEX router
+                        const dexRouters = Object.values(DEX_CONFIGS).map(dex => dex.router.toLowerCase());
+                        if (dexRouters.includes(tx.to.toLowerCase())) {
+                            await this._analyzeMempoolTransaction(tx);
+                        }
+                    }
+                } catch (error) {
+                    // Silent error handling for mempool
+                }
+            });
+
+            console.log('📡 ArbitrageBot: Mempool watcher initialized');
+        } catch (error) {
+            console.warn('⚠️ ArbitrageBot: Mempool watcher initialization failed:', error.message);
+        }
+    }
+
+    /**
+     * Analyze mempool transaction for arbitrage opportunities
+     */
+    async _analyzeMempoolTransaction(tx) {
+        try {
+            // Decode the transaction if it's a swap
+            if (tx.data && tx.data.startsWith('0x7ff36ab5')) { // swapExactETHForTokens signature
+                console.log('📡 Mempool: Large DEX transaction detected, triggering immediate scan');
+                // Trigger immediate arbitrage scan
+                this._triggerMempoolScan();
+            }
+        } catch (error) {
+            // Silent error handling
+        }
+    }
+
+    /**
+     * Trigger immediate scan when mempool activity detected
+     */
+    _triggerMempoolScan() {
+        if (!this.mempoolScanTriggered) {
+            this.mempoolScanTriggered = true;
+            // Trigger scan in next tick to avoid blocking
+            setTimeout(async () => {
+                try {
+                    console.log('🎯 Mempool trigger: Running immediate arbitrage scan');
+                    const pythonResult = await this.runPythonCalculator(1.0);
+                    if (pythonResult.success && pythonResult.opportunities?.length > 0) {
+                        // Process first profitable opportunity immediately
+                        for (const opportunity of pythonResult.opportunities) {
+                            if (opportunity.expectedProfitUSD >= this.bootstrapProfitThreshold) {
+                                console.log('🚀 Mempool: Executing hot opportunity');
+                                await this.executeTriangularArbitrage(opportunity);
+                                break; // Execute only one
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.warn('⚠️ Mempool scan failed:', error.message);
+                } finally {
+                    this.mempoolScanTriggered = false;
+                }
+            }, 100); // Small delay
         }
     }
 

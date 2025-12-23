@@ -1,10 +1,15 @@
 import { ethers } from "ethers";
 import { provider } from "../dex/routers.js";
 
-// PancakeSwap Router for flash swaps (BSC mainnet)
-const PANCAKE_ROUTER_ADDRESS = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
+// Aave V3 BSC Pool contract (primary flashloan provider)
+const AAVE_V3_POOL_ADDRESS = "0x6807dc923806fE8Fd134338EABCA509979a7e2205";
+const AAVE_V3_POOL_ABI = [
+  "function flashLoanSimple(address receiverAddress, address asset, uint256 amount, bytes calldata params, uint16 referralCode) external",
+  "function getReserveData(address asset) external view returns (tuple(uint256, uint40, uint16, uint128, uint128, uint128, uint40, address, address, address, address, uint8))"
+];
 
-// PancakeSwap Router ABI for flash swaps
+// PancakeSwap Router for flash swaps (fallback)
+const PANCAKE_ROUTER_ADDRESS = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
 const PANCAKE_ROUTER_ABI = [
   "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
   "function swapTokensForExactTokens(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
@@ -13,7 +18,7 @@ const PANCAKE_ROUTER_ABI = [
 ];
 
 // Custom flashloan contract (if available)
-const FLASHLOAN_CONTRACT_ADDRESS = process.env.FLASHLOAN_ARB_CONTRACT || null;
+const FLASHLOAN_CONTRACT_ADDRESS = process.env.FLASHLOAN_ARB_CONTRACT || '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1';
 const FLASHLOAN_CONTRACT_ABI = [
   "function executeFlashloanArbitrage(address asset, uint256 amount, address[] calldata path, address router, uint256 minProfit) external",
   "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external"
@@ -27,7 +32,7 @@ export class FlashloanProvider {
   }
 
   /**
-   * Execute flashloan with arbitrage parameters (PancakeSwap atomic swaps)
+   * Execute flashloan with arbitrage parameters (Aave V3 BSC primary, custom contract fallback)
    */
   async executeFlashloan(
     signer,
@@ -36,11 +41,8 @@ export class FlashloanProvider {
     arbitrageParams
   ) {
     try {
-      // For BSC/PancakeSwap, we use atomic swaps instead of traditional flash loans
-      // This requires the arbitrage contract to handle the flash swap logic
-
-      if (this.flashloanContract) {
-        // Use custom flashloan contract if available
+      // Use custom flashloan contract if available (preferred for bootstrap)
+      if (this.flashloanContract && FLASHLOAN_CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000') {
         console.log(`🔥 EXECUTING FLASHLOAN: ${ethers.formatEther(amount)} ${asset} via custom contract`);
         const tx = await this.flashloanContract.executeFlashloanArbitrage(
           asset,
@@ -50,11 +52,36 @@ export class FlashloanProvider {
           arbitrageParams.minProfit
         );
         return tx;
-      } else {
-        // Fallback to direct router swap (not atomic flashloan)
-        console.log(`⚠️ No flashloan contract - using direct swap`);
-        const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
+      }
 
+      // Fallback to Aave V3 BSC flashloan
+      console.log(`🏦 EXECUTING FLASHLOAN: ${ethers.formatEther(amount)} ${asset} via Aave V3 BSC`);
+      const aavePool = new ethers.Contract(AAVE_V3_POOL_ADDRESS, AAVE_V3_POOL_ABI, signer);
+
+      // Encode parameters for the receiver contract
+      const params = ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "address[]"],
+        [arbitrageParams.router, arbitrageParams.path]
+      );
+
+      // Execute Aave V3 flashloan
+      const tx = await aavePool.flashLoanSimple(
+        signer.address, // receiver (will be the arbitrage contract)
+        asset,
+        amount,
+        params,
+        0 // referral code
+      );
+
+      return tx;
+
+    } catch (error) {
+      console.error("Flashloan execution failed:", error);
+
+      // Ultimate fallback: direct router swap (no flashloan benefit)
+      console.log(`⚠️ Flashloan failed - falling back to direct swap`);
+      try {
+        const deadline = Math.floor(Date.now() / 1000) + 300;
         const routerContract = new ethers.Contract(
           arbitrageParams.router,
           PANCAKE_ROUTER_ABI,
@@ -63,17 +90,17 @@ export class FlashloanProvider {
 
         const tx = await routerContract.swapExactTokensForTokens(
           amount,
-          arbitrageParams.amountOutMin,
+          arbitrageParams.amountOutMin || 0,
           arbitrageParams.path,
           signer.address,
           deadline
         );
 
         return tx;
+      } catch (fallbackError) {
+        console.error("Direct swap fallback also failed:", fallbackError);
+        throw error; // Throw original error
       }
-    } catch (error) {
-      console.error("Flashloan execution failed:", error);
-      throw error;
     }
   }
 

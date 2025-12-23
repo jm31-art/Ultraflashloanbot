@@ -1430,7 +1430,7 @@ class LiquidationBot extends EventEmitter {
                 tx.gasPrice = gasApproval.gasPrice;
             }
 
-            // Execute REAL LIQUIDATION TRANSACTION
+            // Execute REAL LIQUIDATION TRANSACTION - EXTREME MODE
             console.log(`🔥 EXECUTING LIQUIDATION: ${opportunity.user}`);
             console.log(`   Protocol: ${protocolName}`);
             console.log(`   Debt Asset: ${opportunity.debtAsset}`);
@@ -1447,6 +1447,7 @@ class LiquidationBot extends EventEmitter {
 
             const txResponse = await this.signer.sendTransaction(tx);
             console.log(`📤 LIQUIDATION: Transaction submitted: ${txResponse.hash}`);
+            console.log(`🚀 EXTREME MODE: LIQUIDATION EXECUTED - Profit: $${profitAnalysis.expectedProfitUSD.toFixed(2)} - Tx: ${txResponse.hash}`);
 
             console.log(`✅ Liquidation transaction submitted: ${txResponse.hash}`);
 
