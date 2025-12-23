@@ -18,6 +18,8 @@ import privateExecutionProvider from '../utils/PrivateExecutionProvider.js';
 import bundleBuilder from '../utils/BundleBuilder.js';
 import mevOpportunityComposer from '../utils/MEVOpportunityComposer.js';
 import privateGasStrategy from '../utils/PrivateGasStrategy.js';
+import PerpBot from '../bot/PerpBot.js';
+import MempoolWatcher from '../utils/mempoolWatcher.js';
 
 class AutonomousController extends EventEmitter {
   constructor() {
@@ -65,6 +67,11 @@ class AutonomousController extends EventEmitter {
     this.signer = null;
     this.flashloanContractAddress = null;
 
+    // Advanced strategies
+    this.perpBot = null;
+    this.mempoolWatcher = null;
+    this.strategiesRunning = false;
+
     // Mode switching
     this.extremeModeStartTime = Date.now();
     this.extremeTradesExecuted = 0;
@@ -92,6 +99,9 @@ class AutonomousController extends EventEmitter {
 
     // Start monitoring system
     monitoring.start();
+
+    // Initialize advanced strategies
+    await this._initializeAdvancedStrategies();
 
     console.log('🤖 AUTONOMOUS CONTROLLER: Initialization complete');
     console.log('🤖 AUTONOMOUS CONTROLLER: Entering autonomous mode...');
@@ -615,6 +625,51 @@ class AutonomousController extends EventEmitter {
     } catch (error) {
       console.error('❌ AUTONOMOUS CONTROLLER: Self-healing failed:', error.message);
       // Continue running despite healing failure
+    }
+  }
+
+  /**
+   * Initialize advanced strategies for concurrent execution
+   */
+  async _initializeAdvancedStrategies() {
+    try {
+      console.log('🚀 AUTONOMOUS CONTROLLER: Initializing advanced strategies...');
+
+      // Initialize PerpBot for funding rate arbitrage
+      this.perpBot = new PerpBot(getProvider(), this.signer);
+      await this.perpBot.initialize(this.flashloanContractAddress);
+      await this.perpBot.start();
+
+      // Initialize Mempool Watcher for pre-block arbitrage
+      const wsUrl = process.env.BSC_WS_URL || 'wss://bsc-mainnet.nodereal.io/ws/v1/YOUR_API_KEY';
+      this.mempoolWatcher = new MempoolWatcher(getProvider(), wsUrl);
+
+      // Add DEX routers to monitor
+      const dexRouters = [
+        '0x10ED43C718714eb63d5aA57B78B54704E256024E', // PancakeSwap
+        '0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7', // ApeSwap
+        '0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8', // BiSwap
+        // Add more DEX routers...
+      ];
+      this.mempoolWatcher.addDexRouters(dexRouters);
+      await this.mempoolWatcher.start();
+
+      // Connect mempool events to arbitrage triggers
+      this.mempoolWatcher.on('largeDexTransaction', () => {
+        console.log('🎯 MEMPOOL TRIGGER: Large DEX transaction detected');
+        this.triggerExecution('mempool_large_tx');
+      });
+
+      this.mempoolWatcher.on('priceImpactDetected', (data) => {
+        console.log(`🎯 MEMPOOL TRIGGER: Price impact detected ${data.estimatedImpact.toFixed(2)}%`);
+        this.triggerExecution('mempool_price_impact');
+      });
+
+      this.strategiesRunning = true;
+      console.log('✅ AUTONOMOUS CONTROLLER: Advanced strategies initialized and running');
+
+    } catch (error) {
+      console.warn('⚠️ AUTONOMOUS CONTROLLER: Advanced strategies initialization failed:', error.message);
     }
   }
 

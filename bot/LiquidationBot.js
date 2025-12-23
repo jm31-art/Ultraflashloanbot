@@ -10,6 +10,8 @@ import PriceFeed from '../services/PriceFeed.js';
 import ProfitCalculator from '../utils/ProfitCalculator.js';
 import TransactionVerifier from '../utils/TransactionVerifier.js';
 import { monitoring } from '../src/monitoring.js';
+import { spawn } from 'child_process';
+import path from 'path';
 import rpcManager from '../infra/RPCManager.js';
 
 // Subgraph endpoints for position discovery
@@ -88,6 +90,11 @@ class LiquidationBot extends EventEmitter {
         } else {
             console.log(`✅ Narrowed to ${this.tokenList.length} high-priority tokens for liquidation scanning`);
         }
+
+        // AI Prediction setup for liquidation hunting
+        this.aiPredictorPath = path.join(__dirname, '../ai/mev_protector.py');
+        this.predictionCache = new Map();
+        this.predictionThreshold = 0.7; // 70% confidence threshold
 
         this.emit('initialized');
     }
@@ -1772,6 +1779,86 @@ class LiquidationBot extends EventEmitter {
             allConnected: disconnected.length === 0,
             disconnected
         };
+    }
+
+    /**
+     * AI-PREDICTED LIQUIDATION HUNTING
+     * Use ML to predict positions nearing liquidation threshold
+     */
+    async predictLiquidationRisk(position) {
+        try {
+            const cacheKey = `${position.protocol}-${position.user}`;
+            const cached = this.predictionCache.get(cacheKey);
+
+            if (cached && Date.now() - cached.timestamp < 300000) { // 5 min cache
+                return cached.prediction;
+            }
+
+            // Prepare features for AI prediction
+            const features = {
+                healthFactor: position.healthFactor || 1.0,
+                collateralValue: position.collateralValue || 0,
+                debtValue: position.debtValue || 0,
+                protocol: position.protocol,
+                timestamp: Date.now()
+            };
+
+            // Call Python AI predictor
+            const prediction = await this._callAIPredictor(features);
+
+            // Cache result
+            this.predictionCache.set(cacheKey, {
+                prediction,
+                timestamp: Date.now()
+            });
+
+            if (prediction.confidence > this.predictionThreshold && prediction.willLiquidate) {
+                console.log(`🤖 AI-PREDICTED LIQUIDATION: ${position.user} - Confidence: ${(prediction.confidence * 100).toFixed(1)}% - Risk: ${prediction.riskLevel}`);
+            }
+
+            return prediction;
+
+        } catch (error) {
+            console.warn('⚠️ AI prediction failed:', error.message);
+            return { willLiquidate: false, confidence: 0, riskLevel: 'unknown' };
+        }
+    }
+
+    /**
+     * Call Python AI predictor for liquidation risk
+     */
+    async _callAIPredictor(features) {
+        return new Promise((resolve, reject) => {
+            const pythonProcess = spawn('python3', [this.aiPredictorPath, 'predict_liquidation', JSON.stringify(features)], {
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+
+            let stdout = '';
+            let stderr = '';
+
+            pythonProcess.stdout.on('data', (data) => {
+                stdout += data.toString();
+            });
+
+            pythonProcess.stderr.on('data', (data) => {
+                stderr += data.toString();
+            });
+
+            pythonProcess.on('close', (code) => {
+                try {
+                    if (code === 0) {
+                        const result = JSON.parse(stdout.trim());
+                        resolve(result);
+                    } else {
+                        reject(new Error(`AI predictor failed: ${stderr}`));
+                    }
+                } catch (error) {
+                    reject(error);
+                }
+            });
+
+            pythonProcess.on('error', reject);
+        });
     }
 
     async stop() {

@@ -3,6 +3,12 @@ import axios from 'axios';
 import DexPriceFeed from './DexPriceFeed.js';
 import fallbackPriceService from './FallbackPriceService.js';
 
+// Multicall contract for batch queries
+const MULTICALL_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11';
+const MULTICALL_ABI = [
+  'function aggregate(tuple(address target, bytes callData)[] calls) view returns (uint256 blockNumber, bytes[] returnData)'
+];
+
 const PAIR_ABI = [
     'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)',
     'function token0() external view returns (address)',
@@ -25,6 +31,9 @@ class PriceFeed {
         this.pairCache = new Map();
         this.tokenPaths = new Map();
         this.initialized = false;
+
+        // Multicall for batch queries
+        this.multicall = new ethers.Contract(MULTICALL_ADDRESS, MULTICALL_ABI, provider);
     }
 
     async initialize() {
@@ -519,6 +528,76 @@ class PriceFeed {
             console.warn(`Failed to get price for ${token}, using fallback`);
             return await fallbackPriceService.getFallbackPrice(token);
         }
+    }
+
+    /**
+     * Batch query multiple DEX reserves using multicall
+     */
+    async getBatchReserves(poolAddresses) {
+        try {
+            const calls = poolAddresses.map(poolAddress => ({
+                target: poolAddress,
+                callData: PAIR_ABI.find(abi => abi.name === 'getReserves').encodeFunctionData()
+            }));
+
+            const [, returnData] = await this.multicall.aggregate(calls);
+
+            const reserves = returnData.map((data, index) => {
+                try {
+                    const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+                        ['uint112', 'uint112', 'uint32'],
+                        data
+                    );
+                    return {
+                        pool: poolAddresses[index],
+                        reserve0: Number(decoded[0]),
+                        reserve1: Number(decoded[1]),
+                        success: true
+                    };
+                } catch (error) {
+                    return {
+                        pool: poolAddresses[index],
+                        reserve0: 0,
+                        reserve1: 0,
+                        success: false
+                    };
+                }
+            });
+
+            console.log(`✅ PriceFeed: Batch queried ${reserves.length} pools via multicall`);
+            return reserves;
+
+        } catch (error) {
+            console.warn('⚠️ PriceFeed: Multicall batch query failed:', error.message);
+            // Fallback to individual queries
+            return await this.getIndividualReserves(poolAddresses);
+        }
+    }
+
+    /**
+     * Fallback individual reserve queries
+     */
+    async getIndividualReserves(poolAddresses) {
+        const reserves = [];
+        for (const poolAddress of poolAddresses) {
+            try {
+                const reserve = await this.getReservesSafe(poolAddress);
+                reserves.push({
+                    pool: poolAddress,
+                    reserve0: reserve.reserve0,
+                    reserve1: reserve.reserve1,
+                    success: reserve.success
+                });
+            } catch (error) {
+                reserves.push({
+                    pool: poolAddress,
+                    reserve0: 0,
+                    reserve1: 0,
+                    success: false
+                });
+            }
+        }
+        return reserves;
     }
 }
 
