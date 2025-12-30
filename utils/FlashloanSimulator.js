@@ -21,17 +21,18 @@ const IERC20_ABI = [
 ];
 
 class FlashloanSimulator {
-    constructor(provider) {
+    constructor(provider, signer = null) {
         this.provider = provider;
+        this.signer = signer;
         this.GAS_ESTIMATE = 850000; // Higher for BSC complex routing
         this.TEST_MODE = process.env.NODE_ENV === 'test';
         this.priceService = new PriceService();
-        
+
         // CoinAPI service removed
-        
+
         this.BNB_PRICE = 220; // Default BNB price, will be updated
         this.ETH_PRICE = 1650; // Default ETH price, will be updated
-        this.flashProvider = new FlashProvider(provider);
+        this.flashProvider = new FlashProvider(provider, signer);
         this.dexLiquidity = new DexLiquidityChecker(provider);
         this.initializePrices();
     }

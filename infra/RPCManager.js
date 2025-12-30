@@ -22,9 +22,9 @@ class RPCManager {
         this._readProvider = null;     // For reads/queries (can use public)
         this._backupProvider = null;   // For fallbacks
 
-        // Configuration
-        this._rpcUrl = null;
-        this._isPrivate = false;
+        // Configuration - now array of RPCs with fallback chain
+        this._rpcConfigs = []; // [{url, isPrivate, name}]
+        this._currentRpcIndex = 0;
         this._connectivityValidated = false;
 
         // Validation state
@@ -62,6 +62,11 @@ class RPCManager {
         console.log('✅ RPC Manager initialized');
         console.log(`🔗 RPC URL: ${this._maskApiKey(this._rpcUrl)}`);
         console.log(`🔒 Private RPC: ${this._isPrivate ? 'YES (execution enabled)' : 'NO (scan-only mode)'}`);
+        if (this._isPrivate) {
+            console.log('🚀 EXECUTION MODE ENABLED - Ready for real trades');
+        } else {
+            console.log('👁️ SCAN-ONLY MODE - No execution capabilities');
+        }
 
         this._initialized = true;
     }
@@ -120,28 +125,37 @@ class RPCManager {
      * @private
      */
     _loadEnvironmentConfig() {
-        // PRIMARY: Private RPC (NodeReal)
-        const privateRpc = process.env.BSC_RPC_URL || process.env.RPC_URL;
+        this._rpcConfigs = [];
 
-        if (privateRpc && this._isValidRpcUrl(privateRpc)) {
-            this._rpcUrl = privateRpc;
-            this._isPrivate = this._isPrivateRpc(privateRpc);
-            return;
+        // PRIMARY: NodeReal private RPC
+        const nodeRealRpc = process.env.NODEREAL_RPC || process.env.RPC_URL;
+        if (nodeRealRpc && this._isValidRpcUrl(nodeRealRpc) && nodeRealRpc.includes('nodereal.io')) {
+            this._rpcConfigs.push({ url: nodeRealRpc, name: 'NodeReal Private', isPrivate: true });
         }
 
-        // SECONDARY: Backup private RPC (if configured)
-        const backupRpc = process.env.BSC_RPC_BACKUP_URL;
-        if (backupRpc && this._isValidRpcUrl(backupRpc)) {
-            this._rpcUrl = backupRpc;
-            this._isPrivate = this._isPrivateRpc(backupRpc);
-            console.log('⚠️ Using backup private RPC');
-            return;
+        // FALLBACKS: Add public RPCs
+        this._rpcConfigs.push(
+            { url: 'https://rpc.ankr.com/bsc', name: 'Ankr BSC', isPrivate: true },
+            { url: 'https://bsc-rpc.publicnode.com', name: 'PublicNode BSC', isPrivate: true },
+            { url: 'https://bsc-dataseed1.defibit.io', name: 'DefiBit BSC', isPrivate: true }
+        );
+
+        // If no NodeReal, check other private RPCs
+        if (this._rpcConfigs.length === 3) {
+            const bscRpc = process.env.BSC_RPC_URL;
+            if (bscRpc && this._isValidRpcUrl(bscRpc) && this._isPrivateRpc(bscRpc)) {
+                this._rpcConfigs.unshift({ url: bscRpc, name: 'BSC Private', isPrivate: true });
+            } else {
+                const genericRpc = process.env.RPC_URL;
+                if (genericRpc && this._isValidRpcUrl(genericRpc) && this._isPrivateRpc(genericRpc)) {
+                    this._rpcConfigs.unshift({ url: genericRpc, name: 'Generic Private', isPrivate: true });
+                }
+            }
         }
 
-        // TERTIARY: Public RPC (scan-only mode)
-        this._rpcUrl = 'https://bsc-dataseed.binance.org/';
-        this._isPrivate = false;
-        console.log('⚠️ No private RPC available - entering scan-only mode');
+        this._currentRpcIndex = 0;
+        this._rpcUrl = this._rpcConfigs[0].url;
+        this._isPrivate = this._rpcConfigs[0].isPrivate;
     }
 
     /**
@@ -198,6 +212,33 @@ class RPCManager {
             ...providerConfig,
             batchMaxCount: 1, // Minimal for backup
         });
+    }
+
+    /**
+     * Switch to next RPC in the chain
+     * @private
+     */
+    _switchRpc() {
+        this._currentRpcIndex = (this._currentRpcIndex + 1) % this._rpcConfigs.length;
+        const newRpc = this._rpcConfigs[this._currentRpcIndex];
+        this._rpcUrl = newRpc.url;
+        this._isPrivate = newRpc.isPrivate;
+        console.log(`RPC QUOTA HIT - Switching to fallback: ${newRpc.name}`);
+        this._createProviders();
+    }
+
+    /**
+     * Check if error is quota-related
+     * @private
+     */
+    _isQuotaError(error) {
+        if (!error || !error.message) return false;
+        const msg = error.message.toLowerCase();
+        return msg.includes('429') ||
+               msg.includes('-32005') ||
+               msg.includes('quota') ||
+               msg.includes('rate limit') ||
+               msg.includes('server_error');
     }
 
     /**
@@ -305,6 +346,13 @@ class RPCManager {
             } catch (error) {
                 lastError = error;
                 console.warn(`⚠️ ${operation} failed (attempt ${attempt}/${maxRetries}):`, error.message);
+
+                // Check for quota errors and switch RPC
+                if (this._isQuotaError(error)) {
+                    this._switchRpc();
+                    // Continue retrying with new RPC, no delay for quota switch
+                    continue;
+                }
 
                 if (attempt < maxRetries) {
                     // Exponential backoff: 1s, 2s, 4s

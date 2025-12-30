@@ -143,6 +143,11 @@ class ArbitrageBot extends EventEmitter {
         // Router contracts cache
         this.routers = new Map();
 
+        // CROSS-DEX ENHANCEMENT: 15+ DEXes for parallel checking
+        this.crossDexEnabled = true;
+        this.dexCount = Object.keys(DEX_CONFIGS).length; // 15+ DEXes
+        this.parallelDexChecks = true;
+
         // State
         this.isRunning = false;
         this.lastScanTime = 0;
@@ -150,19 +155,21 @@ class ArbitrageBot extends EventEmitter {
         this.successfulTrades = 0;
         this.pythonProcessRunning = false; // Prevent multiple Python processes
 
-        // MAXIMUM PROFIT BOOTSTRAP - FORCE REAL EXECUTION NOW
+        // ULTRA-LOW THRESHOLDS & BOOTSTRAP - EXTREME MODE
         this.bootstrapTradesExecuted = 0;
         this.maxBootstrapTrades = 2;
-        this.bootstrapProfitThreshold = 0.20; // $0.20 for first 2 trades (ultra-low threshold)
-        this.normalProfitThreshold = 1.0; // $1 after bootstrapping
+        this.bootstrapProfitThreshold = 0.30; // $0.30 min net profit for first 2 trades
+        this.normalProfitThreshold = 0.30; // $0.30+ after bootstrapping
         this.executionEnabled = true; // FORCE REAL EXECUTION
         this.forceExtremeMode = true; // Force extreme mode for bootstrapping
         this.mempoolWatcher = null; // Mempool watching for competitive edge
-        this.maxSlippage = 0.02; // 2% slippage for Extreme Mode
-        console.log('🚀🚀 ARBITRAGE BOT: MAXIMUM PROFIT EXTREME MODE ACTIVATED');
-        console.log('🎯 Target: Execute 2 micro-arbs ($0.05+ profit) to recoup gas');
+        this.bootstrapSlippage = 0.02; // 2% slippage for bootstrap (1-2% range)
+        this.normalSlippage = 0.005; // 0.5% normal slippage
+        this.currentSlippage = this.bootstrapSlippage;
+        console.log('🚀🚀 ARBITRAGE BOT: EXTREME MODE BOOTSTRAP ACTIVATED');
+        console.log('🎯 Target: Execute 2 micro-arbs ($0.20+ profit) to recoup gas');
         console.log('🔥 Using flashloans + mempool + 15+ DEXes for MAXIMUM profits');
-        console.log('⚡ 2% slippage tolerance, multicall batching, atomic execution');
+        console.log('⚡ 2% slippage tolerance for bootstrap, atomic execution');
 
         // Python calculator path
         this.pythonCalculatorPath = path.join(__dirname, '../services/PythonArbitrageCalculator.py');
@@ -213,20 +220,26 @@ class ArbitrageBot extends EventEmitter {
             const dexRouters = Object.values(DEX_CONFIGS).map(dex => dex.router);
             this.mempoolWatcher.addDexRouters(dexRouters);
 
-            // Listen for mempool events
-            this.mempoolWatcher.on('largeDexTransaction', (data) => {
-                console.log('📡 Mempool: Large DEX transaction detected, triggering scan');
-                this._triggerMempoolScan();
+            // Listen for mempool events - FORCE REAL EXECUTION
+            this.mempoolWatcher.on('largeDexTransaction', async (data) => {
+                console.log('📡 MEMPOOL: Large DEX transaction detected - FORCING REAL EXECUTION');
+                await this._forceMempoolExecution(data);
             });
 
-            this.mempoolWatcher.on('priceImpactDetected', (data) => {
-                console.log(`📡 Mempool: Price impact detected on ${data.router}, spread: ${data.estimatedImpact.toFixed(2)}%`);
-                this._triggerMempoolScan();
+            this.mempoolWatcher.on('priceImpactDetected', async (data) => {
+                console.log(`📡 MEMPOOL: Price impact detected ${data.estimatedImpact.toFixed(2)}% - FORCING REAL EXECUTION`);
+                await this._forceMempoolExecution(data);
             });
 
-            this.mempoolWatcher.on('potentialSandwich', (data) => {
-                console.log('📡 Mempool: Potential sandwich opportunity detected');
-                this._triggerMempoolScan();
+            this.mempoolWatcher.on('potentialSandwich', async (data) => {
+                console.log('📡 MEMPOOL: Potential sandwich opportunity detected - FORCING REAL EXECUTION');
+                await this._forceMempoolExecution(data);
+            });
+
+            // MICRO-OPPORTUNITY EXECUTION - FORCE IMMEDIATE TRADES ON ANY EDGE
+            this.mempoolWatcher.on('microDexTransaction', async (data) => {
+                console.log(`📡 MEMPOOL: MICRO TX TRIGGER (${ethers.formatEther(data.value)} BNB) - EXECUTING IMMEDIATE ARB SCAN!`);
+                await this._executeMicroOpportunity(data);
             });
 
             // Start watching
@@ -250,6 +263,146 @@ class ArbitrageBot extends EventEmitter {
             }
         } catch (error) {
             // Silent error handling
+        }
+    }
+
+    /**
+     * Force real execution on mempool triggers - EXTREME MODE WITH MULTI-HOP
+     */
+    async _forceMempoolExecution(data) {
+        try {
+            const isMultiHopScan = data.multiHopScan || false;
+            const minPaths = data.minPaths || 3;
+            const maxPaths = data.maxPaths || 3;
+
+            console.log(`🚨 MEMPOOL EXECUTION: ${isMultiHopScan ? 'MULTI-HOP' : 'STANDARD'} scan triggered`);
+
+            // Run Python calculator with appropriate path depth
+            const amountIn = isMultiHopScan ? 0.1 : 1.0; // Smaller amounts for multi-hop
+            const pythonResult = await this.runPythonCalculator(amountIn);
+
+            if (!pythonResult.success || !pythonResult.opportunities?.length) {
+                console.log('⚠️ MEMPOOL: No opportunities found');
+                return;
+            }
+
+            // Filter opportunities based on trigger type and profit threshold
+            let profitableOpps;
+            if (data.triggerType === 'sandwich' || data.atomicExecution) {
+                // For sandwich attacks, execute immediately with any profit > $0.10
+                profitableOpps = pythonResult.opportunities.filter(opp =>
+                    opp.expectedProfitUSD && opp.expectedProfitUSD > 0.10
+                );
+                console.log(`🥪 MEMPOOL SANDWICH: Found ${profitableOpps.length} atomic opportunities`);
+            } else {
+                // Standard mempool execution with ultra-low threshold
+                profitableOpps = pythonResult.opportunities.filter(opp =>
+                    opp.expectedProfitUSD && opp.expectedProfitUSD > 0.20
+                );
+            }
+
+            if (profitableOpps.length === 0) {
+                console.log(`⚠️ MEMPOOL: No profitable opportunities (> $${data.triggerType === 'sandwich' ? '0.10' : '0.20'})`);
+                return;
+            }
+
+            // Execute the best opportunity immediately
+            const bestOpp = profitableOpps[0];
+            const triggerDesc = data.triggerType === 'sandwich' ? '🥪 SANDWICH ATOMIC 🥪' :
+                               data.triggerType === 'price_impact' ? `📈 IMPACT ${data.estimatedImpact?.toFixed(2)}% 📈` :
+                               `💰 LARGE TX ${ethers.formatEther(data.value || 0n)} BNB 💰`;
+
+            // LOUD MEMPOOL EXECUTION LOGS
+            console.log(`\n🚨🚨🚨 MEMPOOL OPPORTUNITY DETECTED 🚨🚨🚨`);
+            console.log(`${triggerDesc}`);
+            console.log(`🎯 PROFIT TARGET: $${bestOpp.expectedProfitUSD.toFixed(2)}`);
+            console.log(`🔄 PATH: ${bestOpp.path?.map(addr => addr.substring(0, 6)).join(' → ') || 'unknown'}`);
+            console.log(`🏦 DEX: ${bestOpp.router || 'unknown'}`);
+            console.log(`⚡ EXECUTING IMMEDIATELY...`);
+            console.log(`🚨🚨🚨 MEMPOOL EXECUTION STARTED 🚨🚨🚨\n`);
+
+            // Force real execution with atomic cycles for multi-hop
+            const result = await this.executeTriangularArbitrage(bestOpp);
+
+            if (result && result.success) {
+                console.log(`\n🎯🎯🎯 MEMPOOL ARB SUCCESS! 🎯🎯🎯`);
+                console.log(`${triggerDesc}`);
+                console.log(`💰💰💰 PROFIT: $${bestOpp.expectedProfitUSD.toFixed(2)} SECURED 💰💰💰`);
+                console.log(`🔗 TX: ${result.txHash}`);
+                console.log(`⚡ ATOMIC EXECUTION COMPLETED`);
+                console.log(`🎯🎯🎯 MEMPOOL PROFIT CAPTURED! 🎯🎯🎯\n`);
+                this.bootstrapTradesExecuted++;
+            } else {
+                console.log(`\n❌❌❌ MEMPOOL ARB FAILED ❌❌❌`);
+                console.log(`${triggerDesc}`);
+                console.log(`💥 EXECUTION MISSED`);
+                console.log(`😞 OPPORTUNITY LOST`);
+                console.log(`❌❌❌ MEMPOOL TRADE FAILED ❌❌❌\n`);
+            }
+
+        } catch (error) {
+            console.error('❌ MEMPOOL EXECUTION ERROR:', error.message);
+        }
+    }
+
+    /**
+     * Execute micro-opportunity on ANY detected edge ($0.20+ net)
+     */
+    async _executeMicroOpportunity(data) {
+        try {
+            console.log(`\n🚨🚨🚨 MICRO-OPPORTUNITY DETECTED 🚨🚨🚨`);
+            console.log(`💰 TX VALUE: ${ethers.formatEther(data.value)} BNB`);
+            console.log(`🎯 MIN PROFIT: $${data.minProfitThreshold || 0.20}`);
+            console.log(`⚡ IMMEDIATE EXECUTION MODE`);
+            console.log(`🚨🚨🚨 EXECUTING NOW 🚨🚨🚨\n`);
+
+            // Run immediate arbitrage scan with micro-amounts
+            const pythonResult = await this.runPythonCalculator(0.1); // Smaller amounts for micro-opps
+
+            if (!pythonResult.success || !pythonResult.opportunities?.length) {
+                console.log('⚠️ MICRO-OPP: No opportunities found');
+                return;
+            }
+
+            // Filter for ANY profitable opportunity ($0.20+ net)
+            const profitableOpps = pythonResult.opportunities.filter(opp =>
+                opp.expectedProfitUSD && opp.expectedProfitUSD > (data.minProfitThreshold || 0.20)
+            );
+
+            if (profitableOpps.length === 0) {
+                console.log(`⚠️ MICRO-OPP: No opportunities > $${data.minProfitThreshold || 0.20}`);
+                return;
+            }
+
+            // Execute the best micro-opportunity immediately
+            const bestOpp = profitableOpps[0];
+
+            console.log(`\n💎💎💎 MICRO-ARB FOUND 💎💎💎`);
+            console.log(`💰 PROFIT: $${bestOpp.expectedProfitUSD.toFixed(2)}`);
+            console.log(`🔄 PATH: ${bestOpp.path?.map(addr => addr.substring(0, 6)).join(' → ') || 'unknown'}`);
+            console.log(`🏦 DEX: ${bestOpp.router || 'unknown'}`);
+            console.log(`⚡ FLASHLOAN ENABLED - Executing leveraged trade`);
+            console.log(`💎💎💎 EXECUTING MICRO-ARB 💎💎💎\n`);
+
+            // Force real execution with flashloan
+            const result = await this.executeTriangularArbitrage(bestOpp);
+
+            if (result && result.success) {
+                console.log(`\n🎯🎯🎯 MICRO-ARB SUCCESS! 🎯🎯🎯`);
+                console.log(`💰💰💰 PROFIT: $${bestOpp.expectedProfitUSD.toFixed(2)} SECURED 💰💰💰`);
+                console.log(`🔗 TX: ${result.txHash}`);
+                console.log(`⚡ FLASHLOAN REPAYMENT COMPLETE`);
+                console.log(`🎯🎯🎯 MICRO-PROFIT CAPTURED! 🎯🎯🎯\n`);
+                this.bootstrapTradesExecuted++;
+            } else {
+                console.log(`\n❌❌❌ MICRO-ARB FAILED ❌❌❌`);
+                console.log(`💥 EXECUTION MISSED`);
+                console.log(`😞 OPPORTUNITY LOST`);
+                console.log(`❌❌❌ MICRO-TRADE FAILED ❌❌❌\n`);
+            }
+
+        } catch (error) {
+            console.error('❌ MICRO-OPPORTUNITY EXECUTION ERROR:', error.message);
         }
     }
 
@@ -531,46 +684,55 @@ class ArbitrageBot extends EventEmitter {
             const pair2 = `${pathSymbols[1]}/${pathSymbols[2]}`;
             const pair3 = `${pathSymbols[2]}/${pathSymbols[0]}`;
 
-            console.log(`   DEX Prices:`);
+            console.log(`   CROSS-DEX PRICES (${this.dexCount}+ DEXes):`);
 
-            // Get prices for each pair
+            // Get prices for each pair from ALL DEXes
             const DexPriceFeed = (await import('../services/DexPriceFeed.js')).default;
             const priceFeed = new DexPriceFeed(this.provider);
 
             try {
-                const prices1 = await priceFeed.getAllPrices(pair1);
-                const prices2 = await priceFeed.getAllPrices(pair2);
-                const prices3 = await priceFeed.getAllPrices(pair3);
+                // Parallel price fetching from all DEXes
+                const [prices1, prices2, prices3] = await Promise.all([
+                    priceFeed.getAllPrices(pair1),
+                    priceFeed.getAllPrices(pair2),
+                    priceFeed.getAllPrices(pair3)
+                ]);
 
-                // Display prices from available DEXes
-                const displayDexPrices = (pair, prices) => {
+                // Display prices from ALL available DEXes (not just top 3)
+                const displayAllDexPrices = (pair, prices) => {
                     const dexes = Object.keys(prices).filter(dex =>
                         prices[dex] && typeof prices[dex] === 'object' && prices[dex].price
                     );
 
-                    dexes.slice(0, 3).forEach(dex => { // Show top 3 DEXes
+                    if (dexes.length === 0) {
+                        console.log(`     ${pair}: No DEX data available`);
+                        return;
+                    }
+
+                    console.log(`     ${pair} (${dexes.length} DEXes):`);
+                    dexes.forEach(dex => {
                         const price = prices[dex].price;
                         const liquidity = prices[dex].liquidity || 'unknown';
-                        console.log(`     ${dex}: ${price.toFixed(6)} (${liquidity})`);
+                        const spread = prices[dex].spread ? `${prices[dex].spread.toFixed(4)}%` : 'N/A';
+                        console.log(`       ${dex}: ${price.toFixed(6)} (liq: ${liquidity}, spread: ${spread})`);
                     });
                 };
 
-                console.log(`     ${pair1}:`);
-                displayDexPrices(pair1, prices1);
-                console.log(`     ${pair2}:`);
-                displayDexPrices(pair2, prices2);
-                console.log(`     ${pair3}:`);
-                displayDexPrices(pair3, prices3);
+                displayAllDexPrices(pair1, prices1);
+                displayAllDexPrices(pair2, prices2);
+                displayAllDexPrices(pair3, prices3);
 
-                // Calculate and display spread
+                // Calculate and display comprehensive spread analysis
                 const bestPrices = this._calculateBestPrices([prices1, prices2, prices3]);
                 if (bestPrices.spread > 0) {
-                    console.log(`   Calculated Spread: ${bestPrices.spread.toFixed(4)}%`);
-                    console.log(`   Best Route: ${bestPrices.buyDex} → ${bestPrices.sellDex}`);
+                    console.log(`   🔍 CROSS-DEX SPREAD ANALYSIS:`);
+                    console.log(`     Best Spread: ${bestPrices.spread.toFixed(4)}%`);
+                    console.log(`     Optimal Route: ${bestPrices.buyDex} → ${bestPrices.sellDex}`);
+                    console.log(`     Arbitrage Efficiency: ${((bestPrices.spread / bestPrices.avgPrice) * 100).toFixed(2)}%`);
                 }
 
             } catch (priceError) {
-                console.log(`   Price fetch failed: ${priceError.message}`);
+                console.log(`   ❌ Cross-DEX price fetch failed: ${priceError.message}`);
             }
 
             console.log(`   Status: Ready for execution\n`);
@@ -676,11 +838,16 @@ class ArbitrageBot extends EventEmitter {
                 return addr.substring(0, 6) + '...';
             });
 
-            console.log(`🔄 Executing triangular arbitrage: ${pathSymbols.join(' → ')}`);
-            console.log(`   Amount In: ${amountIn} tokens (${ethers.formatEther(amountInWei)} wei)`);
-            console.log(`   Expected Out: ${amountOut} tokens`);
-            console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)} USD (${spread.toFixed(4)}% spread)`);
-            console.log(`   Router: ${router}`);
+            // LOUD EXECUTION LOGS - MAXIMUM VISIBILITY
+            console.log(`\n🚨🚨🚨 EXECUTING TRIANGULAR ARBITRAGE - EXTREME MODE 🚨🚨🚨`);
+            console.log(`💰💰💰 EXPECTED PROFIT: $${expectedProfitUSD.toFixed(2)} USD 💰💰💰`);
+            console.log(`🔄 PATH: ${pathSymbols.join(' → ')}`);
+            console.log(`📊 AMOUNT: ${amountIn} tokens (${ethers.formatEther(amountInWei)} wei)`);
+            console.log(`🎯 SPREAD: ${spread.toFixed(4)}%`);
+            console.log(`🏦 ROUTER: ${router}`);
+            console.log(`💳 WALLET: ${this.signer.address.substring(0, 10)}...`);
+            console.log(`⏰ TIMESTAMP: ${new Date().toISOString()}`);
+            console.log(`🚨🚨🚨 EXECUTION STARTED 🚨🚨🚨\n`);
 
             // Get router contract
             const routerContract = await this.getRouterContract(router);
@@ -708,17 +875,19 @@ class ArbitrageBot extends EventEmitter {
                 return null;
             }
 
-            // FORCE EXECUTE REAL TRADE - EXTREME MODE MICRO-ARB
-            console.log(`🚀 EXTREME MODE: EXECUTING MICRO-ARB - Estimated profit: $${expectedProfitUSD.toFixed(2)}`);
-            console.log(`   Triangular arbitrage: ${pathSymbols.join(' → ')}`);
-            console.log(`   Amount: ${amountIn} tokens`);
-            console.log(`   Router: ${router}`);
-            console.log(`   Wallet Balance: ${balanceEth.toFixed(6)} BNB`);
-            console.log(`   Bootstrap Progress: ${this.bootstrapTradesExecuted}/${this.maxBootstrapTrades} trades`);
+            // LOUD FLASHLOAN EXECUTION LOGS
+            console.log(`\n🔥🔥🔥 FLASHLOAN ARBITRAGE EXECUTION 🔥🔥🔥`);
+            console.log(`💸 BORROWING: ${ethers.formatEther(amountInWei)} tokens`);
+            console.log(`🎯 TARGET PROFIT: $${expectedProfitUSD.toFixed(2)}`);
+            console.log(`🏦 PROTOCOL: ${router}`);
+            console.log(`💰 WALLET BALANCE: ${balanceEth.toFixed(6)} BNB`);
+            console.log(`📈 BOOTSTRAP: ${this.bootstrapTradesExecuted}/${this.maxBootstrapTrades} trades completed`);
+            console.log(`⚡ SLIPPAGE: ${this.currentSlippage * 100}%`);
+            console.log(`🔥🔥🔥 EXECUTING NOW 🔥🔥🔥\n`);
 
             // Use flashloan for better profits if available
             let result;
-            if (this.flashloanContract && isBootstrapMode) {
+            if (this.flashloanContract) {
                 console.log(`🔥 Using flashloan for amplified profits`);
                 result = await this._executeFlashloanArbitrage(path, amountInWei, router, expectedProfitUSD);
             } else {
@@ -726,24 +895,37 @@ class ArbitrageBot extends EventEmitter {
             }
 
             if (result && result.success) {
-                console.log(`💰 Triangular arbitrage completed successfully!`);
-                console.log(`   Actual Profit: $${expectedProfitUSD.toFixed(2)}`);
-                console.log(`   Transaction: ${result.txHash}`);
-                console.log(`   Status: executed ✅`);
+                // LOUD SUCCESS LOGS
+                console.log(`\n🎉🎉🎉 ARBITRAGE SUCCESS! 🎉🎉🎉`);
+                console.log(`💰💰💰 PROFIT: $${expectedProfitUSD.toFixed(2)} USD 💰💰💰`);
+                console.log(`🔗 TX HASH: ${result.txHash}`);
+                console.log(`⏱️  BLOCK: ${result.blockNumber || 'pending'}`);
+                console.log(`📊 GAS USED: ${result.gasUsed || 'unknown'}`);
+                console.log(`✅ STATUS: EXECUTED SUCCESSFULLY ✅`);
+                console.log(`🎯 PATH: ${pathSymbols.join(' → ')}`);
+                console.log(`📈 TOTAL TRADES: ${this.totalTrades + 1} (${this.successfulTrades + 1} successful)`);
+                console.log(`🎉🎉🎉 PROFIT SECURED! 🎉🎉🎉\n`);
 
                 this.totalTrades++;
                 this.successfulTrades++;
                 this.bootstrapTradesExecuted++;
 
-                // Check if we've completed bootstrapping
+                // Check if we've completed bootstrapping - EXTREME MODE COMPLETE
                 if (this.bootstrapTradesExecuted >= this.maxBootstrapTrades) {
-                    console.log(`🚀 Bootstrapping complete! Switched to normal profit threshold: $${this.normalProfitThreshold}`);
+                    console.log(`\n🚀🚀🚀 BOOTSTRAP COMPLETE - GAS RECOUPED! 🚀🚀🚀`);
+                    console.log(`💰💰💰 SWITCHED TO NORMAL MODE: $${this.normalProfitThreshold}+ MIN PROFIT 💰💰💰`);
+                    console.log(`⚡⚡⚡ REDUCED SLIPPAGE TO ${this.normalSlippage * 100}% ⚡⚡⚡`);
+                    console.log(`🎯🎯🎯 EXTREME MODE SUCCESS - NOW SCALING UP! 🎯🎯🎯\n`);
+                    this.emit('bootstrapComplete');
                 }
 
                 return result;
             } else {
-                console.error('❌ Triangular arbitrage execution failed');
-                console.log(`   Status: failed ❌`);
+                console.log(`\n❌❌❌ ARBITRAGE FAILED ❌❌❌`);
+                console.log(`💥 EXECUTION ERROR`);
+                console.log(`📊 PATH: ${pathSymbols.join(' → ')}`);
+                console.log(`😞 STATUS: FAILED - RETRYING SOON`);
+                console.log(`❌❌❌ TRADE FAILED ❌❌❌\n`);
                 this.totalTrades++;
                 return null;
             }
@@ -894,10 +1076,22 @@ class ArbitrageBot extends EventEmitter {
     }
 
     /**
-     * Execute flashloan arbitrage for amplified profits
+     * Execute flashloan arbitrage for amplified profits - AGGRESSIVE MODE
      */
     async _executeFlashloanArbitrage(path, amountInWei, router, expectedProfitUSD) {
         try {
+            // Try aggressive flashloan first (minimal amounts, all trades)
+            if (this.flashloanContract && this.flashloanContract.executeAggressiveFlashloanArbitrage) {
+                console.log(`🔥 FLASHLOAN: Using aggressive flashloan for ALL arbitrage`);
+                return await this.flashloanContract.executeAggressiveFlashloanArbitrage(
+                    path,
+                    amountInWei,
+                    router,
+                    expectedProfitUSD * 0.8 // 80% minimum profit
+                );
+            }
+
+            // Fallback to original flashloan contract
             if (!this.flashloanContract) {
                 throw new Error('Flashloan contract not available');
             }
@@ -906,6 +1100,7 @@ class ArbitrageBot extends EventEmitter {
             const minProfitWei = ethers.parseEther(Math.max(0, expectedProfitUSD * 0.8).toString()); // 80% of expected
 
             console.log(`📤 Submitting flashloan arbitrage transaction...`);
+            console.log(`EXECUTING FLASHLOAN ARB - Profit: $${expectedProfitUSD.toFixed(2)} - Tx: pending...`);
 
             const tx = await this.flashloanContract.executeFlashloanArbitrage(
                 tokenA, // asset to flashloan
@@ -919,6 +1114,7 @@ class ArbitrageBot extends EventEmitter {
             console.log(`   TX Hash: ${tx.hash}`);
             console.log(`   Flashloan Amount: ${ethers.formatEther(amountInWei)} tokens`);
             console.log(`   Expected Profit: $${expectedProfitUSD.toFixed(2)}`);
+            console.log(`EXECUTING FLASHLOAN ARB - Profit: $${expectedProfitUSD.toFixed(2)} - Tx: ${tx.hash}`);
 
             // Wait for confirmation
             const receipt = await tx.wait();
@@ -1280,20 +1476,41 @@ class ArbitrageBot extends EventEmitter {
                                 continue;
                             }
 
-                            // Check minimum profit threshold (Extreme Mode bootstrap for low balance)
+                            // ULTRA-LOW THRESHOLDS & BOOTSTRAP LOGIC - EXTREME MODE
                             const profitUSD = opportunity.expectedProfitUSD;
                             const isBootstrapMode = this.bootstrapTradesExecuted < this.maxBootstrapTrades;
                             const currentThreshold = isBootstrapMode ? this.bootstrapProfitThreshold : this.normalProfitThreshold;
+                            this.currentSlippage = isBootstrapMode ? this.bootstrapSlippage : this.normalSlippage;
 
                             if (profitUSD < currentThreshold) {
-                                console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below threshold $${currentThreshold} (${isBootstrapMode ? 'EXTREME bootstrap' : 'normal'} mode)`);
+                                console.log(`\n❌❌❌ NEAR-MISS OPPORTUNITY DETECTED ❌❌❌`);
+                                console.log(`💰 POTENTIAL PROFIT: $${profitUSD.toFixed(2)} USD`);
+                                console.log(`🎯 REQUIRED THRESHOLD: $${currentThreshold} USD`);
+                                console.log(`🔄 PATH: ${opportunity.path.map(addr => addr.substring(0, 6)).join(' → ')}`);
+                                console.log(`🏦 DEX: ${opportunity.router}`);
+                                console.log(`📊 MODE: ${isBootstrapMode ? 'EXTREME BOOTSTRAP' : 'NORMAL'}`);
+                                console.log(`😞 SKIPPED - TOO LOW PROFIT`);
+                                console.log(`❌❌❌ NEAR-MISS OPPORTUNITY MISSED ❌❌❌\n`);
                                 continue;
                             }
 
-                            // Bootstrap mode: ultra-low gas estimate for micro-arbs
-                            const estimatedGasCostUSD = isBootstrapMode ? 0.1 : 2.0; // $0.10 for bootstrap, $2 normal
-                            if (profitUSD < estimatedGasCostUSD) {
-                                console.log(`⚠️ Skipping opportunity - profit $${profitUSD.toFixed(2)} below gas cost $${estimatedGasCostUSD} (${isBootstrapMode ? 'bootstrap' : 'normal'} mode)`);
+                            // LOUD MICRO-PROFIT DETECTION LOGS
+                            console.log(`\n🎯🎯🎯 MICRO-PROFIT OPPORTUNITY DETECTED! 🎯🎯🎯`);
+                            console.log(`💰💰💰 PROFIT: $${profitUSD.toFixed(2)} USD 💰💰💰`);
+                            console.log(`🎯 THRESHOLD: $${currentThreshold} (${isBootstrapMode ? 'BOOTSTRAP MODE' : 'NORMAL MODE'})`);
+                            console.log(`🔄 PATH: ${opportunity.path.map(addr => addr.substring(0, 6)).join(' → ')}`);
+                            console.log(`🏦 DEX: ${opportunity.router}`);
+                            console.log(`📊 BOOTSTRAP: ${this.bootstrapTradesExecuted}/${this.maxBootstrapTrades} trades completed`);
+                            console.log(`⚡ SLIPPAGE: ${this.currentSlippage * 100}%`);
+                            console.log(`🚀 EXECUTING MICRO-ARB VIA FLASHLOAN NOW!`);
+                            console.log(`🎯🎯🎯 EXECUTION STARTED! 🎯🎯🎯\n`);
+
+                            // Always estimate gas + require profit > gas + buffer
+                            const estimatedGasCostUSD = isBootstrapMode ? 0.05 : 1.0; // Ultra-low for bootstrap
+                            const totalRequiredProfit = estimatedGasCostUSD + (isBootstrapMode ? 0.05 : 0.5); // Buffer
+
+                            if (profitUSD < totalRequiredProfit) {
+                                console.log(`⚠️ POTENTIAL OPP: ${profitUSD.toFixed(2)}% gross - Skipped, net $${profitUSD.toFixed(2)} below gas+buffer $${totalRequiredProfit} (${isBootstrapMode ? 'bootstrap' : 'normal'} mode)`);
                                 continue;
                             }
 

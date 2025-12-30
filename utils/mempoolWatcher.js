@@ -2,211 +2,245 @@ import { ethers } from 'ethers';
 import { EventEmitter } from 'events';
 
 class MempoolWatcher extends EventEmitter {
-    constructor(provider, wsUrl) {
-        super();
-        this.provider = provider;
-        // Try multiple WebSocket URLs for better connectivity
-        this.wsUrls = [
-            wsUrl || process.env.BSC_WS_URL,
-            'wss://bsc-mainnet.nodereal.io/ws/v1/' + (process.env.NODEREAL_API_KEY || 'YOUR_API_KEY'),
-            'wss://open-platform.nodereal.io/ws/' + (process.env.NODEREAL_API_KEY || 'YOUR_API_KEY') + '/bsc/',
-            'wss://bsc-ws-node.nariox.org:443', // Public fallback
-            'wss://bsc.publicnode.com' // Another public fallback
-        ].filter(url => url && !url.includes('YOUR_API_KEY')); // Filter out invalid URLs
+  constructor(dexRouters, config = {}) {
+    super();
+    this.dexRouters = new Set(dexRouters.map(r => r.toLowerCase()));
+    this.largeTxThreshold = ethers.parseEther(config.largeTxThreshold || '0.1');
+    this.microTxThreshold = ethers.parseEther('0.001');
+    this.priceImpactThreshold = 1.0; // %
+    this.maxReconnectAttempts = 10;
+    this.reconnectInterval = 30000; // 30s
+    this.reconnectAttempts = 0;
+    this.isWatching = false;
+    this.wsProvider = null;
+  }
 
-        this.wsProvider = null;
-        this.isWatching = false;
-        this.dexRouters = new Set();
-        this.largeTxThreshold = ethers.parseEther('0.001'); // 0.001 BNB threshold
+  async start() {
+    if (this.isWatching) return;
+    console.log('📡 MempoolWatcher: Attempting connection...');
+
+    // Try public WSS first (faster, no limits)
+    try {
+      const publicWsUrl = 'wss://bsc-ws-node.nariox.org:443';
+      this.wsProvider = new ethers.WebSocketProvider(publicWsUrl);
+
+      // Error handler with reconnect
+      this.wsProvider.on('error', (error) => {
+        console.warn(`⚠️ MEMPOOLWATCHER: Public WSS error: ${error.message}`);
+        this._handleReconnect();
+      });
+
+      // Test connection
+      await Promise.race([
+        this.wsProvider.getBlockNumber(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000))
+      ]);
+
+      console.log('📡 MEMPOOLWATCHER: Connected successfully to public WSS');
+      this._setupPendingListener();
+      this.isWatching = true;
+      this.reconnectAttempts = 0;
+      return;
+    } catch (error) {
+      console.warn(`⚠️ MEMPOOLWATCHER: Public WSS failed: ${error.message}`);
+    }
+
+    // Fallback to NodeReal private WSS
+    try {
+      const nodeRealWsUrl = `wss://open-platform.nodereal.io/ws/${process.env.NODE_REAL_API_KEY}/bsc/`;
+      this.wsProvider = new ethers.WebSocketProvider(nodeRealWsUrl);
+
+      this.wsProvider.on('error', (error) => {
+        console.warn(`⚠️ MEMPOOLWATCHER: NodeReal WSS error: ${error.message}`);
+        this._handleReconnect();
+      });
+
+      await Promise.race([
+        this.wsProvider.getBlockNumber(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
+      ]);
+
+      console.log('📡 MEMPOOLWATCHER: Connected to NodeReal WSS fallback');
+      this._setupPendingListener();
+      this.isWatching = true;
+      this.reconnectAttempts = 0;
+      return;
+    } catch (fallbackError) {
+      console.warn(`⚠️ MEMPOOLWATCHER: All WebSocket connections failed: ${fallbackError.message}`);
+      this._handleReconnect();
+    }
+  }
+
+  _handleReconnect() {
+    this.isWatching = false;
+    this.wsProvider = null;
+    this.reconnectAttempts++;
+
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000); // Exponential backoff, max 30s
+      console.log(`📡 MEMPOOLWATCHER: Reconnecting in ${delay/1000}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+      setTimeout(() => this.start(), delay);
+    } else {
+      console.log('📡 MEMPOOLWATCHER: Max reconnect attempts reached, switching to block-based scanning');
+      setTimeout(() => {
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
-        this.reconnectInterval = 5000; // 5 seconds
-        console.log('📡 MempoolWatcher: Initialized with fallback URLs');
+        this.start();
+      }, 300000); // Retry in 5 min
     }
+  }
 
-    /**
-     * Add DEX router addresses to monitor
-     */
-    addDexRouters(routers) {
-        routers.forEach(router => {
-            this.dexRouters.add(router.toLowerCase());
+  _setupPendingListener() {
+    this.wsProvider.on('pending', async (txHash) => {
+      try {
+        const tx = await this.wsProvider.getTransaction(txHash);
+        if (tx && tx.to && this.dexRouters.has(tx.to.toLowerCase())) {
+          await this._analyzeDexTransaction(tx);
+        }
+      } catch (error) {
+        // Silent
+      }
+    });
+    console.log('📡 MempoolWatcher: Active - monitoring DEX transactions');
+  }
+
+  async _analyzeDexTransaction(tx) {
+    try {
+      const txValue = tx.value || 0n;
+      const valueBNB = ethers.formatEther(txValue);
+
+      // LOG ALL DEX TRANSACTIONS DETECTED
+      console.log(`📡 MEMPOOL: DEX TX DETECTED - ${valueBNB} BNB to ${tx.to.substring(0, 10)}... - Hash: ${tx.hash.substring(0, 10)}...`);
+
+      const isLargeTx = txValue > this.largeTxThreshold;
+
+      // Check if transaction meets criteria for deep multi-hop scan
+      if (isLargeTx) {
+        console.log(`🚨🚨🚨 MEMPOOL: LARGE DEX TX DETECTED (${valueBNB} BNB) - TRIGGERING DEEP MULTI-HOP SCAN! 🚨🚨🚨`);
+
+        // Emit event for deep multi-hop arbitrage scan (4-6 paths)
+        this.emit('largeDexTransaction', {
+          txHash: tx.hash,
+          to: tx.to,
+          value: txValue,
+          gasPrice: tx.gasPrice,
+          timestamp: Date.now(),
+          triggerType: 'large_tx',
+          multiHopScan: true,
+          minPaths: 4,
+          maxPaths: 6
         });
-        console.log(`📡 MempoolWatcher: Monitoring ${this.dexRouters.size} DEX routers`);
+      }
+
+      // Check for price impact requiring multi-hop analysis
+      const priceImpact = await this._simulatePriceImpact(tx);
+      if (priceImpact && priceImpact.estimatedImpact > this.priceImpactThreshold) {
+        console.log(`🚨🚨🚨 MEMPOOL: HIGH IMPACT TX DETECTED (${priceImpact.estimatedImpact.toFixed(2)}%) - TRIGGERING MULTI-HOP ARB SCAN! 🚨🚨🚨`);
+
+        this.emit('priceImpactDetected', {
+          txHash: tx.hash,
+          method: priceImpact.method,
+          router: tx.to,
+          estimatedImpact: priceImpact.estimatedImpact,
+          timestamp: Date.now(),
+          triggerType: 'price_impact',
+          multiHopScan: true,
+          minPaths: 4,
+          maxPaths: 6
+        });
+      }
+
+      // Check for ANY micro DEX transaction for immediate execution
+      const isMicroTx = txValue > this.microTxThreshold;
+      if (isMicroTx) {
+        console.log(`🚨🚨🚨 MEMPOOL: MICRO DEX TX DETECTED (${valueBNB} BNB) - TRIGGERING IMMEDIATE ARB SCAN! 🚨🚨🚨`);
+
+        this.emit('microDexTransaction', {
+          txHash: tx.hash,
+          to: tx.to,
+          value: txValue,
+          gasPrice: tx.gasPrice,
+          timestamp: Date.now(),
+          triggerType: 'micro_tx',
+          immediateExecution: true,
+          minProfitThreshold: 0.20
+        });
+      }
+
+      // Check for sandwich attack patterns - trigger immediate execution
+      if (tx.data && tx.data.startsWith('0x7ff36ab5')) { // swapExactETHForTokens
+        console.log('🚨🚨🚨 MEMPOOL: SANDWICH PATTERN DETECTED - EXECUTING ATOMIC CYCLE! 🚨🚨🚨');
+        this.emit('potentialSandwich', {
+          txHash: tx.hash,
+          type: 'swapExactETHForTokens',
+          timestamp: Date.now(),
+          triggerType: 'sandwich',
+          atomicExecution: true
+        });
+      }
+
+    } catch (error) {
+      // Silent error handling
     }
+  }
 
-    /**
-     * Start mempool watching with fallback URLs and auto-reconnection
-     */
-    async start() {
-        if (this.isWatching) return;
+  async _simulatePriceImpact(tx) {
+    try {
+      // Decode transaction if it's a swap
+      if (tx.data && tx.data.length >= 10) {
+        const methodId = tx.data.substring(0, 10);
 
-        for (let i = 0; i < this.wsUrls.length; i++) {
-            try {
-                const wsUrl = this.wsUrls[i];
-                console.log(`📡 MempoolWatcher: Attempting connection to ${wsUrl}...`);
+        // Common DEX swap methods
+        const swapMethods = [
+          '0x7ff36ab5', // swapExactETHForTokens
+          '0x18cbafe5', // swapExactTokensForETH
+          '0x38ed1739', // swapExactTokensForTokens
+          '0x8803dbee', // swapTokensForExactTokens
+          '0x4a25d94a', // swapTokensForExactETH
+          '0x5c60da1b'  // swapETHForExactTokens
+        ];
 
-                this.wsProvider = new ethers.WebSocketProvider(wsUrl);
+        if (swapMethods.includes(methodId)) {
+          const estimatedImpact = this._estimateImpact(tx);
 
-                // Note: WebSocket event handlers not supported by ethers WebSocketProvider
-                // Connection will be tested and monitored via periodic health checks
-
-                // Monitor pending transactions
-                this.wsProvider.on('pending', async (txHash) => {
-                    try {
-                        const tx = await this.wsProvider.getTransaction(txHash);
-                        if (tx && tx.to && this.dexRouters.has(tx.to.toLowerCase())) {
-                            await this._analyzeDexTransaction(tx);
-                        }
-                    } catch (error) {
-                        // Silent error handling
-                    }
-                });
-
-                // Test connection by making a simple call
-                try {
-                    await this.wsProvider.getBlockNumber();
-                    console.log('📡 MEMPOOLWATCHER: Connected successfully');
-                    this.isWatching = true;
-                    this.reconnectAttempts = 0;
-                } catch (error) {
-                    throw new Error('Connection test failed');
-                }
-
-                console.log('📡 MempoolWatcher: Active - monitoring DEX transactions');
-                return; // Success, exit the loop
-
-            } catch (error) {
-                console.warn(`⚠️ MempoolWatcher: Failed to connect to ${this.wsUrls[i]}:`, error.message);
-                continue; // Try next URL
-            }
+          // Return impact data for caller to decide on multi-hop scan
+          return {
+            txHash: tx.hash,
+            method: methodId,
+            router: tx.to,
+            estimatedImpact: estimatedImpact,
+            timestamp: Date.now()
+          };
         }
-
-        // All URLs failed
-        console.warn('⚠️ MempoolWatcher: All WebSocket URLs failed - continuing without mempool watching');
-        this._scheduleReconnect();
+      }
+    } catch (error) {
+      // Silent error handling
     }
+    return null;
+  }
 
-    /**
-     * Schedule reconnection attempt
-     */
-    _scheduleReconnect() {
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.warn('⚠️ MempoolWatcher: Max reconnection attempts reached');
-            return;
-        }
+  _estimateImpact(tx) {
+    // Simplified impact estimation based on transaction value
+    const value = tx.value || 0n;
+    const impactPercent = Number(value) / 1e18 * 100; // Rough estimate
+    return Math.min(impactPercent, 5.0); // Cap at 5%
+  }
 
-        this.reconnectAttempts++;
-        console.log(`📡 MempoolWatcher: Scheduling reconnection in ${this.reconnectInterval/1000}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-
-        setTimeout(() => {
-            this.start();
-        }, this.reconnectInterval);
+  stop() {
+    if (this.wsProvider) {
+      this.wsProvider.removeAllListeners();
+      this.wsProvider = null;
     }
+    this.isWatching = false;
+    console.log('📡 MempoolWatcher: Stopped');
+  }
 
-    /**
-     * Stop mempool watching
-     */
-    stop() {
-        if (this.wsProvider) {
-            this.wsProvider.removeAllListeners();
-            this.wsProvider = null;
-        }
-        this.isWatching = false;
-        console.log('📡 MempoolWatcher: Stopped');
-    }
-
-    /**
-     * Analyze DEX transaction for arbitrage opportunities
-     */
-    async _analyzeDexTransaction(tx) {
-        try {
-            // Check if transaction value is significant (> 0.001 BNB)
-            if (tx.value && tx.value > this.largeTxThreshold) {
-                console.log(`📡 MEMPOOL: LARGE DEX TX DETECTED (${ethers.formatEther(tx.value)} BNB) - TRIGGERING IMMEDIATE SCAN!`);
-
-                // Emit event for arbitrage bot to trigger immediate scan
-                this.emit('largeDexTransaction', {
-                    txHash: tx.hash,
-                    to: tx.to,
-                    value: tx.value,
-                    gasPrice: tx.gasPrice,
-                    timestamp: Date.now()
-                });
-
-                // Also check for potential price impact
-                await this._simulatePriceImpact(tx);
-            }
-
-            // Check for sandwich attack patterns
-            if (tx.data && tx.data.startsWith('0x7ff36ab5')) { // swapExactETHForTokens
-                this.emit('potentialSandwich', {
-                    txHash: tx.hash,
-                    type: 'swapExactETHForTokens',
-                    timestamp: Date.now()
-                });
-            }
-
-        } catch (error) {
-            // Silent error handling
-        }
-    }
-
-    /**
-     * Simulate price impact of pending transaction
-     */
-    async _simulatePriceImpact(tx) {
-        try {
-            // Decode transaction if it's a swap
-            if (tx.data && tx.data.length >= 10) {
-                const methodId = tx.data.substring(0, 10);
-
-                // Common DEX swap methods
-                const swapMethods = [
-                    '0x7ff36ab5', // swapExactETHForTokens
-                    '0x18cbafe5', // swapExactTokensForETH
-                    '0x38ed1739', // swapExactTokensForTokens
-                    '0x8803dbee', // swapTokensForExactTokens
-                    '0x4a25d94a', // swapTokensForExactETH
-                    '0x5c60da1b'  // swapETHForExactTokens
-                ];
-
-                if (swapMethods.includes(methodId)) {
-                    // Emit price impact event
-                    this.emit('priceImpactDetected', {
-                        txHash: tx.hash,
-                        method: methodId,
-                        router: tx.to,
-                        estimatedImpact: this._estimateImpact(tx),
-                        timestamp: Date.now()
-                    });
-                }
-            }
-        } catch (error) {
-            // Silent error handling
-        }
-    }
-
-    /**
-     * Estimate price impact (simplified)
-     */
-    _estimateImpact(tx) {
-        // Simplified impact estimation based on transaction value
-        const value = tx.value || 0n;
-        const impactPercent = Number(value) / 1e18 * 100; // Rough estimate
-        return Math.min(impactPercent, 5.0); // Cap at 5%
-    }
-
-    /**
-     * Get watcher status
-     */
-    getStatus() {
-        return {
-            isWatching: this.isWatching,
-            dexRoutersCount: this.dexRouters.size,
-            wsConnected: this.wsProvider ? true : false,
-            largeTxThreshold: ethers.formatEther(this.largeTxThreshold)
-        };
-    }
+  getStatus() {
+    return {
+      isWatching: this.isWatching,
+      dexRoutersCount: this.dexRouters.size,
+      wsConnected: this.wsProvider ? true : false
+    };
+  }
 }
 
 export default MempoolWatcher;

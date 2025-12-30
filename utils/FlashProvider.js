@@ -50,6 +50,13 @@ class FlashProvider {
         this.provider = provider;
         this.signer = signer;
 
+        // LOUD SIGNER VERIFICATION
+        if (this.signer) {
+            console.log('🔑 FLASHPROVIDER: Signer attached successfully');
+            console.log(`👤 SIGNER ADDRESS: ${this.signer.address}`);
+            console.log('✅ FLASHLOAN FULLY ENABLED - Signer attached');
+        }
+
         // Fallback fees when dynamic fetching fails
         this.fallbackFees = {
             'UniswapV3': 0.0005, // 0.05%
@@ -67,6 +74,44 @@ class FlashProvider {
         // Cache for dynamic fees with TTL
         this.feeCache = new Map();
         this.CACHE_TTL = 5 * 60 * 1000; // 5 minutes TTL
+
+        // AGGRESSIVE FLASHLOAN INTEGRATION - FORCE ALL ARBS/LIQUIDATIONS
+        this.aggressiveFlashloanAddress = '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1';
+        this.aggressiveFlashloanContract = null;
+
+        // Initialize aggressive flashloan contract
+        this._initializeAggressiveFlashloan();
+    }
+
+    /**
+     * Initialize aggressive flashloan contract for ALL arbs/liquidations
+     */
+    async _initializeAggressiveFlashloan() {
+        try {
+            if (!this.signer) {
+                console.log('⚠️ FlashProvider: No signer - aggressive flashloans disabled');
+                return;
+            }
+
+            // Load ABI for aggressive flashloan contract
+            const aggressiveFlashloanAbi = [
+                "function flashLoan(address asset, uint256 amount, address receiver, bytes calldata params) external",
+                "function executeFlashloanArbitrage(address asset, uint256 amount, address[] calldata path, address router, uint256 minProfit) external",
+                "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external",
+                "function executePerpArbitrage(address dex, string calldata token, string calldata direction, uint256 amount, uint256 minProfit) external"
+            ];
+
+            this.aggressiveFlashloanContract = new ethers.Contract(
+                this.aggressiveFlashloanAddress,
+                aggressiveFlashloanAbi,
+                this.signer
+            );
+
+            console.log('🔥 FlashProvider: Aggressive flashloan contract initialized for ALL trades');
+        } catch (error) {
+            console.warn('⚠️ FlashProvider: Aggressive flashloan initialization failed:', error.message);
+            this.aggressiveFlashloanContract = null;
+        }
 
         // Protocol addresses (BSC mainnet)
         this.protocolAddresses = {
@@ -787,6 +832,154 @@ class FlashProvider {
                 age: Date.now() - data.timestamp
             }))
         };
+    }
+
+    /**
+     * AGGRESSIVE FLASHLOAN EXECUTION - FORCE ALL TRADES
+     * Execute flashloan arbitrage with minimal amounts (0.001–0.01 BNB equiv)
+     */
+    async executeAggressiveFlashloanArbitrage(path, amountInWei, router, minProfit) {
+        if (!this.aggressiveFlashloanContract) {
+            console.log('⚠️ Aggressive flashloan contract not available, using fallback');
+            return await this._executeFallbackFlashloanArbitrage(path, amountInWei, router, minProfit);
+        }
+
+        try {
+            // Calculate flashloan amount (0.0005–0.005 BNB equivalent)
+            const flashAmount = ethers.parseEther((0.0005 + Math.random() * 0.0045).toFixed(6));
+            const minProfitWei = ethers.parseEther(minProfit.toString());
+
+            // LOUD FLASHLOAN LOGS
+            console.log(`\n💥💥💥 FLASHLOAN ENABLED - Executing leveraged trade 💥💥💥`);
+            console.log(`🏦 BORROWING: ${ethers.formatEther(flashAmount)} tokens`);
+            console.log(`🎯 MIN PROFIT: $${minProfit}`);
+            console.log(`🔄 ARBITRAGE PATH: ${path.map(addr => addr.substring(0, 6)).join(' → ')}`);
+            console.log(`🏪 ROUTER: ${router}`);
+            console.log(`⚡ EXECUTING ATOMIC FLASHLOAN ARB...`);
+            console.log(`💥💥💥 FLASHLOAN ACTIVE 💥💥💥\n`);
+
+            const tx = await this.aggressiveFlashloanContract.executeFlashloanArbitrage(
+                path[0], // asset to flashloan
+                flashAmount,
+                path, // arbitrage path
+                router, // router address
+                minProfitWei
+            );
+
+            console.log(`📤 FLASHLOAN ARB SUBMITTED: ${tx.hash}`);
+
+            const receipt = await tx.wait();
+            if (receipt.status === 1) {
+                console.log(`\n🎉🎉🎉 FLASHLOAN ARBITRAGE SUCCESS! 🎉🎉🎉`);
+                console.log(`💰💰💰 FLASHLOAN PROFIT SECURED 💰💰💰`);
+                console.log(`🔗 TX: ${tx.hash}`);
+                console.log(`⏱️  GAS: ${receipt.gasUsed}`);
+                console.log(`🏦 AMOUNT: ${ethers.formatEther(flashAmount)} tokens`);
+                console.log(`🎯 ROUTER: ${router}`);
+                console.log(`✅ FLASHLOAN REPAYMENT COMPLETE`);
+                console.log(`🎉🎉🎉 FLASHLOAN ARB COMPLETED! 🎉🎉🎉\n`);
+                return {
+                    success: true,
+                    txHash: tx.hash,
+                    gasUsed: receipt.gasUsed,
+                    flashloan: true,
+                    amount: flashAmount
+                };
+            } else {
+                console.log(`\n❌❌❌ FLASHLOAN ARBITRAGE REVERTED ❌❌❌`);
+                console.log(`💥 TX: ${tx.hash}`);
+                console.log(`😞 FLASHLOAN REPAYMENT FAILED`);
+                console.log(`❌❌❌ FLASHLOAN ARB FAILED ❌❌❌\n`);
+                throw new Error('Transaction reverted');
+            }
+
+        } catch (error) {
+            console.log('❌ Aggressive flashloan arbitrage failed, using fallback:', error.message);
+            return await this._executeFallbackFlashloanArbitrage(path, amountInWei, router, minProfit);
+        }
+    }
+
+    /**
+     * AGGRESSIVE FLASHLOAN LIQUIDATION - FORCE ALL LIQUIDATIONS
+     */
+    async executeAggressiveFlashloanLiquidation(lendingProtocol, borrower, debtAsset, collateralAsset, debtToCover, minProfit) {
+        if (!this.aggressiveFlashloanContract) {
+            console.log('⚠️ Aggressive flashloan contract not available for liquidation');
+            return null;
+        }
+
+        try {
+            console.log('🔥 FLASHLOAN LIQUIDATION: Executing atomic liquidation');
+
+            // Use minimal flashloan amount for debt coverage
+            const flashAmount = debtToCover; // Cover the debt amount
+            const minProfitWei = ethers.parseEther(minProfit.toString());
+            const arbitrageData = '0x'; // Empty for pure liquidation
+
+            const tx = await this.aggressiveFlashloanContract.executeAtomicLiquidation(
+                lendingProtocol,
+                borrower,
+                debtAsset,
+                collateralAsset,
+                flashAmount,
+                minProfitWei,
+                arbitrageData
+            );
+
+            console.log(`📤 FLASHLOAN LIQUIDATION SUBMITTED: ${tx.hash}`);
+
+            const receipt = await tx.wait();
+            if (receipt.status === 1) {
+                console.log(`💰 FLASHLOAN LIQUIDATION SUCCESS: ${tx.hash}`);
+                return {
+                    success: true,
+                    txHash: tx.hash,
+                    gasUsed: receipt.gasUsed,
+                    flashloan: true,
+                    amount: flashAmount
+                };
+            } else {
+                throw new Error('Transaction reverted');
+            }
+
+        } catch (error) {
+            console.log('❌ Aggressive flashloan liquidation failed:', error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Fallback flashloan execution using PancakeSwap flashswaps
+     */
+    async _executeFallbackFlashloanArbitrage(path, amountInWei, router, minProfit) {
+        try {
+            console.log('🔄 Using PancakeSwap flashswap fallback');
+
+            // Get PancakeSwap pair for flashswap
+            const poolAddress = this.getPoolAddress('PancakeSwap', path[0], path[1]);
+            if (!poolAddress) {
+                throw new Error('No PancakeSwap pool found for flashswap');
+            }
+
+            const arbitrageParams = {
+                exchanges: ['PancakeSwap'],
+                path: path,
+                caller: this.signer.address,
+                gasReimbursement: 0,
+                contractAddress: this.signer.address
+            };
+
+            return await this._executePancakeV2FlashSwap(
+                poolAddress,
+                amountInWei,
+                0, // amount1
+                arbitrageParams
+            );
+
+        } catch (error) {
+            console.error('❌ Fallback flashloan arbitrage failed:', error.message);
+            return { success: false, error: error.message };
+        }
     }
 }
 

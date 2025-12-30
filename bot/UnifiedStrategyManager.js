@@ -4,12 +4,13 @@ import { EventEmitter } from 'events';
 import { ethers } from 'ethers';
 import { TOKENS } from '../config/dex.js';
 import ArbitrageBot from './ArbitrageBot.js';
-import LiquidationBot from './LiquidationBot.js';
+import { LiquidationBot } from './LiquidationBot.js';
 import NFTFlashLoanTrader from './NFTFlashLoanTrader.js';
 import CrossProtocolArbitrageScanner from './CrossProtocolArbitrageScanner.js';
 import StrategyRiskAssessor from '../utils/StrategyRiskAssessor.js';
 import PerformanceDashboard from '../utils/PerformanceDashboard.js';
 import PythonArbitrageCalculator from '../services/PythonArbitrageCalculator.js';
+import FlashProvider from '../utils/FlashProvider.js';
 
 // Multicoin Arbitrage Strategy - Randomly selects 2-4 coins for arbitrage
 class MulticoinArbitrageStrategy extends EventEmitter {
@@ -284,6 +285,9 @@ class UnifiedStrategyManager extends EventEmitter {
         this.provider = provider;
         this.signer = signer;
 
+        // Initialize shared FlashProvider for all strategies
+        this.flashProvider = new FlashProvider(provider, signer);
+
         // Initialize Python arbitrage calculator for enhanced profit calculations
         this.pythonCalculator = new PythonArbitrageCalculator();
 
@@ -421,7 +425,7 @@ class UnifiedStrategyManager extends EventEmitter {
 
         // Initialize Multicoin Arbitrage Strategy
         this.strategies.multicoin = new MulticoinArbitrageStrategy(this.provider, this.signer, {
-            flashProvider: this.strategies.arbitrage?.flashProvider, // Share flash provider
+            flashProvider: this.flashProvider, // Share flash provider
             minProfitUSD: 1.0, // $1 minimum for multicoin arbitrage
             maxGasPrice: 5,
             scanInterval: 15000, // 15 seconds for multicoin cycles

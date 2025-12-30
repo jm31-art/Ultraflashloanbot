@@ -37,12 +37,18 @@ class LiquidationBot extends EventEmitter {
         this.profitCalculator = new ProfitCalculator(provider);
         this.verifier = new TransactionVerifier(provider, signer);
 
-        // Configuration
-        this.minProfitUSD = options.minProfitUSD || 50;
+        // ULTRA-LOW THRESHOLDS & BOOTSTRAP CONFIGURATION - EXTREME MODE
+        this.minProfitUSD = options.minProfitUSD || 0.20; // Start with $0.20 for bootstrap
+        this.normalMinProfitUSD = 50; // $50 normal minimum
         this.maxGasPrice = options.maxGasPrice || 5; // gwei
         this.scanInterval = options.scanInterval || 15000; // 15 seconds (faster for liquidations)
         this.maxLiquidationAmount = options.maxLiquidationAmount || ethers.parseEther('50000'); // $50k max
         this.liquidationBonusThreshold = options.liquidationBonusThreshold || 0.05; // 5% minimum bonus
+
+        // Bootstrap state
+        this.bootstrapLiquidationsExecuted = 0;
+        this.maxBootstrapLiquidations = 2;
+        this.bootstrapMode = true;
 
         this.isRunning = false;
         this.lastScanTime = 0;
@@ -265,8 +271,11 @@ class LiquidationBot extends EventEmitter {
         const venusEnabled = LENDING_PROTOCOLS.VENUS?.enabled !== false;
         if (!venusEnabled || !LENDING_PROTOCOLS.VENUS || !LENDING_PROTOCOLS.VENUS.comptroller || LENDING_PROTOCOLS.VENUS.comptroller === '0x0000000000000000000000000000000000000000') {
             console.log("ℹ️ Venus protocol disabled or not configured for BSC - skipping Venus");
+            // Remove VENUS from lendingContracts if it exists
+            delete this.lendingContracts.VENUS;
         } else if (typeof LENDING_PROTOCOLS.VENUS.comptroller !== "string") {
             console.warn("⚠️ Skipping Venus - invalid comptroller address type");
+            delete this.lendingContracts.VENUS;
         } else {
             try {
                 LENDING_PROTOCOLS.VENUS.comptroller = getAddress(LENDING_PROTOCOLS.VENUS.comptroller);
@@ -289,6 +298,7 @@ class LiquidationBot extends EventEmitter {
                 console.log("✅ Venus Protocol initialized");
             } catch (e) {
                 console.warn("⚠️ Failed to initialize Venus contract:", e.message);
+                delete this.lendingContracts.VENUS;
             }
         }
 
@@ -1104,10 +1114,14 @@ class LiquidationBot extends EventEmitter {
             // Calculate optimal liquidation amount
             const optimalAmount = await this._calculateOptimalLiquidationAmount(opportunity);
 
-            // Calculate expected profit
+            // Calculate expected profit with bootstrap thresholds
             const profitAnalysis = await this._calculateLiquidationProfit(protocolName, opportunity, optimalAmount);
 
-            if (!profitAnalysis.isProfitable || profitAnalysis.expectedProfitUSD < this.minProfitUSD) {
+            // Use bootstrap threshold for first 2 liquidations
+            const currentMinProfit = this.bootstrapMode ? 0.20 : this.normalMinProfitUSD;
+
+            if (!profitAnalysis.isProfitable || profitAnalysis.expectedProfitUSD < currentMinProfit) {
+                console.log(`⚠️ Skipping liquidation - profit $${profitAnalysis.expectedProfitUSD.toFixed(2)} below threshold $${currentMinProfit} (${this.bootstrapMode ? 'bootstrap' : 'normal'} mode)`);
                 return;
             }
 
@@ -1414,8 +1428,27 @@ class LiquidationBot extends EventEmitter {
                 mode: 'LIQUIDATION'
             });
 
-            // Create liquidation transaction (flashloan-based)
-            const tx = await this._createLiquidationTx(protocolName, opportunity, amount, profitAnalysis);
+            // Create liquidation transaction (AGGRESSIVE flashloan-based)
+            let tx;
+            if (this.flashloanContract && this.flashloanContract.executeAggressiveFlashloanLiquidation) {
+                console.log('🔥 FLASHLOAN LIQUIDATION: Using aggressive flashloan for ALL liquidations');
+                const result = await this.flashloanContract.executeAggressiveFlashloanLiquidation(
+                    this._getLendingProtocolAddress(protocolName),
+                    opportunity.user,
+                    opportunity.debtAsset,
+                    opportunity.collateralAsset,
+                    amount,
+                    profitAnalysis.expectedProfitUSD * 0.8 // 80% minimum profit
+                );
+                if (result) {
+                    // Already executed, return result
+                    this.successfulLiquidations++;
+                    return result;
+                }
+            }
+
+            // Fallback to regular flashloan liquidation
+            tx = await this._createLiquidationTx(protocolName, opportunity, amount, profitAnalysis);
 
             if (!tx) {
                 throw new Error('Failed to create liquidation transaction');
@@ -1478,7 +1511,16 @@ class LiquidationBot extends EventEmitter {
                     mode: 'LIQUIDATION'
                 });
 
-                console.log(`🎉 Liquidation successful! Profit: $${profitAnalysis.expectedProfitUSD.toFixed(2)} (executed in ${executionTime}ms)`);
+                console.log(`🎉 LIQUIDATION SUCCESSFUL! Profit: $${profitAnalysis.expectedProfitUSD.toFixed(2)} (executed in ${executionTime}ms)`);
+
+                // Handle bootstrap completion
+                this.bootstrapLiquidationsExecuted++;
+                if (this.bootstrapMode && this.bootstrapLiquidationsExecuted >= this.maxBootstrapLiquidations) {
+                    this.bootstrapMode = false;
+                    this.minProfitUSD = this.normalMinProfitUSD;
+                    console.log(`🚀 LIQUIDATION BOOTSTRAP COMPLETE - Gas recouped!`);
+                    console.log(`💰 Switched to normal profit threshold: $${this.normalMinProfitUSD}+`);
+                }
 
                 this.emit('liquidationExecuted', {
                     protocol: protocolName,
@@ -1487,7 +1529,8 @@ class LiquidationBot extends EventEmitter {
                     amount: amount,
                     executionTime,
                     gasUsed: receipt.gasUsed,
-                    effectiveGasPrice: receipt.effectiveGasPrice
+                    effectiveGasPrice: receipt.effectiveGasPrice,
+                    bootstrapMode: this.bootstrapMode
                 });
 
                 // Update performance metrics
@@ -1761,6 +1804,12 @@ class LiquidationBot extends EventEmitter {
         const disconnected = [];
 
         for (const [protocol, contract] of Object.entries(this.lendingContracts)) {
+            // Skip disabled protocols
+            const protocolConfig = LENDING_PROTOCOLS[protocol.toUpperCase()];
+            if (protocolConfig && protocolConfig.enabled === false) {
+                continue; // Skip disabled protocols
+            }
+
             try {
                 // Simple connectivity check
                 if (protocol === 'AAVE') {
@@ -1813,7 +1862,16 @@ class LiquidationBot extends EventEmitter {
             });
 
             if (prediction.confidence > this.predictionThreshold && prediction.willLiquidate) {
-                console.log(`🤖 AI-PREDICTED LIQUIDATION: ${position.user} - Confidence: ${(prediction.confidence * 100).toFixed(1)}% - Risk: ${prediction.riskLevel}`);
+                console.log(`🤖 PREDICTED LIQUIDATION: Account ${position.user} - Confidence: ${(prediction.confidence * 100).toFixed(1)}% - Risk: ${prediction.riskLevel} - TRIGGERING IMMEDIATE SCAN`);
+
+                // Trigger immediate liquidation scan for predicted accounts
+                this.emit('aiPredictedLiquidation', {
+                    user: position.user,
+                    confidence: prediction.confidence,
+                    riskLevel: prediction.riskLevel,
+                    prediction: prediction,
+                    timestamp: Date.now()
+                });
             }
 
             return prediction;

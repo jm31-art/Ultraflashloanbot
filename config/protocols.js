@@ -75,13 +75,13 @@ const PROTOCOLS = {
             supportsFlashLoan: false,
             enabled: false // Disable Compound on BSC
         },
-        // Venus Protocol - ACTIVE on BSC
+        // Venus Protocol - DISABLED: Contract connectivity issues
         VENUS: {
             name: 'Venus',
             comptroller: '0xfD36E2c2a6789Db23113685031d7F16329158384',
             priceOracle: '0xd8B6dA2bfEC71D684D3E2a2FC9492Ddad5C3787F',
             supportsFlashLoan: false,
-            enabled: true // Enable Venus on BSC
+            enabled: false // Disable Venus temporarily - contract issues
         },
         // Cream Finance - DISABLED: Not active on BSC
         CREAM: {

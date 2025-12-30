@@ -3,10 +3,11 @@ import PriceService from "../services/PriceService.js";
 import FlashProvider from "./FlashProvider.js";
 
 class ProfitCalculator {
-    constructor(provider) {
+    constructor(provider, signer = null) {
         this.provider = provider;
+        this.signer = signer;
         this.priceService = new PriceService();
-        this.flashProvider = new FlashProvider(provider);
+        this.flashProvider = new FlashProvider(provider, signer);
         this.SLIPPAGE_TOLERANCE = 0.005; // 0.5%
         this.MIN_PROFIT_MARGIN = 0.001; // 0.1% minimum profit margin
         this.gasPrice = 3; // Gwei - reduced for better profitability
