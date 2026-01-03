@@ -4,7 +4,7 @@ import { PROTOCOLS } from '../config/protocols.js';
 const { DEX_PROTOCOLS, LENDING_PROTOCOLS, TOKENS } = PROTOCOLS;
 import PriceFeed from '../services/PriceFeed.js';
 import ProfitCalculator from '../utils/ProfitCalculator.js';
-// import DexLiquidityChecker from '../utils/DexLiquidityChecker.js';
+import DexLiquidityChecker from '../utils/DexLiquidityChecker.js';
 
 class CrossProtocolArbitrageScanner extends EventEmitter {
     constructor(provider, signer, options = {}) {
@@ -14,11 +14,11 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
         this.signer = signer;
         this.priceFeed = new PriceFeed(provider);
         this.profitCalculator = new ProfitCalculator(provider);
-        // this.liquidityChecker = new DexLiquidityChecker(provider);
+        this.liquidityChecker = new DexLiquidityChecker(provider);
 
         // Configuration
-        this.minProfitUSD = options.minProfitUSD || 25;
-        this.maxGasPrice = options.maxGasPrice || 5; // gwei
+        this.minProfitUSD = options.minProfitUSD || 5;
+        this.maxGasPrice = options.maxGasPrice || ethers.parseUnits('10', 'gwei'); // dynamic gwei
         this.scanInterval = options.scanInterval || 15000; // 15 seconds
         this.maxTradeSize = options.maxTradeSize || ethers.parseEther('50000'); // $50k max
         this.minLiquidityThreshold = options.minLiquidityThreshold || ethers.parseEther('10000'); // $10k min liquidity
@@ -31,6 +31,12 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
         // Protocol configurations
         this.dexProtocols = DEX_PROTOCOLS;
         this.lendingProtocols = LENDING_PROTOCOLS;
+
+        // Token address to symbol map
+        this.tokenAddressToSymbol = {};
+        Object.values(TOKENS).forEach(token => {
+            this.tokenAddressToSymbol[token.address] = token.symbol;
+        });
 
         // Cross-protocol opportunity types
         this.opportunityTypes = [
@@ -62,9 +68,6 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
 
             // Initialize price feeds
             await this.priceFeed.updatePrices(Object.values(TOKENS), Object.values(DEX_PROTOCOLS));
-
-            // Initialize liquidity checker
-            // await this.liquidityChecker.initialize();
 
             // Verify connections
             await this._verifyConnections();
@@ -201,15 +204,17 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
     async _scanDEXtoDEXArbitrage() {
         const opportunities = [];
 
-        // Compare prices across DEXs for the same token pairs
-        const tokenPairs = [
+        // Multi-hop paths for arbitrage
+        const paths = [
             [TOKENS.WETH.address, TOKENS.USDC.address],
-            [TOKENS.WBTC.address, TOKENS.WETH.address],
-            [TOKENS.USDC.address, TOKENS.USDT.address],
-            [TOKENS.WETH.address, TOKENS.WBTC.address]
+            [TOKENS.WETH.address, TOKENS.USDT.address, TOKENS.USDC.address],
+            [TOKENS.WETH.address, TOKENS.WBTC.address, TOKENS.USDC.address],
+            [TOKENS.WETH.address, TOKENS.CAKE.address, TOKENS.USDC.address],
+            [TOKENS.WBTC.address, TOKENS.WETH.address, TOKENS.USDC.address],
+            [TOKENS.USDC.address, TOKENS.WETH.address, TOKENS.WBTC.address]
         ];
 
-        for (const [tokenIn, tokenOut] of tokenPairs) {
+        for (const path of paths) {
             const dexPrices = {};
 
             // Get prices from each DEX
@@ -218,10 +223,10 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
                     try {
                         const amounts = await dexConfig.contract.getAmountsOut(
                             ethers.parseEther('1'),
-                            [tokenIn, tokenOut]
+                            path
                         );
-                        const price = parseFloat(ethers.formatEther(amounts[1]));
-                        dexPrices[dexName] = price;
+                        const outputAmount = parseFloat(ethers.formatEther(amounts[amounts.length - 1]));
+                        dexPrices[dexName] = outputAmount;
                     } catch (error) {
                         console.warn(`⚠️ Failed to get price from ${dexName}:`, error.message);
                     }
@@ -229,34 +234,28 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
             }
 
             // Find arbitrage opportunities
-            const dexNames = Object.keys(dexPrices);
-            for (let i = 0; i < dexNames.length; i++) {
-                for (let j = i + 1; j < dexNames.length; j++) {
-                    const dex1 = dexNames[i];
-                    const dex2 = dexNames[j];
-                    const price1 = dexPrices[dex1];
-                    const price2 = dexPrices[dex2];
+            const sortedDexes = Object.entries(dexPrices).sort((a, b) => b[1] - a[1]);
+            if (sortedDexes.length >= 2) {
+                const bestDex = sortedDexes[0];
+                const worstDex = sortedDexes[sortedDexes.length - 1];
+                const spread = (bestDex[1] - worstDex[1]) / worstDex[1];
 
-                    if (price1 && price2) {
-                        const priceDiff = Math.abs(price1 - price2);
-                        const avgPrice = (price1 + price2) / 2;
-                        const priceSpread = priceDiff / avgPrice;
+                if (spread > 0.001) { // 0.1% minimum spread
+                    // Calculate slippage
+                    const slippage = await this._calculateSlippage(path, bestDex[0], worstDex[0]);
 
-                        if (priceSpread > 0.001) { // 0.1% minimum spread
-                            const opportunity = {
-                                type: 'dex-dex',
-                                tokenIn,
-                                tokenOut,
-                                buyDex: price1 < price2 ? dex1 : dex2,
-                                sellDex: price1 < price2 ? dex2 : dex1,
-                                buyPrice: Math.min(price1, price2),
-                                sellPrice: Math.max(price1, price2),
-                                spread: priceSpread,
-                                estimatedProfit: priceDiff * 0.9 // Account for fees
-                            };
-                            opportunities.push(opportunity);
-                        }
-                    }
+                    const opportunity = {
+                        type: 'dex-dex',
+                        path,
+                        buyDex: worstDex[0],
+                        sellDex: bestDex[0],
+                        buyOutput: worstDex[1],
+                        sellOutput: bestDex[1],
+                        spread: spread,
+                        slippage: slippage,
+                        estimatedProfit: (bestDex[1] - worstDex[1]) * 0.9 // Account for fees
+                    };
+                    opportunities.push(opportunity);
                 }
             }
         }
@@ -356,18 +355,69 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
     }
 
     async _scanYieldFarmingOpportunities() {
-        // Scan for cross-protocol yield farming opportunities
-        // This would involve comparing APYs across different protocols
-        // Implementation would depend on specific yield farming contracts
-        console.log('🔍 Scanning yield farming opportunities...');
-        // Placeholder for yield farming logic
+        try {
+            // Use DeFiLlama API for real yield data
+            const response = await fetch('https://yields.llama.fi/pools');
+            const data = await response.json();
+
+            // Filter for Venus and other lending protocols
+            const lendingPools = data.data.filter(pool =>
+                pool.project === 'venus' || pool.project === 'compound' || pool.project === 'aave'
+            );
+
+            for (const pool of lendingPools) {
+                if (pool.apy > 10 && pool.tvlUsd > 100000) { // $10+ APY, $100k+ TVL
+                    const opportunity = {
+                        type: 'yield-farming',
+                        pool: pool.pool,
+                        project: pool.project,
+                        underlying: pool.underlyingTokens,
+                        apy: pool.apy,
+                        tvl: pool.tvlUsd,
+                        estimatedProfit: (pool.apy / 100) * pool.tvlUsd / 365 // Daily profit estimate
+                    };
+                    await this._evaluateAndExecuteOpportunity(opportunity);
+                }
+            }
+
+            console.log(`🔍 Scanned ${lendingPools.length} yield farming pools`);
+        } catch (error) {
+            console.error('❌ Error scanning yield farming opportunities:', error);
+        }
     }
 
     async _scanLiquidityMiningOpportunities() {
-        // Scan for liquidity mining arbitrage
-        // Compare rewards vs impermanent loss across protocols
-        console.log('🔍 Scanning liquidity mining opportunities...');
-        // Placeholder for liquidity mining logic
+        try {
+            // Use DeFiLlama API for liquidity mining APYs
+            const response = await fetch('https://yields.llama.fi/pools');
+            const data = await response.json();
+
+            // Filter for DEX pools with rewards
+            const miningPools = data.data.filter(pool =>
+                (pool.project === 'pancakeswap' || pool.project === 'uniswap' || pool.project === 'sushiswap') &&
+                pool.rewardTokens && pool.rewardTokens.length > 0
+            );
+
+            for (const pool of miningPools) {
+                if (pool.apy > 15 && pool.tvlUsd > 50000) { // 15%+ APY, $50k+ TVL
+                    const opportunity = {
+                        type: 'liquidity-mining',
+                        pool: pool.pool,
+                        project: pool.project,
+                        underlying: pool.underlyingTokens,
+                        apy: pool.apy,
+                        tvl: pool.tvlUsd,
+                        rewards: pool.rewardTokens,
+                        estimatedProfit: (pool.apy / 100) * pool.tvlUsd / 365
+                    };
+                    await this._evaluateAndExecuteOpportunity(opportunity);
+                }
+            }
+
+            console.log(`🔍 Scanned ${miningPools.length} liquidity mining pools`);
+        } catch (error) {
+            console.error('❌ Error scanning liquidity mining opportunities:', error);
+        }
     }
 
     async _getDEXPrice(tokenIn, tokenOut) {
@@ -425,10 +475,10 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
 
             const reserveData = await protocol.contract.getReserveData(tokenAddress);
 
-            // Parse reserve data based on protocol
-            // This is simplified - actual implementation would depend on protocol ABIs
-            const supplyRate = parseFloat(ethers.formatEther(reserveData[2] || 0));
-            const borrowRate = parseFloat(ethers.formatEther(reserveData[3] || 0));
+            // Parse reserve data using ray (10^27) for rates
+            const RAY = 10n ** 27n;
+            const supplyRate = Number(reserveData[2] || 0n) / Number(RAY);
+            const borrowRate = Number(reserveData[3] || 0n) / Number(RAY);
 
             return { supplyRate, borrowRate };
         } catch (error) {
@@ -492,10 +542,12 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
                     expectedProfit = opportunity.estimatedProfit || 0;
             }
 
-            // Calculate costs
-            const gasCost = 0.005; // 0.005 ETH gas estimate
-            const flashLoanFee = expectedProfit * 0.0003; // 0.03% flash loan fee
-            const protocolFees = expectedProfit * 0.001; // 0.1% protocol fees
+            // Calculate costs with dynamic gas
+            const feeData = await this.provider.getFeeData();
+            const gasPrice = parseFloat(ethers.formatUnits(feeData.gasPrice, 'ether'));
+            const gasCost = gasPrice * 200000; // 200k gas estimate
+            const flashLoanFee = expectedProfit * 0.0009; // 0.09% Aave flash loan fee
+            const protocolFees = expectedProfit * 0.003; // 0.3% DEX fees
 
             const totalCosts = gasCost + flashLoanFee + protocolFees;
             const netProfit = expectedProfit - totalCosts;
@@ -522,13 +574,14 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
         // Check liquidity for the tokens involved
         const tokens = this._getTokensFromOpportunity(opportunity);
 
-        // Simplified liquidity check (placeholder)
         for (const token of tokens) {
-            // const liquidity = await this.liquidityChecker.getLiquidity(token);
-            // if (liquidity.lt(this.minLiquidityThreshold)) {
-            //     return { sufficient: false, reason: `Insufficient liquidity for ${token}` };
-            // }
-            // Placeholder: assume sufficient liquidity for now
+            const symbol = this.tokenAddressToSymbol[token];
+            if (symbol) {
+                const liquidity = await this.liquidityChecker.checkDexLiquidity('PancakeSwap', symbol, 10000); // $10k
+                if (!liquidity || !liquidity.sufficient) {
+                    return { sufficient: false, reason: `Insufficient liquidity for ${symbol} on PancakeSwap` };
+                }
+            }
         }
 
         // Check slippage
@@ -549,9 +602,24 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
     }
 
     async _calculateSlippage(opportunity) {
-        // Calculate expected slippage for the trade
-        // This would involve checking order book depth, etc.
+        if (opportunity.type === 'dex-dex') {
+            return await this._calculateDEXSlippage(opportunity.path, opportunity.buyDex, opportunity.sellDex);
+        }
         return 0.01; // 1% default slippage estimate
+    }
+
+    async _calculateDEXSlippage(path, buyDex, sellDex) {
+        try {
+            const amountIn = ethers.parseEther('10');
+            const buyAmounts = await this.dexProtocols[buyDex].contract.getAmountsOut(amountIn, path);
+            const sellAmounts = await this.dexProtocols[sellDex].contract.getAmountsOut(amountIn, path);
+            const buyOutput = buyAmounts[buyAmounts.length - 1];
+            const sellOutput = sellAmounts[sellAmounts.length - 1];
+            const slippage = (sellOutput - buyOutput) / sellOutput;
+            return Math.abs(slippage);
+        } catch (error) {
+            return 0.01;
+        }
     }
 
     async _checkTWAPDeviation(opportunity) {
@@ -584,30 +652,28 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
 
     async _executeCrossProtocolArbitrage(opportunity, profitAnalysis) {
         try {
-            // Create cross-protocol arbitrage transaction
-            const tx = await this._createCrossProtocolArbitrageTx(opportunity);
-
-            // Execute via FlashloanArb contract
-            const contractAddress = process.env.FLASHLOAN_ARB_CONTRACT;
-            if (!contractAddress) {
-                throw new Error('FlashloanArb contract address not configured');
-            }
+            // Use Aave V3 flashLoan for execution
+            const contractAddress = '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4e2'; // Aave V3 BSC
 
             const contract = new ethers.Contract(contractAddress, [
-                "function executeCrossProtocolArbitrage(address[] calldata tokens, address[] calldata protocols, uint256[] calldata amounts, bytes calldata strategyData) external"
+                "function flashLoan(address receiver, address[] calldata assets, uint256[] calldata amounts, uint256[] calldata modes, address onBehalfOf, bytes calldata params, uint16 referralCode) external"
             ], this.signer);
 
-            // Prepare parameters based on opportunity type
+            // Prepare parameters
             const params = this._prepareCrossProtocolParams(opportunity);
 
-            const txResponse = await contract.executeCrossProtocolArbitrage(
-                params.tokens,
-                params.protocols,
+            const txResponse = await contract.flashLoan(
+                params.receiver,
+                params.assets,
                 params.amounts,
-                params.strategyData
+                params.modes,
+                params.onBehalfOf,
+                params.strategyData,
+                0 // referralCode
             );
 
-            console.log(`✅ Cross-protocol arbitrage executed: ${txResponse.hash}`);
+            console.log(`✅ Cross-protocol arbitrage executed via Aave flashLoan: ${txResponse.hash}`);
+            console.log(`   Type: ${opportunity.type}, Estimated Profit: $${profitAnalysis.expectedProfitUSD.toFixed(2)}`);
 
             this.emit('crossProtocolArbitrageExecuted', {
                 opportunity: opportunity,
@@ -628,35 +694,80 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
     }
 
     _prepareCrossProtocolParams(opportunity) {
-        // Prepare parameters for the FlashloanArb contract call
+        // Prepare parameters for Aave V3 flashLoan call
         switch (opportunity.type) {
             case 'dex-dex':
                 return {
-                    tokens: [opportunity.tokenIn, opportunity.tokenOut],
-                    protocols: [this.dexProtocols[opportunity.buyDex].router, this.dexProtocols[opportunity.sellDex].router],
-                    amounts: [ethers.parseEther('10')], // Example amount
+                    assets: [opportunity.path[0]],
+                    amounts: [ethers.parseEther('10')],
+                    modes: [0], // no debt
+                    onBehalfOf: this.signer.address,
+                    receiver: process.env.FLASHLOAN_CALLBACK_CONTRACT || this.signer.address,
                     strategyData: ethers.AbiCoder.defaultAbiCoder.encode(
-                        ['string', 'address', 'address'],
-                        ['dex-dex', opportunity.tokenIn, opportunity.tokenOut]
+                        ['string', 'address[]', 'string', 'string'],
+                        ['dex-dex', opportunity.path, opportunity.buyDex, opportunity.sellDex]
                     )
                 };
 
             case 'dex-lending':
                 return {
-                    tokens: [opportunity.token],
-                    protocols: [this.dexProtocols.PANCAKESWAP.router, this.lendingProtocols.AAVE.pool],
+                    assets: [opportunity.token],
                     amounts: [ethers.parseEther('10')],
+                    modes: [0],
+                    onBehalfOf: this.signer.address,
+                    receiver: process.env.FLASHLOAN_CALLBACK_CONTRACT || this.signer.address,
                     strategyData: ethers.AbiCoder.defaultAbiCoder.encode(
                         ['string', 'address'],
                         ['dex-lending', opportunity.token]
                     )
                 };
 
+            case 'lending-lending':
+                return {
+                    assets: [opportunity.token],
+                    amounts: [ethers.parseEther('10')],
+                    modes: [0],
+                    onBehalfOf: this.signer.address,
+                    receiver: process.env.FLASHLOAN_CALLBACK_CONTRACT || this.signer.address,
+                    strategyData: ethers.AbiCoder.defaultAbiCoder.encode(
+                        ['string', 'address', 'string', 'string'],
+                        ['lending-lending', opportunity.token, opportunity.borrowProtocol, opportunity.lendProtocol]
+                    )
+                };
+
+            case 'yield-farming':
+                return {
+                    assets: opportunity.underlying.slice(0, 1), // first token
+                    amounts: [ethers.parseEther('10')],
+                    modes: [0],
+                    onBehalfOf: this.signer.address,
+                    receiver: process.env.FLASHLOAN_CALLBACK_CONTRACT || this.signer.address,
+                    strategyData: ethers.AbiCoder.defaultAbiCoder.encode(
+                        ['string', 'string'],
+                        ['yield-farming', opportunity.pool]
+                    )
+                };
+
+            case 'liquidity-mining':
+                return {
+                    assets: opportunity.underlying.slice(0, 1),
+                    amounts: [ethers.parseEther('10')],
+                    modes: [0],
+                    onBehalfOf: this.signer.address,
+                    receiver: process.env.FLASHLOAN_CALLBACK_CONTRACT || this.signer.address,
+                    strategyData: ethers.AbiCoder.defaultAbiCoder.encode(
+                        ['string', 'string'],
+                        ['liquidity-mining', opportunity.pool]
+                    )
+                };
+
             default:
                 return {
-                    tokens: [],
-                    protocols: [],
+                    assets: [],
                     amounts: [],
+                    modes: [],
+                    onBehalfOf: this.signer.address,
+                    receiver: this.signer.address,
                     strategyData: '0x'
                 };
         }
