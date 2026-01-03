@@ -19,15 +19,15 @@ class MempoolWatcher extends EventEmitter {
     if (this.isWatching) return;
     console.log('📡 MempoolWatcher: Attempting connection...');
 
-    // Use ONLY public WSS
+    // Try private Ankr WSS first
     try {
-      const wsUrl = 'wss://bsc-ws-node.nariox.org:443';
-      this.wsProvider = new ethers.WebSocketProvider(wsUrl);
+      const primaryWsUrl = 'wss://rpc.ankr.com/bsc_ws/6e84ebc1f365af2fe30c107c5928c14a3bd4b9f1e955cbcb10aed2f22fae5861';
+      this.wsProvider = new ethers.WebSocketProvider(primaryWsUrl);
 
-      // Error handler
+      // Error handler with reconnect
       this.wsProvider.on('error', (error) => {
-        console.warn('MEMPOOL ERROR:', error.message);
-        this._handleFailure();
+        console.warn('MEMPOOL WS ERROR:', error.message);
+        this._handleReconnect();
       });
 
       // Test connection with timeout
@@ -36,22 +36,49 @@ class MempoolWatcher extends EventEmitter {
         new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 15000))
       ]);
 
-      console.log('📡 MEMPOOLWATCHER: Connected successfully to public WSS');
+      console.log('📡 MEMPOOLWATCHER: Connected to private Ankr WSS');
       this._setupPendingListener();
       this.isWatching = true;
       this.reconnectAttempts = 0;
       return;
     } catch (error) {
-      console.warn('MEMPOOL ERROR:', error.message);
-      this._handleFailure();
+      console.warn('MEMPOOL WS ERROR:', error.message);
+    }
+
+    // Fallback to public WSS
+    try {
+      const fallbackWsUrl = 'wss://bsc.publicnode.com';
+      this.wsProvider = new ethers.WebSocketProvider(fallbackWsUrl);
+
+      this.wsProvider.on('error', (error) => {
+        console.warn('MEMPOOL WS ERROR:', error.message);
+        this._handleReconnect();
+      });
+
+      await Promise.race([
+        this.wsProvider.getBlockNumber(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
+      ]);
+
+      console.log('📡 MEMPOOLWATCHER: Connected to fallback public WSS');
+      this._setupPendingListener();
+      this.isWatching = true;
+      this.reconnectAttempts = 0;
+      return;
+    } catch (fallbackError) {
+      console.warn('MEMPOOL WS ERROR: All connections failed:', fallbackError.message);
+      this._handleReconnect();
     }
   }
 
-  _handleFailure() {
-    console.log('📡 MEMPOOLWATCHER: Connection failed - continuing without mempool watching');
+  _handleReconnect() {
     this.isWatching = false;
     this.wsProvider = null;
-    // Do not attempt reconnect to prevent crash
+    this.reconnectAttempts++;
+
+    const delay = 30000; // 30 seconds
+    console.log(`📡 MEMPOOLWATCHER: Reconnecting in ${delay/1000}s (attempt ${this.reconnectAttempts})`);
+    setTimeout(() => this.start(), delay);
   }
 
 
