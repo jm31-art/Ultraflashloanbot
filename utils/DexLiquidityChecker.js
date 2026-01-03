@@ -1,4 +1,5 @@
-const { ethers } = require("ethers");
+import { ethers } from "ethers";
+import pool_addresses from '../config/pool_addresses.json';
 
 // ABIs
 const UNISWAP_V2_PAIR_ABI = [
@@ -29,7 +30,7 @@ const CURVE_POOL_ABI = [
 class DexLiquidityChecker {
     constructor(provider) {
         this.provider = provider;
-        this.poolAddresses = require('../config/pool_addresses.json');
+        this.poolAddresses = pool_addresses;
         this.tokenPrices = {
             '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c': 300, // WBNB
             '0x55d398326f99059fF775485246999027B3197955': 1,   // USDT
@@ -240,4 +241,4 @@ class DexLiquidityChecker {
     }
 }
 
-module.exports = DexLiquidityChecker;
+export default DexLiquidityChecker;
