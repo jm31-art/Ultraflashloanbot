@@ -122,7 +122,7 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
                 try {
                     await dexConfig.contract.getAmountsOut(
                         ethers.parseEther('1'),
-                        [TOKENS.WETH.address, TOKENS.USDC.address]
+                        [TOKENS.WBNB.address, TOKENS.USDT.address]
                     );
                     console.log(`✅ ${dexName} DEX connected`);
                 } catch (error) {
@@ -135,7 +135,7 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
         for (const [lendingName, lendingConfig] of Object.entries(this.lendingProtocols)) {
             if (lendingConfig.contract) {
                 try {
-                    await lendingConfig.contract.getReserveData(TOKENS.WETH.address);
+                    await lendingConfig.contract.getReserveData(TOKENS.WBNB.address);
                     console.log(`✅ ${lendingName} lending protocol connected`);
                 } catch (error) {
                     console.warn(`⚠️ ${lendingName} lending connection issue:`, error.message);
@@ -204,17 +204,23 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
     async _scanDEXtoDEXArbitrage() {
         const opportunities = [];
 
-        // Multi-hop paths for arbitrage
+        // Multi-hop paths for arbitrage (BSC tokens)
         const paths = [
-            [TOKENS.WETH.address, TOKENS.USDC.address],
-            [TOKENS.WETH.address, TOKENS.USDT.address, TOKENS.USDC.address],
-            [TOKENS.WETH.address, TOKENS.WBTC.address, TOKENS.USDC.address],
-            [TOKENS.WETH.address, TOKENS.CAKE.address, TOKENS.USDC.address],
-            [TOKENS.WBTC.address, TOKENS.WETH.address, TOKENS.USDC.address],
-            [TOKENS.USDC.address, TOKENS.WETH.address, TOKENS.WBTC.address]
+            [TOKENS.WBNB.address, TOKENS.USDT.address],
+            [TOKENS.WBNB.address, TOKENS.USDC.address, TOKENS.USDT.address],
+            [TOKENS.WBNB.address, TOKENS.BTCB.address, TOKENS.USDT.address],
+            [TOKENS.WBNB.address, TOKENS.CAKE.address, TOKENS.USDT.address],
+            [TOKENS.BTCB.address, TOKENS.WBNB.address, TOKENS.USDT.address],
+            [TOKENS.USDT.address, TOKENS.WBNB.address, TOKENS.BTCB.address]
         ];
 
         for (const path of paths) {
+            // Skip invalid paths
+            if (!path.every(token => token && typeof token === 'string')) {
+                console.log('Invalid token in path - skipping');
+                continue;
+            }
+
             const dexPrices = {};
 
             // Get prices from each DEX
