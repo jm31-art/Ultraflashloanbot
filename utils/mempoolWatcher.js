@@ -36,7 +36,7 @@ class MempoolWatcher extends EventEmitter {
         new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 15000))
       ]);
 
-      console.log('📡 MEMPOOLWATCHER: Connected to private Ankr WSS');
+      console.log('📡 MEMPOOL ACTIVE');
       this._setupPendingListener();
       this.isWatching = true;
       this.reconnectAttempts = 0;
@@ -60,7 +60,7 @@ class MempoolWatcher extends EventEmitter {
         new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
       ]);
 
-      console.log('📡 MEMPOOLWATCHER: Connected to fallback public WSS');
+      console.log('📡 MEMPOOL ACTIVE');
       this._setupPendingListener();
       this.isWatching = true;
       this.reconnectAttempts = 0;

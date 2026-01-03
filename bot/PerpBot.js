@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { ethers } from 'ethers';
 import axios from 'axios';
+import { FlashloanProvider } from '../src/flashloan/flashloanProvider.js';
 
 class PerpBot extends EventEmitter {
     constructor(provider, signer) {
@@ -19,6 +20,7 @@ class PerpBot extends EventEmitter {
         this.maxHedgePosition = ethers.parseEther('2.0'); // Larger hedging positions
         this.imbalanceThreshold = 0.0001; // 0.01% imbalance threshold for sensitive hedging
         this.minYieldThreshold = 5.0; // $5 minimum yield threshold
+        this.flashloanProvider = null;
 
         // BSC Perp DEX configs - real APIs and on-chain
         this.perpConfigs = {
@@ -44,6 +46,7 @@ class PerpBot extends EventEmitter {
 
     async initialize(flashloanContract) {
         this.flashloanContract = flashloanContract;
+        this.flashloanProvider = new FlashloanProvider(this.signer);
         console.log('✅ PerpBot: Initialized with flashloan support');
     }
 
@@ -257,11 +260,11 @@ class PerpBot extends EventEmitter {
             console.log(`🚀 PerpBot: Executing funding arbitrage - ${opportunity.dex} ${opportunity.token} ${opportunity.direction} (${opportunity.estimatedAPY.toFixed(2)}% APY)`);
 
             // Use flashloan for position sizing
-            if (this.flashloanContract) {
+            if (this.flashloanProvider) {
                 const flashAmount = this.maxPositionSize;
                 const minProfit = ethers.parseEther('0.001'); // $1 minimum profit
 
-                const tx = await this.flashloanContract.executePerpArbitrage(
+                const tx = await this.flashloanProvider.executePerpArbitrage(
                     opportunity.dex,
                     opportunity.token,
                     opportunity.direction,

@@ -1,7 +1,7 @@
 import { ROUTERS, provider } from "../dex/routers.js";
 import { simulateTriangular } from "./simulator.js";
 import { calculateProfit } from "./profitCalculator.js";
-// import { flashloanProvider } from "../flashloan/flashloanProvider.js"; // Disabled - requires signer
+import { FlashloanProvider } from "../flashloan/flashloanProvider.js";
 import { mevGuard } from "./mevGuard.js";
 import { shouldRunExtremeMode, getCurrentBlock } from "./blockScheduler.js";
 import { FLASHLOAN_PROVIDERS, getBestProvider, calculateFee } from "../flashloan/providers.js";
@@ -32,7 +32,7 @@ let EXTREME_MODE = {
   enabled: true,
   maxAttempts: 2,
   attemptsUsed: 0,
-  minProfitUsd: 10, // REDUCED from $25 to $10 for higher frequency
+  minProfitUsd: 1, // Lowered to $1 for bootstrap
   profitGasRatio: 8,
   maxGasUsd: 0.40,
   maxPriceImpactPct: 0.3,
@@ -45,7 +45,7 @@ let EXTREME_MODE = {
 // Normal Mode Configuration
 const NORMAL_MODE = {
   enabled: true,
-  minProfitUsd: 5,
+  minProfitUsd: 1,
   profitGasRatio: 3,
   maxGasUsd: 1.00,
   maxPriceImpactPct: 1.0,
@@ -190,7 +190,7 @@ export async function runArbitrage(paths, signer, flashloanContractAddress, auto
       }
 
       // Strict validation checks
-      if (!await validateArbitrageConditions(router, path, amountInWei, sim, profit, mode, priceImpact)) {
+      if (!await validateArbitrageConditions(router, path, amountInWei, sim, profit, mode, priceImpact, signer)) {
         continue;
       }
 
@@ -476,7 +476,7 @@ async function calculateOptimalFlashloanSize(router, path, mode, isExtremeMode =
 /**
  * Validate all arbitrage execution conditions
  */
-async function validateArbitrageConditions(router, path, amountInWei, sim, profit, mode, priceImpact) {
+async function validateArbitrageConditions(router, path, amountInWei, sim, profit, mode, priceImpact, signer) {
   try {
     // Check profit thresholds
     if (profit.profitUsd < mode.minProfitUsd) {
@@ -502,12 +502,13 @@ async function validateArbitrageConditions(router, path, amountInWei, sim, profi
       return false;
     }
 
-    // Check flashloan availability - disabled
-    // const reserveData = await flashloanProvider.getReserveData(path[0]);
-    // if (!reserveData || reserveData.availableLiquidity < amountInWei) {
-    //   console.log(`❌ Insufficient flashloan liquidity`);
-    //   return false;
-    // }
+    // Check flashloan availability
+    const flashloanProvider = new FlashloanProvider(signer);
+    const reserveData = await flashloanProvider.getReserveData(path[0]);
+    if (!reserveData || reserveData.availableLiquidity < amountInWei) {
+      console.log(`❌ Insufficient flashloan liquidity`);
+      return false;
+    }
 
     return true;
 
@@ -539,14 +540,14 @@ async function executeFlashloanArbitrage({
       throw new Error("Private relay unavailable - aborting execution for MEV safety");
     }
 
-    // Use the flashloan provider to execute - disabled
-    // const tx = await flashloanProvider.executeFlashloan(
-    //   flashloanContractAddress,
-    //   asset,
-    //   amountWei,
-    //   { router, path }
-    // );
-    const tx = { hash: 'placeholder' }; // Placeholder
+    // Use the flashloan provider to execute
+    const flashloanProvider = new FlashloanProvider(signer);
+    const tx = await flashloanProvider.executeFlashloan(
+      flashloanContractAddress,
+      asset,
+      amountWei,
+      { router, path }
+    );
 
     // SUBMIT VIA PRIVATE RELAY (mandatory)
     const result = await submitPrivateTx(tx, provider);
@@ -770,13 +771,13 @@ async function executeVolatileArbitrage({
     // PRIVATE EXECUTION ONLY - No public mempool fallback
     console.log(`🔒 Executing via private relay only...`);
 
-    // const tx = await flashloanProvider.executeFlashloan(
-    //   flashloanContractAddress,
-    //   asset,
-    //   amountWei,
-    //   { router, path }
-    // );
-    const tx = { hash: 'placeholder' }; // Placeholder
+    const flashloanProvider = new FlashloanProvider(signer);
+    const tx = await flashloanProvider.executeFlashloan(
+      flashloanContractAddress,
+      asset,
+      amountWei,
+      { router, path }
+    );
 
     // SUBMIT VIA PRIVATE RELAY (mandatory)
     const result = await submitPrivateTx(tx, provider);
