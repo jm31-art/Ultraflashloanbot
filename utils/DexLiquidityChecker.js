@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
-import pool_addresses from '../config/pool_addresses.json' assert { type: 'json' };
+import { readFileSync } from 'fs';
+const pool_addresses = JSON.parse(readFileSync(new URL('../config/pool_addresses.json', import.meta.url)));
 
 // ABIs
 const UNISWAP_V2_PAIR_ABI = [
