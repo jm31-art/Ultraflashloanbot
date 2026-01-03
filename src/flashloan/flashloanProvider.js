@@ -38,20 +38,22 @@ const FLASHLOAN_CONTRACT_ABI = [
 ];
 
 export class FlashloanProvider {
-  constructor() {
-    this.pancakeRouter = new ethers.Contract(PANCAKE_ROUTER_ADDRESS, PANCAKE_ROUTER_ABI, provider);
-    // Always initialize flashloan contract
-    this.flashloanContract = new ethers.Contract(FLASHLOAN_CONTRACT_ADDRESS, FLASHLOAN_CONTRACT_ABI, provider);
+  constructor(signer) {
+    this.signer = signer;
+    this.pancakeRouter = new ethers.Contract(PANCAKE_ROUTER_ADDRESS, PANCAKE_ROUTER_ABI, signer);
+    // Always initialize flashloan contract with signer
+    this.flashloanContract = new ethers.Contract(FLASHLOAN_CONTRACT_ADDRESS, FLASHLOAN_CONTRACT_ABI, signer);
     console.log('🔥 FLASHLOAN: Contract initialized at', FLASHLOAN_CONTRACT_ADDRESS);
+    console.log('FLASHLOAN ENABLED - Signer attached');
   }
 
   /**
    * Borrow flashloan amount
    */
-  async borrowFlashloan(signer, asset, amount) {
+  async borrowFlashloan(asset, amount) {
     try {
       console.log(`FLASHLOAN: Borrowed ${ethers.formatEther(amount)} ${asset} for trade`);
-      const tx = await this.flashloanContract.connect(signer).borrow(asset, amount);
+      const tx = await this.flashloanContract.borrow(asset, amount);
       return tx;
     } catch (error) {
       console.error('❌ Flashloan borrow failed:', error.message);
@@ -62,10 +64,10 @@ export class FlashloanProvider {
   /**
    * Repay flashloan amount
    */
-  async repayFlashloan(signer, asset, amount) {
+  async repayFlashloan(asset, amount) {
     try {
       console.log(`FLASHLOAN: Repaying ${ethers.formatEther(amount)} ${asset}`);
-      const tx = await this.flashloanContract.connect(signer).repay(asset, amount);
+      const tx = await this.flashloanContract.repay(asset, amount);
       return tx;
     } catch (error) {
       console.error('❌ Flashloan repay failed:', error.message);
@@ -204,7 +206,7 @@ export class FlashloanProvider {
   /**
    * Execute perp arbitrage via flashloan with multicall
    */
-  async executePerpArbitrage(signer, dex, token, direction, amount, minProfit) {
+  async executePerpArbitrage(dex, token, direction, amount, minProfit) {
     try {
       console.log(`🔄 EXECUTING PERP ARBITRAGE: ${dex} ${token} ${direction} ${ethers.formatEther(amount)}`);
 
@@ -218,7 +220,7 @@ export class FlashloanProvider {
         this.flashloanContract.interface.encodeFunctionData("repay", [token, amount])
       ];
 
-      const tx = await this.flashloanContract.connect(signer).multicall(multicallData);
+      const tx = await this.flashloanContract.multicall(multicallData);
       return tx;
     } catch (error) {
       console.error('❌ Perp arbitrage execution failed:', error.message);
@@ -229,7 +231,7 @@ export class FlashloanProvider {
   /**
    * Execute aggressive flashloan arbitrage with multicall
    */
-  async executeAggressiveFlashloanArbitrage(signer, path, amount, router, minProfit) {
+  async executeAggressiveFlashloanArbitrage(path, amount, router, minProfit) {
     try {
       console.log(`🔥 EXECUTING AGGRESSIVE FLASHLOAN ARBITRAGE: ${path.join('->')} ${ethers.formatEther(amount)}`);
 
@@ -243,7 +245,7 @@ export class FlashloanProvider {
         this.flashloanContract.interface.encodeFunctionData("repay", [path[0], amount])
       ];
 
-      const tx = await this.flashloanContract.connect(signer).multicall(multicallData);
+      const tx = await this.flashloanContract.multicall(multicallData);
       return tx;
     } catch (error) {
       console.error('❌ Aggressive flashloan arbitrage failed:', error.message);
@@ -295,5 +297,5 @@ export class FlashloanProvider {
   }
 }
 
-// Export singleton instance
-export const flashloanProvider = new FlashloanProvider();
+// Export singleton instance - disabled, use constructor with signer
+// export const flashloanProvider = new FlashloanProvider();

@@ -15,6 +15,7 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
         this.priceFeed = new PriceFeed(provider);
         this.profitCalculator = new ProfitCalculator(provider);
         this.liquidityChecker = new DexLiquidityChecker(provider);
+        this.flashloanProvider = new FlashloanProvider(signer);
 
         // Configuration
         this.minProfitUSD = options.minProfitUSD || 5;
