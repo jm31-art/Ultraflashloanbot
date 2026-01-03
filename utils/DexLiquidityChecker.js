@@ -1,5 +1,5 @@
 import { ethers } from "ethers";
-import pool_addresses from '../config/pool_addresses.json';
+import pool_addresses from '../config/pool_addresses.json' assert { type: 'json' };
 
 // ABIs
 const UNISWAP_V2_PAIR_ABI = [
