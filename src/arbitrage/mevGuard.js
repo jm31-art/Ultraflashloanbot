@@ -1,5 +1,5 @@
 import { provider } from "../dex/routers.js";
-import { flashloanProvider } from "../flashloan/flashloanProvider.js";
+// import { flashloanProvider } from "../flashloan/flashloanProvider.js"; // Disabled - requires signer
 
 export class MEVGuard {
   constructor() {
@@ -33,9 +33,9 @@ export class MEVGuard {
       const quote = await this.getRouterQuote(router, path, amount);
       this.baselineQuotes.set(quoteKey, quote);
 
-      // Flashloan liquidity baseline
-      const liquidity = await flashloanProvider.getReserveData(path[0]);
-      this.baselineLiquidity.set(path[0], liquidity?.availableLiquidity || 0n);
+      // Flashloan liquidity baseline - disabled
+      // const liquidity = await flashloanProvider.getReserveData(path[0]);
+      this.baselineLiquidity.set(path[0], 1000000n); // Placeholder
 
       this.lastCheckTime = Date.now();
 
@@ -76,17 +76,16 @@ export class MEVGuard {
         issues.push(`Router quote changed: ${baselineQuote.finalOut} -> ${currentQuote.finalOut}`);
       }
 
-      // Check 4: Flashloan liquidity using BigInt math
-      const currentLiquidity = await flashloanProvider.getReserveData(path[0]);
-      const baselineLiquidity = this.baselineLiquidity.get(path[0]);
-
-      if (currentLiquidity && baselineLiquidity) {
-        const liquidityDiff = currentLiquidity.availableLiquidity - baselineLiquidity;
-        const liquidityChange = Number(liquidityDiff * 100n / baselineLiquidity) / 100; // Convert to percentage
-        if (Math.abs(liquidityChange) > 0.05) { // 5% change
-          issues.push(`Flashloan liquidity changed ${liquidityChange.toFixed(3)} > 5%`);
-        }
-      }
+      // Check 4: Flashloan liquidity - disabled
+      // const currentLiquidity = await flashloanProvider.getReserveData(path[0]);
+      // const baselineLiquidity = this.baselineLiquidity.get(path[0]);
+      // if (currentLiquidity && baselineLiquidity) {
+      //   const liquidityDiff = currentLiquidity.availableLiquidity - baselineLiquidity;
+      //   const liquidityChange = Number(liquidityDiff * 100n / baselineLiquidity) / 100;
+      //   if (Math.abs(liquidityChange) > 0.05) {
+      //     issues.push(`Flashloan liquidity changed ${liquidityChange.toFixed(3)} > 5%`);
+      //   }
+      // }
 
       // Check 5: Time elapsed (prevent stale baselines)
       const timeElapsed = Date.now() - this.lastCheckTime;
