@@ -1,41 +1,24 @@
 import { ethers } from "ethers";
 import { provider } from "../dex/routers.js";
 
-// Custom Flashloan Contract (PRIMARY - always active)
-const CUSTOM_FLASHLOAN_ADDRESS = "0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1";
-
-// Aave V3 BSC Pool contract (fallback)
-const AAVE_V3_POOL_ADDRESS = "0x6807dc923806fE8Fd134338EABCA509979a7e2205";
-
-// Aave V3 BSC Pool contract (alternative fallback)
-const AAVE_V3_POOL_ADDRESS_ALT = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4e2";
-const AAVE_V3_POOL_ABI = [
-  "function flashLoanSimple(address receiverAddress, address asset, uint256 amount, bytes calldata params, uint16 referralCode) external",
-  "function getReserveData(address asset) external view returns (tuple(uint256, uint40, uint16, uint128, uint128, uint128, uint40, address, address, address, address, uint8))"
+// PancakeSwap V2 Factory for flash swaps
+const PANCAKE_FACTORY_ADDRESS = "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73";
+const PANCAKE_FACTORY_ABI = [
+  "function getPair(address tokenA, address tokenB) external view returns (address pair)"
 ];
 
-// PancakeSwap Router for flash swaps (fallback)
-const PANCAKE_ROUTER_ADDRESS = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
-const PANCAKE_ROUTER_ABI = [
-  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-  "function swapTokensForExactTokens(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts)",
-  "function getAmountsOut(uint amountIn, address[] memory path) external view returns (uint[] memory amounts)",
-  "function getAmountsIn(uint amountOut, address[] memory path) external view returns (uint[] memory amounts)"
+// PancakeSwap V2 Pair ABI for flash swaps
+const PANCAKE_PAIR_ABI = [
+  "function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external",
+  "function token0() external view returns (address)",
+  "function token1() external view returns (address)",
+  "function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)"
 ];
 
-// Custom flashloan contract (ALWAYS ACTIVE)
-const FLASHLOAN_CONTRACT_ADDRESS = '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1';
-const FLASHLOAN_CONTRACT_ABI = [
-  "function executeFlashloanArbitrage(address asset, uint256 amount, address[] calldata path, address router, uint256 minProfit) external",
-  "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external",
-  "function executePerpArbitrage(string calldata dex, string calldata token, string calldata direction, uint256 amount, uint256 minProfit) external",
-  "function executeAggressiveFlashloanArbitrage(address[] calldata path, uint256 amount, address router, uint256 minProfit) external",
-  "function flashLoan(address asset, uint256 amount, address receiver, bytes calldata params) external",
-  "function borrow(address asset, uint256 amount) external",
-  "function repay(address asset, uint256 amount) external",
-  "event Borrow(address indexed asset, address indexed borrower, uint256 amount)",
-  "event Repay(address indexed asset, address indexed borrower, uint256 amount)"
-];
+// Token addresses for high-liquidity pairs
+const WBNB_ADDRESS = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
+const USDT_ADDRESS = "0x55d398326f99059fF775485246999027B3197955";
+const BTCB_ADDRESS = "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c";
 
 export class FlashloanProvider {
   constructor(signer) {
