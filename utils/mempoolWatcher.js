@@ -19,9 +19,9 @@ class MempoolWatcher extends EventEmitter {
     if (this.isWatching) return;
     console.log('📡 MempoolWatcher: Attempting connection...');
 
-    // Use public WSS
+    // Use public WSS primary
     try {
-      const wsUrl = 'wss://bsc-ws-node.nariox.org:443';
+      const wsUrl = 'wss://bsc.publicnode.com';
       this.wsProvider = new ethers.WebSocketProvider(wsUrl);
 
       // Error handler with reconnect
@@ -36,13 +36,37 @@ class MempoolWatcher extends EventEmitter {
         new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 15000))
       ]);
 
-      console.log('📡 MEMPOOL ACTIVE');
+      console.log('📡 MEMPOOL CONNECTED');
       this._setupPendingListener();
       this.isWatching = true;
       this.reconnectAttempts = 0;
       return;
     } catch (error) {
       console.warn('MEMPOOL WS ERROR:', error.message);
+    }
+
+    // Fallback WSS
+    try {
+      const fallbackWsUrl = 'wss://bsc-ws-node.nariox.org:443';
+      this.wsProvider = new ethers.WebSocketProvider(fallbackWsUrl);
+
+      this.wsProvider.on('error', (error) => {
+        console.warn('MEMPOOL WS ERROR:', error.message);
+        this._handleReconnect();
+      });
+
+      await Promise.race([
+        this.wsProvider.getBlockNumber(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
+      ]);
+
+      console.log('📡 MEMPOOL CONNECTED');
+      this._setupPendingListener();
+      this.isWatching = true;
+      this.reconnectAttempts = 0;
+      return;
+    } catch (fallbackError) {
+      console.warn('MEMPOOL WS ERROR: All connections failed:', fallbackError.message);
       this._handleFailure();
     }
   }
@@ -55,6 +79,12 @@ class MempoolWatcher extends EventEmitter {
     const delay = 30000; // 30 seconds
     console.log(`📡 MEMPOOLWATCHER: Reconnecting in ${delay/1000}s (attempt ${this.reconnectAttempts})`);
     setTimeout(() => this.start(), delay);
+  }
+
+  _handleFailure() {
+    console.log('📡 MEMPOOLWATCHER: Connection failed - continuing without mempool watching');
+    this.isWatching = false;
+    this.wsProvider = null;
   }
 
 
