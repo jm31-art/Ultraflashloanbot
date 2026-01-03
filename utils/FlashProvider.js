@@ -89,8 +89,7 @@ class FlashProvider {
     async _initializeAggressiveFlashloan() {
         try {
             if (!this.signer) {
-                console.log('⚠️ FlashProvider: No signer - aggressive flashloans disabled');
-                return;
+                throw new Error('Signer required for flashloans');
             }
 
             // Load ABI for aggressive flashloan contract
@@ -108,8 +107,9 @@ class FlashProvider {
             );
 
             console.log('🔥 FlashProvider: Aggressive flashloan contract initialized for ALL trades');
+            console.log('FLASHLOAN ENABLED');
         } catch (error) {
-            console.warn('⚠️ FlashProvider: Aggressive flashloan initialization failed:', error.message);
+            console.error('❌ FlashProvider: Aggressive flashloan initialization failed:', error.message);
             this.aggressiveFlashloanContract = null;
         }
 
