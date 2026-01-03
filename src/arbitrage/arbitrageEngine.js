@@ -1,7 +1,7 @@
 import { ROUTERS, provider } from "../dex/routers.js";
 import { simulateTriangular } from "./simulator.js";
 import { calculateProfit } from "./profitCalculator.js";
-import { flashloanProvider } from "../flashloan/flashloanProvider.js";
+// import { flashloanProvider } from "../flashloan/flashloanProvider.js"; // Disabled - requires signer
 import { mevGuard } from "./mevGuard.js";
 import { shouldRunExtremeMode, getCurrentBlock } from "./blockScheduler.js";
 import { FLASHLOAN_PROVIDERS, getBestProvider, calculateFee } from "../flashloan/providers.js";
@@ -502,12 +502,12 @@ async function validateArbitrageConditions(router, path, amountInWei, sim, profi
       return false;
     }
 
-    // Check flashloan availability
-    const reserveData = await flashloanProvider.getReserveData(path[0]);
-    if (!reserveData || reserveData.availableLiquidity < amountInWei) {
-      console.log(`❌ Insufficient flashloan liquidity`);
-      return false;
-    }
+    // Check flashloan availability - disabled
+    // const reserveData = await flashloanProvider.getReserveData(path[0]);
+    // if (!reserveData || reserveData.availableLiquidity < amountInWei) {
+    //   console.log(`❌ Insufficient flashloan liquidity`);
+    //   return false;
+    // }
 
     return true;
 
@@ -539,13 +539,14 @@ async function executeFlashloanArbitrage({
       throw new Error("Private relay unavailable - aborting execution for MEV safety");
     }
 
-    // Use the flashloan provider to execute
-    const tx = await flashloanProvider.executeFlashloan(
-      flashloanContractAddress,
-      asset,
-      amountWei,
-      { router, path }
-    );
+    // Use the flashloan provider to execute - disabled
+    // const tx = await flashloanProvider.executeFlashloan(
+    //   flashloanContractAddress,
+    //   asset,
+    //   amountWei,
+    //   { router, path }
+    // );
+    const tx = { hash: 'placeholder' }; // Placeholder
 
     // SUBMIT VIA PRIVATE RELAY (mandatory)
     const result = await submitPrivateTx(tx, provider);
@@ -769,12 +770,13 @@ async function executeVolatileArbitrage({
     // PRIVATE EXECUTION ONLY - No public mempool fallback
     console.log(`🔒 Executing via private relay only...`);
 
-    const tx = await flashloanProvider.executeFlashloan(
-      flashloanContractAddress,
-      asset,
-      amountWei,
-      { router, path }
-    );
+    // const tx = await flashloanProvider.executeFlashloan(
+    //   flashloanContractAddress,
+    //   asset,
+    //   amountWei,
+    //   { router, path }
+    // );
+    const tx = { hash: 'placeholder' }; // Placeholder
 
     // SUBMIT VIA PRIVATE RELAY (mandatory)
     const result = await submitPrivateTx(tx, provider);
