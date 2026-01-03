@@ -72,12 +72,12 @@ class RPCManager {
     }
 
     /**
-     * Get execution provider (private RPC required)
+     * Get execution provider (private RPC preferred, public allowed for continuity)
      */
     getExecutionProvider() {
         this._ensureInitialized();
         if (!this._isPrivate) {
-            throw new Error('❌ Execution provider requires private RPC - system in scan-only mode');
+            console.warn('⚠️ Using public RPC for execution - reduced reliability, but bot continues');
         }
         return this._executionProvider;
     }
@@ -135,9 +135,9 @@ class RPCManager {
 
         // FALLBACKS: Add public RPCs
         this._rpcConfigs.push(
-            { url: 'https://rpc.ankr.com/bsc', name: 'Ankr BSC', isPrivate: true },
-            { url: 'https://bsc-rpc.publicnode.com', name: 'PublicNode BSC', isPrivate: true },
-            { url: 'https://bsc-dataseed1.defibit.io', name: 'DefiBit BSC', isPrivate: true }
+            { url: 'https://rpc.ankr.com/bsc', name: 'Ankr BSC', isPrivate: false },
+            { url: 'https://bsc-rpc.publicnode.com', name: 'PublicNode BSC', isPrivate: false },
+            { url: 'https://bsc-dataseed1.defibit.io', name: 'DefiBit BSC', isPrivate: false }
         );
 
         // If no NodeReal, check other private RPCs
@@ -183,6 +183,28 @@ class RPCManager {
     }
 
     /**
+     * Create resilient provider with auto-switching on quota errors
+     * @private
+     */
+    _createResilientProvider(url, options) {
+        const baseProvider = new ethers.JsonRpcProvider(url, undefined, options);
+        const self = this;
+
+        return new Proxy(baseProvider, {
+            get(target, prop) {
+                const value = target[prop];
+                if (typeof value === 'function') {
+                    return (...args) => {
+                        const callFn = () => value.apply(target, args);
+                        return self.executeCriticalCall(callFn, `provider.${prop}`, 3);
+                    };
+                }
+                return value;
+            }
+        });
+    }
+
+    /**
      * Create provider instances
      * @private
      */
@@ -193,38 +215,59 @@ class RPCManager {
             staticNetwork: true
         };
 
-        // EXECUTION PROVIDER: For transactions (requires private RPC)
-        if (this._isPrivate) {
-            this._executionProvider = new ethers.JsonRpcProvider(this._rpcUrl, undefined, {
-                ...providerConfig,
-                batchMaxCount: 10, // Limited batching for execution
-            });
-        }
+        // EXECUTION PROVIDER: For transactions
+        this._executionProvider = this._createResilientProvider(this._rpcUrl, {
+            ...providerConfig,
+            batchMaxCount: 10, // Limited batching for execution
+        });
 
         // READ PROVIDER: For queries (can use any RPC)
-        this._readProvider = new ethers.JsonRpcProvider(this._rpcUrl, undefined, {
+        this._readProvider = this._createResilientProvider(this._rpcUrl, {
             ...providerConfig,
             batchMaxCount: 50, // Higher batching for reads
         });
 
         // BACKUP PROVIDER: For fallbacks
-        this._backupProvider = new ethers.JsonRpcProvider('https://bsc-dataseed.binance.org/', undefined, {
+        this._backupProvider = this._createResilientProvider('https://bsc-dataseed.binance.org/', {
             ...providerConfig,
             batchMaxCount: 1, // Minimal for backup
         });
     }
 
     /**
-     * Switch to next RPC in the chain
+     * Switch to next working RPC in the chain
      * @private
      */
-    _switchRpc() {
-        this._currentRpcIndex = (this._currentRpcIndex + 1) % this._rpcConfigs.length;
-        const newRpc = this._rpcConfigs[this._currentRpcIndex];
-        this._rpcUrl = newRpc.url;
-        this._isPrivate = newRpc.isPrivate;
-        console.log(`RPC QUOTA HIT - Switching to fallback: ${newRpc.name}`);
+    async _switchRpc() {
+        for (let i = 0; i < this._rpcConfigs.length; i++) {
+            this._currentRpcIndex = (this._currentRpcIndex + 1) % this._rpcConfigs.length;
+            const newRpc = this._rpcConfigs[this._currentRpcIndex];
+            this._rpcUrl = newRpc.url;
+            this._isPrivate = newRpc.isPrivate;
+            console.log(`RPC QUOTA HIT - Switching to fallback: ${newRpc.name}`);
+            this._createProviders();
+
+            try {
+                await this._validateConnectivity();
+                return; // Successfully switched to a working RPC
+            } catch (error) {
+                console.warn(`RPC ${newRpc.name} validation failed: ${error.message}, trying next...`);
+            }
+        }
+
+        // If all configured RPCs fail, use default public RPC to prevent bot crash
+        const defaultRpc = { url: 'https://bsc-dataseed.binance.org/', name: 'Binance BSC', isPrivate: false };
+        this._rpcUrl = defaultRpc.url;
+        this._isPrivate = defaultRpc.isPrivate;
+        console.log(`RPC QUOTA HIT - Switching to fallback: ${defaultRpc.name}`);
         this._createProviders();
+
+        // Attempt validation, but don't throw if it fails - bot must continue
+        try {
+            await this._validateConnectivity();
+        } catch (error) {
+            console.warn(`Default RPC ${defaultRpc.name} validation failed: ${error.message} - continuing with unvalidated provider`);
+        }
     }
 
     /**

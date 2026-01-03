@@ -39,7 +39,7 @@ class LiquidationBot extends EventEmitter {
 
         // ULTRA-LOW THRESHOLDS & BOOTSTRAP CONFIGURATION - EXTREME MODE
         this.minProfitUSD = options.minProfitUSD || 0.20; // Start with $0.20 for bootstrap
-        this.normalMinProfitUSD = 50; // $50 normal minimum
+        this.normalMinProfitUSD = 5; // $5 normal minimum for flashloans
         this.maxGasPrice = options.maxGasPrice || 5; // gwei
         this.scanInterval = options.scanInterval || 15000; // 15 seconds (faster for liquidations)
         this.maxLiquidationAmount = options.maxLiquidationAmount || ethers.parseEther('50000'); // $50k max
@@ -728,6 +728,11 @@ class LiquidationBot extends EventEmitter {
 
             this.scanMetrics.positionsFound += validPositions.length;
             console.log(`📊 ${protocolName}: Found ${validPositions.length} positions at risk (${subgraphPositions.value?.length || 0} from subgraph, ${eventPositions.value?.length || 0} from events)`);
+
+            // Log positions at risk
+            for (const position of validPositions) {
+                console.log(`🚨 POSITION AT RISK: ${protocolName} - User: ${position.user} - Health Factor: ${position.healthFactor?.toFixed(3) || 'unknown'} - Collateral: ${position.collateralAsset} - Debt: ${position.debtAsset}`);
+            }
 
             return validPositions;
 

@@ -75,13 +75,13 @@ const PROTOCOLS = {
             supportsFlashLoan: false,
             enabled: false // Disable Compound on BSC
         },
-        // Venus Protocol - DISABLED: Contract connectivity issues
+        // Venus Protocol - ENABLED
         VENUS: {
             name: 'Venus',
             comptroller: '0xfD36E2c2a6789Db23113685031d7F16329158384',
             priceOracle: '0xd8B6dA2bfEC71D684D3E2a2FC9492Ddad5C3787F',
             supportsFlashLoan: false,
-            enabled: false // Disable Venus temporarily - contract issues
+            enabled: true // Enable Venus for liquidations
         },
         // Cream Finance - DISABLED: Not active on BSC
         CREAM: {
@@ -169,6 +169,14 @@ const PROTOCOLS = {
             address: '0xcF6BB5389c92Bdda8a3747Ddb454cB7a64626C6',
             decimals: 18,
             isGovernance: true
+        },
+        // Venus vTokens
+        vWBNB: {
+            symbol: 'vWBNB',
+            address: '0xA07c5b74C9B40447a954e1466938b865b6bbea16',
+            decimals: 8,
+            underlying: 'WBNB',
+            isVToken: true
         }
     },
 

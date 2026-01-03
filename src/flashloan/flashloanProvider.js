@@ -28,6 +28,8 @@ const FLASHLOAN_CONTRACT_ADDRESS = '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1';
 const FLASHLOAN_CONTRACT_ABI = [
   "function executeFlashloanArbitrage(address asset, uint256 amount, address[] calldata path, address router, uint256 minProfit) external",
   "function executeAtomicLiquidation(address lendingProtocol, address borrower, address debtAsset, address collateralAsset, uint256 debtToCover, uint256 minProfit, bytes calldata arbitrageData) external",
+  "function executePerpArbitrage(string calldata dex, string calldata token, string calldata direction, uint256 amount, uint256 minProfit) external",
+  "function executeAggressiveFlashloanArbitrage(address[] calldata path, uint256 amount, address router, uint256 minProfit) external",
   "function flashLoan(address asset, uint256 amount, address receiver, bytes calldata params) external",
   "function borrow(address asset, uint256 amount) external",
   "function repay(address asset, uint256 amount) external",
@@ -159,8 +161,9 @@ export class FlashloanProvider {
       return tx;
 
     } catch (error) {
-      console.error("All flashloan execution methods failed:", error);
-      throw error;
+      console.error("All flashloan execution methods failed - continuing without flashloan:", error.message);
+      // Return null to indicate failure but allow bot to continue
+      return null;
     }
   }
 
@@ -196,6 +199,84 @@ export class FlashloanProvider {
   getFlashloanFee(amount) {
     // Aave v3 flashloan fee is 0.05% (5 basis points)
     return (amount * 5n) / 10000n;
+  }
+
+  /**
+   * Execute perp arbitrage via flashloan with multicall
+   */
+  async executePerpArbitrage(signer, dex, token, direction, amount, minProfit) {
+    try {
+      console.log(`🔄 EXECUTING PERP ARBITRAGE: ${dex} ${token} ${direction} ${ethers.formatEther(amount)}`);
+
+      // Use multicall for atomic execution
+      const multicallData = [
+        // Borrow flashloan
+        this.flashloanContract.interface.encodeFunctionData("borrow", [token, amount]),
+        // Execute perp arbitrage
+        this.flashloanContract.interface.encodeFunctionData("executePerpArbitrage", [dex, token, direction, amount, minProfit]),
+        // Repay flashloan
+        this.flashloanContract.interface.encodeFunctionData("repay", [token, amount])
+      ];
+
+      const tx = await this.flashloanContract.connect(signer).multicall(multicallData);
+      return tx;
+    } catch (error) {
+      console.error('❌ Perp arbitrage execution failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Execute aggressive flashloan arbitrage with multicall
+   */
+  async executeAggressiveFlashloanArbitrage(signer, path, amount, router, minProfit) {
+    try {
+      console.log(`🔥 EXECUTING AGGRESSIVE FLASHLOAN ARBITRAGE: ${path.join('->')} ${ethers.formatEther(amount)}`);
+
+      // Use multicall for atomic execution
+      const multicallData = [
+        // Borrow flashloan
+        this.flashloanContract.interface.encodeFunctionData("borrow", [path[0], amount]),
+        // Execute aggressive arbitrage
+        this.flashloanContract.interface.encodeFunctionData("executeAggressiveFlashloanArbitrage", [path, amount, router, minProfit]),
+        // Repay flashloan
+        this.flashloanContract.interface.encodeFunctionData("repay", [path[0], amount])
+      ];
+
+      const tx = await this.flashloanContract.connect(signer).multicall(multicallData);
+      return tx;
+    } catch (error) {
+      console.error('❌ Aggressive flashloan arbitrage failed:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Get real-time price from Coingecko API
+   */
+  async getCoingeckoPrice(tokenSymbol) {
+    try {
+      const response = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${tokenSymbol.toLowerCase()}&vs_currencies=usd`);
+      const data = await response.json();
+      return data[tokenSymbol.toLowerCase()]?.usd || null;
+    } catch (error) {
+      console.error('❌ Coingecko price fetch failed:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Get token balance via ethers call
+   */
+  async getTokenBalance(tokenAddress, walletAddress, provider) {
+    try {
+      const tokenContract = new ethers.Contract(tokenAddress, ["function balanceOf(address) view returns (uint256)"], provider);
+      const balance = await tokenContract.balanceOf(walletAddress);
+      return balance;
+    } catch (error) {
+      console.error('❌ Token balance fetch failed:', error.message);
+      return ethers.parseEther('0');
+    }
   }
 
   /**

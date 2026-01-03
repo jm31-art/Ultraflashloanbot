@@ -1,8 +1,32 @@
-const { EventEmitter } = require('events');
-const { ethers } = require('ethers');
-const { NFT_MARKETPLACES, TOKENS } = require('../config/protocols');
-const PriceFeed = require('../services/PriceFeed');
-const ProfitCalculator = require('../utils/ProfitCalculator');
+/*
+ * ⚠️ NFT FLASH LOAN TRADER - COMMENTED OUT DUE TO LOW PROFITABILITY
+ *
+ * PROFITABILITY ANALYSIS:
+ * - BSC NFT market has very low liquidity compared to Ethereum
+ * - Limited NFT collections and trading volume on BSC
+ * - Even with lower fees (1-2% vs Ethereum's 2.5-5%), flashloan fees (0.05%) and gas costs make most trades unprofitable
+ * - Cross-marketplace arbitrage opportunities are rare due to thin order books
+ * - $10+ net profit threshold after all fees is difficult to achieve consistently
+ *
+ * RECOMMENDATION: Focus on more profitable strategies like DEX arbitrage and perpetual funding rate arbitrage.
+ * Uncomment only if BSC NFT ecosystem significantly improves with more liquidity and collections.
+ */
+
+/*
+import { EventEmitter } from 'events';
+import { ethers } from 'ethers';
+import axios from 'axios';
+// BSC NFT Marketplaces configuration
+const BSC_NFT_MARKETPLACES = {
+    ELEMENT: {
+        api: 'https://api.element.market',
+        contract: '0x0000000000000000000000000000000000000000' // Placeholder
+    },
+    // Add other BSC NFT marketplaces as they become available
+};
+import { TOKENS } from '../config/protocols.js';
+import PriceFeed from '../services/PriceFeed.js';
+import ProfitCalculator from '../utils/ProfitCalculator.js';
 
 class NFTFlashLoanTrader extends EventEmitter {
     constructor(provider, signer, options = {}) {
@@ -13,27 +37,26 @@ class NFTFlashLoanTrader extends EventEmitter {
         this.priceFeed = new PriceFeed(provider);
         this.profitCalculator = new ProfitCalculator(provider);
 
-        // Configuration
-        this.minProfitUSD = options.minProfitUSD || 100; // Higher minimum for NFT trades
+        // Configuration - BSC NFT Focus with realistic profit thresholds
+        this.minProfitUSD = options.minProfitUSD || 10; // $10+ net minimum after ALL fees
         this.maxGasPrice = options.maxGasPrice || 5; // gwei
-        this.scanInterval = options.scanInterval || 60000; // 1 minute (NFT markets move slower)
-        this.maxNFTPrice = options.maxNFTPrice || ethers.parseEther('100'); // 100 ETH max
-        this.profitMarginThreshold = options.profitMarginThreshold || 0.05; // 5% minimum margin
+        this.scanInterval = options.scanInterval || 300000; // 5 minutes (BSC NFT markets slower)
+        this.maxNFTPrice = options.maxNFTPrice || ethers.parseEther('10'); // 10 BNB max (realistic BSC limit)
+        this.profitMarginThreshold = options.profitMarginThreshold || 0.10; // 10% minimum margin (higher for fees)
 
         this.isRunning = false;
         this.tradeCount = 0;
         this.successfulTrades = 0;
         this.lastScanTime = 0;
 
-        // NFT marketplace contracts
+        // BSC NFT marketplace contracts
         this.marketplaceContracts = {};
 
-        // NFT collection configurations
+        // BSC NFT collection configurations (limited BSC collections)
         this.supportedCollections = options.supportedCollections || [
-            '0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D', // BAYC
-            '0x60E4d786628Fea6478F785A6d7e704777c86a7c6', // MAYC
-            '0x8a90CAb2b38dba80c64b7734e58Ee1dB38B8992e', // Doodles
-            '0x49cF6f5d44E70224e2E23fDcdd2C053F30aDA28B'  // CloneX
+            // BSC NFT collections would go here - currently limited ecosystem
+            // '0x...', // BSC NFT Collection 1
+            // '0x...', // BSC NFT Collection 2
         ];
 
         // Floor price tracking
@@ -73,47 +96,28 @@ class NFTFlashLoanTrader extends EventEmitter {
     }
 
     async _initializeMarketplaceContracts() {
-        // Initialize OpenSea (Seaport)
-        if (NFT_MARKETPLACES.OPENSEA) {
-            const seaportAbi = [
-                "function fulfillOrder(bytes calldata order, bytes calldata signature) external payable",
-                "function getOrderHash(bytes32 orderHash) view returns (bytes32)"
-            ];
+        // Initialize Element Market (BSC primary NFT marketplace)
+        if (BSC_NFT_MARKETPLACES.ELEMENT) {
+            try {
+                const elementAbi = [
+                    "function buy(bytes calldata orderData) external payable",
+                    "function sell(bytes calldata orderData) external"
+                ];
 
-            this.marketplaceContracts.OPENSEA = new ethers.Contract(
-                NFT_MARKETPLACES.OPENSEA.contract,
-                seaportAbi,
-                this.signer
-            );
+                this.marketplaceContracts.ELEMENT = new ethers.Contract(
+                    BSC_NFT_MARKETPLACES.ELEMENT.contract,
+                    elementAbi,
+                    this.signer
+                );
+                console.log('✅ Element Market initialized');
+            } catch (error) {
+                console.warn('⚠️ Element Market initialization failed:', error.message);
+            }
         }
 
-        // Initialize LooksRare
-        if (NFT_MARKETPLACES.LOOKSRARE) {
-            const looksRareAbi = [
-                "function matchAskWithTakerBid(bytes calldata askOrder, bytes calldata takerBid) external",
-                "function matchBidWithTakerAsk(bytes calldata bidOrder, bytes calldata takerAsk) external"
-            ];
-
-            this.marketplaceContracts.LOOKSRARE = new ethers.Contract(
-                NFT_MARKETPLACES.LOOKSRARE.contract,
-                looksRareAbi,
-                this.signer
-            );
-        }
-
-        // Initialize X2Y2
-        if (NFT_MARKETPLACES.X2Y2) {
-            const x2y2Abi = [
-                "function run(bytes calldata data) external",
-                "function cancel(bytes calldata data) external"
-            ];
-
-            this.marketplaceContracts.X2Y2 = new ethers.Contract(
-                NFT_MARKETPLACES.X2Y2.contract,
-                x2y2Abi,
-                this.signer
-            );
-        }
+        // BSC NFT marketplaces have limited on-chain contracts
+        // Most trading happens through centralized APIs
+        console.log('ℹ️ BSC NFT trading primarily uses API-based marketplaces');
     }
 
     async _loadFloorPrices() {
@@ -133,21 +137,46 @@ class NFTFlashLoanTrader extends EventEmitter {
     }
 
     async _getFloorPrice(collectionAddress) {
-        // Placeholder - integrate with NFT price APIs
-        // In production, this would call services like:
-        // - Reservoir API
-        // - OpenSea API
-        // - NFTGo API
+        try {
+            // Try Element Market API for BSC NFT floor prices
+            const elementResponse = await axios.get(
+                `${BSC_NFT_MARKETPLACES.ELEMENT.api}/collections/${collectionAddress}/stats`,
+                {
+                    timeout: 10000,
+                    headers: {
+                        'User-Agent': 'NFTFlashLoanTrader/1.0',
+                        'Accept': 'application/json'
+                    }
+                }
+            );
 
-        // For demo, return mock floor prices
-        const mockPrices = {
-            '0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D': 50, // BAYC ~50 ETH
-            '0x60E4d786628Fea6478F785A6d7e704777c86a7c6': 15, // MAYC ~15 ETH
-            '0x8a90CAb2b38dba80c64b7734e58Ee1dB38B8992e': 8,  // Doodles ~8 ETH
-            '0x49cF6f5d44E70224e2E23fDcdd2C053F30aDA28B': 3   // CloneX ~3 ETH
-        };
+            if (elementResponse.data && elementResponse.data.floorPrice) {
+                const floorPriceBNB = parseFloat(elementResponse.data.floorPrice);
+                console.log(`📊 Element Market floor price for ${collectionAddress}: ${floorPriceBNB} BNB`);
+                return floorPriceBNB;
+            }
 
-        return mockPrices[collectionAddress] || 1; // Default 1 ETH
+        } catch (elementError) {
+            console.warn(`⚠️ Element Market API failed for ${collectionAddress}:`, elementError.message);
+        }
+
+        try {
+            // Fallback: Try BSCScan NFT API or other BSC NFT services
+            // Note: BSC has limited NFT API infrastructure compared to Ethereum
+            const bscScanResponse = await axios.get(
+                `https://api.bscscan.com/api?module=stats&action=bnblastprice&apikey=demo`,
+                { timeout: 5000 }
+            );
+
+            // For collections without API data, estimate based on rarity
+            // This is a simplified fallback - real implementation would need more data
+            console.warn(`⚠️ Using fallback estimation for ${collectionAddress} - BSC NFT APIs limited`);
+            return 0.1; // Conservative 0.1 BNB fallback
+
+        } catch (fallbackError) {
+            console.warn(`⚠️ All BSC NFT price APIs failed for ${collectionAddress}`);
+            return 0.01; // Very conservative fallback
+        }
     }
 
     async _verifyConnections() {
@@ -253,8 +282,8 @@ class NFTFlashLoanTrader extends EventEmitter {
     async _getMarketplaceListings(collectionAddress) {
         const listings = {};
 
-        // Get listings from each marketplace
-        for (const [marketplaceName, marketplace] of Object.entries(NFT_MARKETPLACES)) {
+        // Get listings from BSC marketplaces
+        for (const [marketplaceName, marketplace] of Object.entries(BSC_NFT_MARKETPLACES)) {
             try {
                 const marketplaceListings = await this._getListingsFromMarketplace(
                     marketplaceName,
@@ -262,6 +291,7 @@ class NFTFlashLoanTrader extends EventEmitter {
                     collectionAddress
                 );
                 listings[marketplaceName] = marketplaceListings;
+                console.log(`📋 ${marketplaceName}: ${marketplaceListings.length} listings for ${collectionAddress}`);
             } catch (error) {
                 console.warn(`⚠️ Failed to get listings from ${marketplaceName}:`, error.message);
                 listings[marketplaceName] = [];
@@ -272,24 +302,50 @@ class NFTFlashLoanTrader extends EventEmitter {
     }
 
     async _getListingsFromMarketplace(marketplaceName, marketplace, collectionAddress) {
-        // Placeholder - integrate with marketplace APIs
-        // In production, this would query:
-        // - OpenSea API
-        // - LooksRare API
-        // - X2Y2 API
-        // - NFTGo API
-
-        // Return mock listings for demo
-        const floorPrice = this.floorPrices.get(collectionAddress) || 1;
         const listings = [];
 
-        for (let i = 0; i < 5; i++) {
-            listings.push({
-                tokenId: Math.floor(Math.random() * 10000),
-                price: floorPrice * (0.9 + Math.random() * 0.2), // 90%-110% of floor
-                marketplace: marketplaceName,
-                seller: ethers.Wallet.createRandom().address
-            });
+        try {
+            if (marketplaceName === 'ELEMENT') {
+                // Element Market BSC NFT API
+                const response = await axios.get(
+                    `${marketplace.api}/orders`,
+                    {
+                        params: {
+                            contractAddress: collectionAddress,
+                            side: 1, // 1 for sell orders
+                            status: 'open',
+                            limit: 20
+                        },
+                        timeout: 10000,
+                        headers: {
+                            'User-Agent': 'NFTFlashLoanTrader/1.0',
+                            'Accept': 'application/json'
+                        }
+                    }
+                );
+
+                if (response.data && response.data.data) {
+                    for (const order of response.data.data) {
+                        listings.push({
+                            tokenId: order.tokenId,
+                            price: parseFloat(order.price) / 1e18, // Convert from wei
+                            marketplace: marketplaceName,
+                            seller: order.maker,
+                            orderData: order // Store full order data for execution
+                        });
+                    }
+                }
+            }
+
+            // Log real data
+            console.log(`📊 ${marketplaceName} real listings for ${collectionAddress}: ${listings.length} items`);
+            if (listings.length > 0) {
+                const prices = listings.map(l => l.price).sort((a, b) => a - b);
+                console.log(`   Price range: ${prices[0].toFixed(4)} - ${prices[prices.length - 1].toFixed(4)} BNB`);
+            }
+
+        } catch (error) {
+            console.warn(`⚠️ ${marketplaceName} API error for ${collectionAddress}:`, error.message);
         }
 
         return listings;
@@ -376,32 +432,42 @@ class NFTFlashLoanTrader extends EventEmitter {
 
     async _calculateNFTProfit(opportunity) {
         try {
-            const buyPrice = opportunity.buyPrice;
+            const buyPrice = opportunity.buyPrice; // Price in BNB
             const sellPrice = opportunity.sellPrice;
 
-            // Calculate fees
+            // BSC marketplace fees (typically 1-2% vs Ethereum's 2.5-5%)
             const buyFee = this._calculateMarketplaceFee(opportunity.buyMarketplace, buyPrice);
             const sellFee = this._calculateMarketplaceFee(opportunity.sellMarketplace, sellPrice);
-            const flashLoanFee = buyPrice * 0.0003; // 0.03% flash loan fee
+            const flashLoanFee = buyPrice * 0.0005; // 0.05% Aave V3 BSC flashloan fee
 
-            // Gas costs (rough estimate for NFT transfers)
-            const gasCost = 0.01; // 0.01 ETH gas cost
+            // BSC gas costs (much lower than Ethereum)
+            const gasCost = 0.0001; // 0.0001 BNB gas cost estimate
 
-            // Net profit
+            // Net profit calculation
             const grossProfit = sellPrice - buyPrice;
             const totalCosts = buyFee + sellFee + flashLoanFee + gasCost;
             const netProfit = grossProfit - totalCosts;
 
-            // Convert to USD
-            const ethPrice = await this.priceFeed.getPrice(TOKENS.WETH.address);
-            const expectedProfitUSD = netProfit * ethPrice;
+            // Convert BNB to USD for threshold check
+            const bnbPrice = await this.priceFeed.getPrice(TOKENS.WBNB.address) || 567; // Fallback $567 BNB
+            const expectedProfitUSD = netProfit * bnbPrice;
+
+            // STRICT PROFITABILITY CHECK: Must be $10+ net after ALL fees
+            const isProfitable = netProfit > 0 && expectedProfitUSD >= 10;
+
+            console.log(`💰 NFT Profit Analysis for ${opportunity.collection}:`);
+            console.log(`   Buy: ${buyPrice.toFixed(4)} BNB, Sell: ${sellPrice.toFixed(4)} BNB`);
+            console.log(`   Gross Profit: ${(grossProfit * bnbPrice).toFixed(2)} USD`);
+            console.log(`   Total Fees: ${(totalCosts * bnbPrice).toFixed(2)} USD (${(totalCosts/buyPrice*100).toFixed(2)}%)`);
+            console.log(`   Net Profit: ${expectedProfitUSD.toFixed(2)} USD`);
+            console.log(`   Profitable: ${isProfitable ? 'YES' : 'NO - Below $10 threshold'}`);
 
             return {
-                isProfitable: netProfit > 0,
-                expectedProfitUSD: expectedProfitUSD,
-                grossProfit: grossProfit,
-                totalCosts: totalCosts,
-                netProfit: netProfit,
+                isProfitable,
+                expectedProfitUSD,
+                grossProfit,
+                totalCosts,
+                netProfit,
                 breakdown: {
                     buyFee,
                     sellFee,
@@ -417,41 +483,56 @@ class NFTFlashLoanTrader extends EventEmitter {
     }
 
     _calculateMarketplaceFee(marketplace, price) {
-        // Marketplace fee structures
+        // BSC marketplace fee structures (lower than Ethereum)
         const feeStructures = {
-            OPENSEA: 0.025,    // 2.5%
-            LOOKSRARE: 0.015,  // 1.5%
-            X2Y2: 0.005        // 0.5%
+            ELEMENT: 0.01,     // 1% (BSC primary marketplace)
+            default: 0.015     // 1.5% default for BSC
         };
 
-        const feeRate = feeStructures[marketplace] || 0.025; // Default 2.5%
+        const feeRate = feeStructures[marketplace] || feeStructures.default;
         return price * feeRate;
     }
 
     async _executeNFTArbitrage(opportunity, profitAnalysis) {
         try {
-            // Create NFT arbitrage transaction
-            const tx = await this._createNFTArbitrageTx(opportunity);
+            console.log(`🚀 Executing NFT arbitrage with flashloan callback...`);
 
-            // Execute via FlashloanArb contract
-            const contractAddress = process.env.FLASHLOAN_ARB_CONTRACT;
-            if (!contractAddress) {
-                throw new Error('FlashloanArb contract address not configured');
-            }
-
-            const contract = new ethers.Contract(contractAddress, [
-                "function executeNFTArbitrage(address nftContract, uint256 tokenId, address marketplace, uint256 maxBuyPrice, uint256 minSellPrice) external"
-            ], this.signer);
-
-            const txResponse = await contract.executeNFTArbitrage(
-                opportunity.collection,
-                opportunity.tokenId,
-                NFT_MARKETPLACES[opportunity.buyMarketplace].contract,
-                ethers.parseEther(opportunity.buyPrice.toString()),
-                ethers.parseEther(opportunity.sellPrice.toString())
+            // Use flashloan callback approach for NFT flips
+            const flashloanContract = new ethers.Contract(
+                process.env.FLASHLOAN_ARB_CONTRACT || '0xf682bd44ca1Fb8184e359A8aF9E1732afD29BBE1',
+                [
+                    "function flashLoan(address asset, uint256 amount, address receiver, bytes calldata params) external"
+                ],
+                this.signer
             );
 
-            console.log(`✅ NFT arbitrage executed: ${txResponse.hash}`);
+            // Encode NFT arbitrage parameters for callback
+            const arbitrageParams = ethers.AbiCoder.defaultAbiCoder().encode(
+                ['address', 'uint256', 'address', 'uint256', 'uint256', 'bytes'],
+                [
+                    opportunity.collection,
+                    opportunity.tokenId,
+                    BSC_NFT_MARKETPLACES[opportunity.buyMarketplace]?.contract || ethers.ZeroAddress,
+                    ethers.parseEther(opportunity.buyPrice.toString()),
+                    ethers.parseEther(opportunity.sellPrice.toString()),
+                    opportunity.orderData || '0x' // Order data from marketplace API
+                ]
+            );
+
+            // Use WBNB as flashloan asset for BSC
+            const assetAddress = TOKENS.WBNB.address;
+            const flashAmount = ethers.parseEther(opportunity.buyPrice.toString());
+
+            const txResponse = await flashloanContract.flashLoan(
+                assetAddress,
+                flashAmount,
+                this.signer.address, // Contract will handle callback
+                arbitrageParams
+            );
+
+            console.log(`✅ NFT arbitrage executed with flashloan: ${txResponse.hash}`);
+            console.log(`   Net Profit: $${profitAnalysis.expectedProfitUSD.toFixed(2)}`);
+
             this.successfulTrades++;
 
             this.emit('nftArbitrageExecuted', {
@@ -516,3 +597,4 @@ class NFTFlashLoanTrader extends EventEmitter {
 }
 
 module.exports = NFTFlashLoanTrader;
+*/

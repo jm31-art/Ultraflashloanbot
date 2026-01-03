@@ -19,55 +19,58 @@ class MempoolWatcher extends EventEmitter {
     if (this.isWatching) return;
     console.log('📡 MempoolWatcher: Attempting connection...');
 
-    // Try public WSS first (faster, no limits)
+    // Try primary public WSS
     try {
-      const publicWsUrl = 'wss://bsc-ws-node.nariox.org:443';
-      this.wsProvider = new ethers.WebSocketProvider(publicWsUrl);
+      const primaryWsUrl = 'wss://bsc-ws-node.nariox.org:443';
+      this.wsProvider = new ethers.WebSocketProvider(primaryWsUrl);
 
       // Error handler with reconnect
       this.wsProvider.on('error', (error) => {
-        console.warn(`⚠️ MEMPOOLWATCHER: Public WSS error: ${error.message}`);
+        console.warn(`⚠️ MEMPOOLWATCHER: Primary WSS error: ${error.message}`);
         this._handleReconnect();
       });
 
-      // Test connection
+      // Test connection with increased timeout
       await Promise.race([
         this.wsProvider.getBlockNumber(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 15000))
       ]);
 
-      console.log('📡 MEMPOOLWATCHER: Connected successfully to public WSS');
+      console.log('📡 MEMPOOLWATCHER: Connected successfully to primary public WSS');
       this._setupPendingListener();
       this.isWatching = true;
       this.reconnectAttempts = 0;
       return;
     } catch (error) {
-      console.warn(`⚠️ MEMPOOLWATCHER: Public WSS failed: ${error.message}`);
+      console.warn(`⚠️ MEMPOOLWATCHER: Primary WSS failed: ${error.message}`);
     }
 
-    // Fallback to NodeReal private WSS
+    // Fallback to secondary public WSS
     try {
-      const nodeRealWsUrl = `wss://open-platform.nodereal.io/ws/${process.env.NODE_REAL_API_KEY}/bsc/`;
-      this.wsProvider = new ethers.WebSocketProvider(nodeRealWsUrl);
+      const fallbackWsUrl = 'wss://bsc-ws.publicnode.com';
+      this.wsProvider = new ethers.WebSocketProvider(fallbackWsUrl);
 
       this.wsProvider.on('error', (error) => {
-        console.warn(`⚠️ MEMPOOLWATCHER: NodeReal WSS error: ${error.message}`);
+        console.warn(`⚠️ MEMPOOLWATCHER: Fallback WSS error: ${error.message}`);
         this._handleReconnect();
       });
 
       await Promise.race([
         this.wsProvider.getBlockNumber(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
       ]);
 
-      console.log('📡 MEMPOOLWATCHER: Connected to NodeReal WSS fallback');
+      console.log('📡 MEMPOOLWATCHER: Connected to fallback public WSS');
       this._setupPendingListener();
       this.isWatching = true;
       this.reconnectAttempts = 0;
       return;
     } catch (fallbackError) {
       console.warn(`⚠️ MEMPOOLWATCHER: All WebSocket connections failed: ${fallbackError.message}`);
-      this._handleReconnect();
+      // Instead of reconnecting, disable mempool watching to prevent bot crash
+      console.log('📡 MEMPOOLWATCHER: Disabling mempool watching - bot will continue with block-based scanning');
+      this.isWatching = false;
+      this.wsProvider = null;
     }
   }
 

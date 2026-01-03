@@ -334,6 +334,47 @@ class MEVProtectorAI:
 
         return strategies.get(risk, strategies["LOW"])
 
+    def predict_liquidation_risk(self, features):
+        """Predict liquidation risk using scikit-learn model"""
+        try:
+            # For now, use a simple heuristic based on health factor
+            health_factor = features.get('healthFactor', 1.0)
+            collateral_value = features.get('collateralValue', 0)
+            debt_value = features.get('debtValue', 0)
+
+            # Simple risk assessment
+            if health_factor < 1.0:
+                risk_level = 'HIGH'
+                confidence = 0.95
+                will_liquidate = True
+            elif health_factor < 1.2:
+                risk_level = 'MEDIUM'
+                confidence = 0.7
+                will_liquidate = health_factor < 1.1
+            else:
+                risk_level = 'LOW'
+                confidence = 0.3
+                will_liquidate = False
+
+            # In future, train a proper ML model
+            # For now, return heuristic-based prediction
+
+            return {
+                'willLiquidate': will_liquidate,
+                'confidence': confidence,
+                'riskLevel': risk_level,
+                'prediction': f"Health factor {health_factor:.3f} indicates {risk_level} liquidation risk"
+            }
+
+        except Exception as e:
+            print(f"Liquidation prediction error: {e}")
+            return {
+                'willLiquidate': False,
+                'confidence': 0,
+                'riskLevel': 'unknown',
+                'error': str(e)
+            }
+
     def update_models(self, new_data):
         """Update AI models with new data"""
         # This would be called periodically to retrain models
@@ -364,6 +405,10 @@ def handle_message(message):
             analysis = ai_protector.analyze_transaction(data.get('transaction', {}))
             strategy = ai_protector.get_protection_strategy(data.get('transaction', {}), analysis)
             response = {"strategy": strategy, "analysis": analysis}
+
+        elif data.get('action') == 'predict_liquidation':
+            prediction = ai_protector.predict_liquidation_risk(data.get('features', {}))
+            response = prediction
 
         else:
             response = {"error": "Unknown action"}

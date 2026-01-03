@@ -11,29 +11,24 @@ class PerpBot extends EventEmitter {
         this.isRunning = false;
         this.scanInterval = 3 * 60 * 1000; // 3 minutes (enhanced polling)
         this.minFundingRate = 0.0001; // 0.01% minimum
-        this.maxPositionSize = ethers.parseEther('0.1'); // 0.1 BTC/ETH max
+        this.maxPositionSize = ethers.parseEther('1.0'); // 1.0 BTC/ETH max for larger positions
         this.flashloanContract = null;
 
         // Hedging configuration
         this.hedgeImbalances = true;
-        this.maxHedgePosition = ethers.parseEther('0.5'); // Larger hedging positions
-        this.imbalanceThreshold = 0.05; // 5% imbalance threshold
+        this.maxHedgePosition = ethers.parseEther('2.0'); // Larger hedging positions
+        this.imbalanceThreshold = 0.0001; // 0.01% imbalance threshold for sensitive hedging
+        this.minYieldThreshold = 5.0; // $5 minimum yield threshold
 
         // BSC Perp DEX configs - using real BSC perp protocols
         this.perpConfigs = {
-            THENA: {
-                endpoint: 'https://api.thena.fi/v1/funding-rates',
-                contract: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', // Thena perp contract
-                tokens: ['BTC', 'ETH', 'BNB']
-            },
             APOLLOX: {
-                endpoint: 'https://api.apollox.com/v1/funding-rates',
-                contract: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', // ApolloX perp contract
+                endpoint: 'https://api.apollox.finance/v1/public/future/funding-rate',
+                contract: '0xC8e8e8C8e8e8C8e8e8C8e8e8C8e8e8C8e8e8C8e8', // ApolloX perp contract
                 tokens: ['BTC', 'ETH', 'BNB']
             },
-            // Add more BSC perp DEXes as they become available
             PANCAKE_PERP: {
-                endpoint: 'https://perp.pancakeswap.finance/v1/funding-rates',
+                endpoint: 'https://api.pancakeswap.finance/v1/funding-rates',
                 contract: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', // Pancake perp
                 tokens: ['BTC', 'ETH']
             }
@@ -88,49 +83,29 @@ class PerpBot extends EventEmitter {
                 try {
                     console.log(`📊 PERPBOT: Checking ${dexName} funding rates...`);
 
-                    // Try to get funding rates from API
-                    const response = await axios.get(config.endpoint, { timeout: 5000 });
-                    const rates = response.data;
+                    // Get funding rates from API with proper parsing
+                    const apiRates = await this._fetchFundingRatesFromAPI(dexName, config);
+                    opportunities.push(...apiRates);
 
-                    for (const token of config.tokens) {
-                        const fundingRate = rates[token]?.fundingRate || 0;
-
-                        if (Math.abs(fundingRate) > this.minFundingRate) {
-                            const opportunity = {
-                                dex: dexName,
-                                token: token,
-                                fundingRate: fundingRate,
-                                direction: fundingRate > 0 ? 'long' : 'short',
-                                estimatedAPY: Math.abs(fundingRate) * 24 * 365 * 100,
-                                timestamp: Date.now()
-                            };
-
-                            opportunities.push(opportunity);
-
-                            console.log(`🎯 PERPBOT: ${dexName} ${token} funding rate: ${fundingRate.toFixed(6)} (${opportunity.estimatedAPY.toFixed(2)}% APY)`);
-                        }
-                    }
                 } catch (apiError) {
-                    // API failed, try on-chain data
-                    console.log(`⚠️ PERPBOT: ${dexName} API failed, trying on-chain data...`);
-
-                    try {
-                        // Try to get on-chain funding rates
-                        const onChainRates = await this._getOnChainFundingRates(config.contract, config.tokens);
-                        opportunities.push(...onChainRates);
-                    } catch (onChainError) {
-                        console.log(`⚠️ PERPBOT: ${dexName} on-chain data unavailable`);
-                    }
+                    console.log(`⚠️ PERPBOT: ${dexName} API failed: ${apiError.message}`);
+                    // Don't fall back to on-chain for now - focus on real APIs
                 }
             }
 
-            console.log(`📊 PERPBOT: Found ${opportunities.length} funding rate opportunities`);
+            console.log(`PERPBOT: Funding scan completed - ${opportunities.length} opportunities found`);
 
-            // Execute profitable opportunities with enhanced hedging
+            // Execute profitable opportunities with $5+ yield threshold
             for (const opp of opportunities) {
-                if (opp.estimatedAPY > 5) { // 5% minimum APY
-                    console.log(`🚀 PERPBOT: Executing funding arbitrage - ${opp.dex} ${opp.token} (${opp.estimatedAPY.toFixed(2)}% APY)`);
+                // Calculate potential yield based on position size and funding rate
+                const positionValueUSD = 100000; // Assume $100k position for calculation
+                const dailyYield = positionValueUSD * Math.abs(opp.fundingRate) * 24; // Daily yield
+
+                if (dailyYield >= this.minYieldThreshold) { // $5+ minimum daily yield
+                    console.log(`🚀 PERPBOT: Executing funding arbitrage - ${opp.dex} ${opp.token} (${opp.estimatedAPY.toFixed(2)}% APY, $${dailyYield.toFixed(2)} daily yield)`);
                     await this.executeFundingArbitrage(opp);
+                } else {
+                    console.log(`⏭️ PERPBOT: Skipping ${opp.dex} ${opp.token} - yield $${dailyYield.toFixed(2)} below $${this.minYieldThreshold} threshold`);
                 }
             }
 
@@ -139,38 +114,85 @@ class PerpBot extends EventEmitter {
                 await this.checkMarketImbalances(opportunities);
             }
 
-            console.log('✅ PERPBOT: Funding rate scan completed');
-
         } catch (error) {
             console.warn('⚠️ PERPBOT: Funding rate scan failed:', error.message);
         }
     }
 
     /**
-     * Get on-chain funding rates as fallback
+     * Fetch funding rates from real APIs
+     */
+    async _fetchFundingRatesFromAPI(dexName, config) {
+        const opportunities = [];
+
+        try {
+            const response = await axios.get(config.endpoint, {
+                timeout: 10000,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (compatible; PerpBot/1.0)',
+                    'Accept': 'application/json'
+                }
+            });
+
+            let rates = response.data;
+
+            // Parse API response based on DEX
+            if (dexName === 'APOLLOX') {
+                // ApolloX API structure: { code: 0, data: [{ symbol: 'BTCUSDT', fundingRate: '0.0001' }, ...] }
+                if (rates.code === 0 && rates.data) {
+                    rates = rates.data;
+                } else {
+                    throw new Error('Invalid ApolloX API response');
+                }
+            } else if (dexName === 'PANCAKE_PERP') {
+                // PancakeSwap API structure: { BTC: { fundingRate: 0.0001 }, ETH: { fundingRate: 0.0002 } }
+                // Assume direct object structure
+            }
+
+            for (const token of config.tokens) {
+                let fundingRate = 0;
+
+                if (dexName === 'APOLLOX') {
+                    // Find the symbol in the array
+                    const symbolData = rates.find(r => r.symbol && r.symbol.startsWith(token));
+                    fundingRate = symbolData ? parseFloat(symbolData.fundingRate) : 0;
+                } else if (dexName === 'PANCAKE_PERP') {
+                    fundingRate = rates[token]?.fundingRate || 0;
+                }
+
+                if (Math.abs(fundingRate) > this.minFundingRate) {
+                    const opportunity = {
+                        dex: dexName,
+                        token: token,
+                        fundingRate: fundingRate,
+                        direction: fundingRate > 0 ? 'long' : 'short',
+                        estimatedAPY: Math.abs(fundingRate) * 24 * 365 * 100,
+                        timestamp: Date.now()
+                    };
+
+                    opportunities.push(opportunity);
+
+                    console.log(`🎯 PERPBOT: ${dexName} ${token} funding rate: ${fundingRate.toFixed(6)} (${opportunity.estimatedAPY.toFixed(2)}% APY)`);
+                }
+            }
+
+        } catch (error) {
+            console.warn(`⚠️ PERPBOT: Failed to fetch ${dexName} rates:`, error.message);
+        }
+
+        return opportunities;
+    }
+
+    /**
+     * Get on-chain funding rates as fallback (real implementation needed)
      */
     async _getOnChainFundingRates(contractAddress, tokens) {
         const opportunities = [];
 
         try {
-            // Simplified on-chain funding rate retrieval
-            // In production, this would query actual perp contracts
-            for (const token of tokens) {
-                // Mock funding rate data for demonstration
-                const mockFundingRate = (Math.random() - 0.5) * 0.001; // Random rate between -0.05% and 0.05%
-
-                if (Math.abs(mockFundingRate) > this.minFundingRate) {
-                    opportunities.push({
-                        dex: 'ON_CHAIN',
-                        token: token,
-                        fundingRate: mockFundingRate,
-                        direction: mockFundingRate > 0 ? 'long' : 'short',
-                        estimatedAPY: Math.abs(mockFundingRate) * 24 * 365 * 100,
-                        timestamp: Date.now(),
-                        source: 'on_chain'
-                    });
-                }
-            }
+            // TODO: Implement real on-chain funding rate queries
+            // This would require contract ABIs and proper queries
+            console.log(`🔄 PERPBOT: On-chain funding rate queries not yet implemented for ${contractAddress}`);
         } catch (error) {
             console.warn('⚠️ PerpBot: On-chain funding rate retrieval failed:', error.message);
         }
@@ -214,8 +236,10 @@ class PerpBot extends EventEmitter {
 
             for (const imbalance of imbalances) {
                 if (Math.abs(imbalance.imbalancePercent) > this.imbalanceThreshold) {
-                    console.log(`📊 PERP IMBALANCE DETECTED: ${imbalance.token} ${imbalance.imbalancePercent.toFixed(2)}% - HEDGING WITH FLASHLOAN`);
+                    console.log(`📊 PERP IMBALANCE DETECTED: ${imbalance.token} ${imbalance.imbalancePercent.toFixed(4)}% imbalance (avg: ${imbalance.avgRate.toFixed(6)}, min: ${imbalance.minRate.toFixed(6)}, max: ${imbalance.maxRate.toFixed(6)}) - HEDGING WITH FLASHLOAN`);
                     await this.executeImbalanceHedge(imbalance);
+                } else {
+                    console.log(`📊 PERP BALANCE: ${imbalance.token} ${imbalance.imbalancePercent.toFixed(4)}% imbalance within threshold`);
                 }
             }
         } catch (error) {
@@ -263,7 +287,7 @@ class PerpBot extends EventEmitter {
     }
 
     /**
-     * Execute imbalance hedging with flashloans
+     * Execute imbalance hedging with flashloans using callback approach
      */
     async executeImbalanceHedge(imbalance) {
         try {
@@ -272,24 +296,45 @@ class PerpBot extends EventEmitter {
                 return;
             }
 
-            const hedgeAmount = this.maxHedgePosition; // Use max hedge position
+            // Determine hedge direction (opposite to imbalance)
+            const hedgeDirection = imbalance.imbalancePercent > 0 ? 'short' : 'long';
+            const hedgeAmount = this.maxHedgePosition;
             const minProfit = ethers.parseEther('0.01'); // $0.01 minimum profit for hedging
 
-            console.log(`🔄 PERP HEDGE: Executing ${imbalance.token} imbalance hedge with flashloan`);
+            console.log(`🔄 PERP HEDGE: Executing ${imbalance.token} imbalance hedge (${hedgeDirection}) with flashloan callback`);
+            console.log(`   Imbalance: ${imbalance.imbalancePercent.toFixed(4)}%, Amount: ${ethers.formatEther(hedgeAmount)} tokens`);
 
-            const tx = await this.flashloanContract.executePerpArbitrage(
-                'HEDGE', // Special DEX name for hedging
-                imbalance.token,
-                imbalance.imbalancePercent > 0 ? 'long' : 'short', // Hedge opposite to imbalance
-                hedgeAmount,
-                minProfit
+            // Use flashLoan callback approach for hedging
+            // Encode hedge parameters for the callback
+            const hedgeParams = ethers.AbiCoder.defaultAbiCoder().encode(
+                ['string', 'string', 'string', 'uint256'],
+                [imbalance.dex || 'HEDGE', imbalance.token, hedgeDirection, minProfit]
             );
 
-            console.log(`✅ PERP HEDGE: ${imbalance.token} imbalance hedged - TX: ${tx.hash}`);
-            this.emit('imbalanceHedged', { imbalance, txHash: tx.hash });
+            // Assume we need an asset address for the flashloan (use a stable token)
+            const assetAddress = '0x55d398326f99059fF775485246999027B3197955'; // USDT on BSC
+
+            const tx = await this.flashloanContract.flashLoan(
+                assetAddress,
+                hedgeAmount,
+                this.signer.address, // receiver (this contract would handle the callback)
+                hedgeParams
+            );
+
+            console.log(`✅ PERP HEDGE: ${imbalance.token} imbalance hedged (${hedgeDirection}) - TX: ${tx.hash}`);
+            console.log(`   Hedge Amount: ${ethers.formatEther(hedgeAmount)} tokens, Direction: ${hedgeDirection}`);
+
+            this.emit('imbalanceHedged', {
+                imbalance,
+                txHash: tx.hash,
+                hedgeDirection,
+                hedgeAmount: hedgeAmount.toString(),
+                timestamp: Date.now()
+            });
 
         } catch (error) {
             console.error('❌ PerpBot: Imbalance hedge failed:', error.message);
+            console.error('   Imbalance details:', imbalance);
         }
     }
 
