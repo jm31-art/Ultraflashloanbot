@@ -559,8 +559,8 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
             const netProfit = expectedProfit - totalCosts;
 
             // Convert to USD
-            const ethPrice = await this.priceFeed.getPrice(TOKENS.WETH.address);
-            const expectedProfitUSD = netProfit * ethPrice;
+            const bnbPrice = await this.priceFeed.getPrice(TOKENS.WBNB.address);
+            const expectedProfitUSD = netProfit * bnbPrice;
 
             return {
                 isProfitable: netProfit > 0,
@@ -631,10 +631,10 @@ class CrossProtocolArbitrageScanner extends EventEmitter {
     async _checkTWAPDeviation(opportunity) {
         // Check if current price deviates too much from TWAP
         const token = opportunity.tokenIn || opportunity.token;
-        if (!token) return { withinBounds: true };
+        if (!token || !token.address) return { withinBounds: true };
 
-        const currentPrice = await this.priceFeed.getPrice(token);
-        const twapPrice = await this._getTWAPPrice(token);
+        const currentPrice = await this.priceFeed.getPrice(token.address);
+        const twapPrice = await this._getTWAPPrice(token.address);
 
         if (!twapPrice) return { withinBounds: true };
 
