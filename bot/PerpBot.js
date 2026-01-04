@@ -3,6 +3,8 @@ import { ethers } from 'ethers';
 import axios from 'axios';
 import { FlashloanProvider } from '../src/flashloan/flashloanProvider.js';
 
+const PANCAKE_ROUTER_ADDRESS = '0x10ed43c718714eb63d5aa57b78b54704e256024e';
+
 class PerpBot extends EventEmitter {
     constructor(provider, signer) {
         super();

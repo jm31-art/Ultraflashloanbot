@@ -6,51 +6,23 @@ const PROTOCOLS = {
     DEX_PROTOCOLS: {
         PANCAKESWAP: {
             name: 'PancakeSwap',
-            router: '0x10ED43C718714eb63d5aA57B78B54704E256024E',
-            factory: '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73',
+            router: '0x10ed43c718714eb63d5aa57b78b54704e256024e',
+            factory: '0xca143ce32fe78f1f7019d7d551a6402fc5350c73',
             fee: 0.0025, // 0.25%
-            supportsFlashSwap: true
-        },
-        UNISWAP_V2: {
-            name: 'Uniswap V2',
-            router: '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D',
-            factory: '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f',
-            fee: 0.003, // 0.3%
-            supportsFlashSwap: true
-        },
-        SUSHISWAP: {
-            name: 'SushiSwap',
-            router: '0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F',
-            factory: '0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac',
-            fee: 0.003, // 0.3%
             supportsFlashSwap: true
         },
         BISWAP: {
             name: 'Biswap',
-            router: '0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8',
-            factory: '0x858E3312ED3A876947EA49D572A7C42DE08AF7EE0',
+            router: '0x3a6d8ca21d1cf76f653a67577fa0d27453350dd8',
+            factory: '0x858e3312ed3a876947ea49d572a7c42de08af7ee0',
             fee: 0.001, // 0.1%
-            supportsFlashSwap: false, // Disabled due to API issues
-            enabled: false
-        },
-        BABYSWAP: {
-            name: 'BabySwap',
-            router: '0x325E343f1dE602396E256B67eFd1F61C3A66639C',
-            factory: '0x86407bEa2078ea5f5EB5A52B2caA963bC7F27977',
-            fee: 0.002, // 0.2%
-            supportsFlashSwap: true
+            supportsFlashSwap: true,
+            enabled: true
         },
         APESWAP: {
             name: 'ApeSwap',
-            router: '0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7',
-            factory: '0x0841BD0B734E4F5853f0dD8d7Ea041c241fb0Da6',
-            fee: 0.002, // 0.2%
-            supportsFlashSwap: true
-        },
-        JULSWAP: {
-            name: 'JulSwap',
-            router: '0xbd67d157502A23309Db761c41965600c2Ec788bC',
-            factory: '0x553990F2CBA90272390f62C5BDb1681fFc899675',
+            router: '0xcf0febd3f17cef5b47b0cd257acf6025c5bff3b7',
+            factory: '0x0841bd0b734e4f5853f0dd8d7ea041c241fb0da6',
             fee: 0.002, // 0.2%
             supportsFlashSwap: true
         }

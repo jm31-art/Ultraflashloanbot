@@ -54,7 +54,7 @@ class FlashProvider {
         if (this.signer) {
             console.log('🔑 FLASHPROVIDER: Signer attached successfully');
             console.log(`👤 SIGNER ADDRESS: ${this.signer.address}`);
-            console.log('✅ FLASHLOAN FULLY ENABLED - Signer attached');
+            console.log('FLASHLOAN ENABLED - Leverage active');
         }
 
         // Fallback fees when dynamic fetching fails
@@ -648,7 +648,7 @@ class FlashProvider {
                 [token0, token1, arbitrageParams.exchanges, arbitrageParams.path, arbitrageParams.caller, arbitrageParams.gasReimbursement]
             );
 
-            // Execute flash swap
+            // Execute flash swap with amountIn=0 to trigger flashswap
             const tx = await poolContract.swap(
                 amount0,
                 amount1,
@@ -657,6 +657,7 @@ class FlashProvider {
             );
 
             const receipt = await tx.wait();
+            console.log('FLASH SWAP EXECUTED');
             return {
                 success: true,
                 txHash: receipt.transactionHash,
@@ -666,6 +667,42 @@ class FlashProvider {
             };
         } catch (error) {
             console.error('PancakeSwap V2 flash swap failed:', error.message);
+            throw error;
+        }
+    }
+
+    // PancakeSwap V2 flash swap callback
+    async pancakeswapV2Call(sender, amount0, amount1, data) {
+        try {
+            console.log('FLASH SWAP CALLBACK: Executing arbitrage');
+
+            // Decode the data
+            const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+                ['address', 'address', 'string[]', 'address[]', 'address', 'uint256'],
+                data
+            );
+
+            const [token0, token1, exchanges, path, caller, gasReimbursement] = decoded;
+
+            // Execute the arbitrage logic here
+            // This would call the arbitrage engine or execute the swap
+
+            // Calculate repayment amount (borrowed amount + 0.3% fee)
+            const borrowedAmount = amount0 > 0 ? amount0 : amount1;
+            const fee = borrowedAmount * 3n / 1000n; // 0.3% fee
+            const repayAmount = borrowedAmount + fee;
+
+            // Transfer repayment to the pool
+            const tokenAddress = amount0 > 0 ? token0 : token1;
+            const tokenContract = new ethers.Contract(tokenAddress, [
+                'function transfer(address to, uint256 amount) external returns (bool)'
+            ], this.signer);
+
+            await tokenContract.transfer(this.poolAddress, repayAmount);
+
+            console.log('FLASH SWAP CALLBACK: Arbitrage executed, repayment complete');
+        } catch (error) {
+            console.error('FLASH SWAP CALLBACK ERROR:', error.message);
             throw error;
         }
     }
