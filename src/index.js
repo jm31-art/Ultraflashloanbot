@@ -1,5 +1,5 @@
 import { config } from "dotenv";
-import { initMoralis } from "./bootstrap/moralis.bootstrap.js";
+import initMoralis from "./bootstrap/moralisBootstrap.js";
 import { initRPC } from "./bootstrap/rpc.bootstrap.js";
 import { autonomousController } from "./autonomousController.js";
 import { monitoring } from "./monitoring.js";

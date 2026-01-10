@@ -139,6 +139,8 @@ class ArbitrageBot extends EventEmitter {
         this.scanInterval = options.scanInterval || 10000; // 10 second scan interval
         this.maxGasPrice = options.maxGasPrice || 10; // 10 gwei max gas price
         this.safeGasLimit = 500000; // Safe fallback gas limit
+        this.bnbPrice = options.bnbPrice || 567; // BNB price for profit calculation
+        this.estimatedGasForArb = options.estimatedGasForArb || 250000; // Gas estimate for triangular arb
 
         // Router contracts cache
         this.routers = new Map();

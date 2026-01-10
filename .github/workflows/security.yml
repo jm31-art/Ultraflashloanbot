@@ -1,0 +1,50 @@
+name: Security Analysis
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  security-analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Slither
+      run: |
+        pip install slither-analyzer
+        pip install solc-select
+        solc-select install 0.8.19
+        solc-select use 0.8.19
+
+    - name: Install MythX CLI
+      run: |
+        pip install mythx-cli
+
+    - name: Run Slither Analysis
+      run: |
+        python scripts/security_analysis.py
+
+    - name: Run MythX Analysis (if MYTHX_API_KEY exists)
+      env:
+        MYTHX_API_KEY: ${{ secrets.MYTHX_API_KEY }}
+      run: |
+        if [ -n "$MYTHX_API_KEY" ]; then
+          mythx analyze contracts/FlashloanArb.sol --mode deep
+        else
+          echo "MythX API key not found, skipping MythX analysis"
+        fi
+
+    - name: Upload Security Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-report
+        path: security_results/
