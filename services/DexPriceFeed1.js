@@ -1,5 +1,5 @@
-const { ethers } = require('ethers');
-const axios = require('axios');
+import { ethers } from 'ethers';
+import axios from 'axios';
 
 class DexPriceFeed {
     constructor(provider) {
@@ -28,4 +28,4 @@ class DexPriceFeed {
     }
 }
 
-module.exports = DexPriceFeed;
+export default DexPriceFeed;

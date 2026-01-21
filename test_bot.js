@@ -4,9 +4,9 @@
  * This tests the bot without executing real transactions
  */
 
-require('dotenv').config();
-const { ethers } = require('ethers');
-const ArbitrageBot = require('./bot/ArbitrageBot');
+import 'dotenv/config';
+import { ethers } from 'ethers';
+import ArbitrageBot from './bot/ArbitrageBot.js';
 
 async function testBot() {
     console.log('🧪 Testing ArbitrageBot initialization...\n');

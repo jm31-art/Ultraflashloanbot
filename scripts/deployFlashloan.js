@@ -1,5 +1,5 @@
-const { ethers } = require("ethers");
-require("dotenv").config();
+import { ethers } from "ethers";
+import "dotenv/config";
 
 // BSC Configuration
 const BSC_RPC_URL = process.env.RPC_URL || "https://bsc-dataseed.binance.org/";

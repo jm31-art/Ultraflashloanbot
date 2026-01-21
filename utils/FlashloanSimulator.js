@@ -1,7 +1,7 @@
-const { ethers } = require("hardhat");
-const PriceService = require("../services/PriceService");
-const FlashProvider = require("./FlashProvider");
-const DexLiquidityChecker = require("./DexLiquidityChecker");
+import { ethers } from "hardhat";
+import PriceService from "../services/PriceService.js";
+import FlashProvider from "./FlashProvider.js";
+import DexLiquidityChecker from "./DexLiquidityChecker.js";
 
 const DODO_ABI = [
     "function flashLoan(uint256 baseAmount,uint256 quoteAmount,address assetTo,bytes calldata data) external",
@@ -552,4 +552,4 @@ class FlashloanSimulator {
     }
 }
 
-module.exports = FlashloanSimulator;
+export default FlashloanSimulator;

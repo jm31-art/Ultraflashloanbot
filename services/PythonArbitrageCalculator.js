@@ -1,5 +1,6 @@
-const { spawn } = require('child_process');
-const path = require('path');
+import { spawn } from 'child_process';
+import * as path from 'path';
+import { existsSync } from 'fs';
 
 class PythonArbitrageCalculator {
     constructor() {
@@ -119,13 +120,12 @@ class PythonArbitrageCalculator {
             const pythonCommands = [];
 
             // Check if virtual environment exists and use its Python
-            const fs = require('fs');
             const virtualEnvPython = path.join(this.virtualEnvPath, 'Scripts', 'python.exe'); // Windows
             const virtualEnvPythonUnix = path.join(this.virtualEnvPath, 'bin', 'python'); // Unix
 
-            if (fs.existsSync(virtualEnvPython)) {
+            if (existsSync(virtualEnvPython)) {
                 pythonCommands.push(virtualEnvPython);
-            } else if (fs.existsSync(virtualEnvPythonUnix)) {
+            } else if (existsSync(virtualEnvPythonUnix)) {
                 pythonCommands.push(virtualEnvPythonUnix);
             }
 
@@ -230,4 +230,4 @@ class PythonArbitrageCalculator {
     }
 }
 
-module.exports = PythonArbitrageCalculator;
+export default PythonArbitrageCalculator;

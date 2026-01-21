@@ -1,5 +1,5 @@
-const { FlashbotsBundleProvider } = require('@flashbots/ethers-provider-bundle');
-const { ethers } = require('ethers');
+import { FlashbotsBundleProvider } from '@flashbots/ethers-provider-bundle';
+import { ethers } from 'ethers';
 
 class FlashbotsBundler {
     constructor(provider, signer, network = 'mainnet') {
@@ -200,4 +200,4 @@ class FlashbotsBundler {
     }
 }
 
-module.exports = FlashbotsBundler;
+export default FlashbotsBundler;

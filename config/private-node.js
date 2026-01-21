@@ -31,4 +31,4 @@ const privateNodeConfig = {
     }
 };
 
-module.exports = privateNodeConfig;
+export default privateNodeConfig;

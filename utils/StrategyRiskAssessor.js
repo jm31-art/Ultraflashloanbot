@@ -1,5 +1,5 @@
-const { EventEmitter } = require('events');
-const { ethers } = require('ethers');
+import { EventEmitter } from 'events';
+import { ethers } from 'ethers';
 
 class StrategyRiskAssessor extends EventEmitter {
     constructor(provider) {
@@ -488,4 +488,4 @@ class StrategyRiskAssessor extends EventEmitter {
     }
 }
 
-module.exports = StrategyRiskAssessor;
+export default StrategyRiskAssessor;

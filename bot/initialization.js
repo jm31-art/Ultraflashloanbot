@@ -1,4 +1,5 @@
-const chainConnection = require('./utils/chainConnection');
+import { ethers } from 'ethers';
+import chainConnection from './utils/chainConnection.js';
 
 // Example usage in your bot
 async function initializeBot() {
@@ -29,6 +30,4 @@ async function initializeBot() {
     }
 }
 
-module.exports = {
-    initializeBot
-};
+export { initializeBot };

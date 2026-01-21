@@ -1,6 +1,6 @@
-const EventEmitter = require('events');
-const fs = require('fs').promises;
-const path = require('path');
+import { EventEmitter } from 'events';
+import { promises as fs } from 'fs';
+import * as path from 'path';
 
 class PerformanceDashboard extends EventEmitter {
     constructor(options = {}) {
@@ -785,4 +785,4 @@ class PerformanceDashboard extends EventEmitter {
     }
 }
 
-module.exports = PerformanceDashboard;
+export default PerformanceDashboard;

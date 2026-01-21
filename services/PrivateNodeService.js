@@ -1,5 +1,5 @@
-const ethers = require('ethers');
-const privateNodeConfig = require('../config/private-node');
+import * as ethers from 'ethers';
+import privateNodeConfig from '../config/private-node.js';
 
 class PrivateNodeService {
     constructor() {
@@ -120,4 +120,4 @@ class PrivateNodeService {
     }
 }
 
-module.exports = new PrivateNodeService();
+export default new PrivateNodeService();

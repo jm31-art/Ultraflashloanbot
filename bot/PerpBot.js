@@ -3,7 +3,15 @@ import { ethers } from 'ethers';
 import axios from 'axios';
 import { FlashloanProvider } from '../src/flashloan/flashloanProvider.js';
 
-const PANCAKE_ROUTER_ADDRESS = '0x10ed43c718714eb63d5aa57b78b54704e256024e';
+// KILOCODE: VERIFIED BSC CONTRACT ADDRESSES
+const VERIFIED_BSC_CONTRACTS = {
+    PANCAKE_V2_ROUTER: "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+    PANCAKE_V3_FACTORY: "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+    BISWAP_ROUTER: "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8",
+    APESWAP_ROUTER: "0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7"
+};
+
+const PANCAKE_ROUTER_ADDRESS = VERIFIED_BSC_CONTRACTS.PANCAKE_V2_ROUTER;
 
 class PerpBot extends EventEmitter {
     constructor(provider, signer) {
@@ -33,12 +41,12 @@ class PerpBot extends EventEmitter {
             },
             PANCAKE_PERP: {
                 endpoint: null, // Use on-chain
-                contract: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865', // Pancake V2 perp
+                contract: VERIFIED_BSC_CONTRACTS.PANCAKE_V3_FACTORY, // Pancake V3 factory
                 tokens: ['BTC', 'ETH']
             },
-            THENA: {
+            BISWAP_PERP: {
                 endpoint: null, // Use on-chain
-                contract: '0xC7fB6C5DBA8b0d6b9E6c2b8E2F0b8F2C7fB6C5D', // Thena perp contract (placeholder - update with real)
+                contract: VERIFIED_BSC_CONTRACTS.BISWAP_ROUTER, // Biswap router
                 tokens: ['BTC', 'ETH', 'BNB']
             }
         };

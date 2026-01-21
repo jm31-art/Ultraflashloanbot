@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+import { spawn } from 'child_process';
 
 class PriceValidator {
     constructor() {
@@ -97,4 +97,4 @@ class PriceValidator {
     }
 }
 
-module.exports = PriceValidator;
+export default PriceValidator;

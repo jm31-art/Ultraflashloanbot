@@ -1,5 +1,5 @@
-const { ethers } = require('ethers');
-require('dotenv').config();
+import { ethers } from 'ethers';
+import 'dotenv/config';
 
 class ChainConnection {
     constructor() {
@@ -174,4 +174,4 @@ class ChainConnection {
 }
 
 // Export singleton instance
-module.exports = new ChainConnection();
+export default new ChainConnection();

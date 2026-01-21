@@ -1,5 +1,5 @@
 // Configuration for optimal performance - OPTIMIZED FOR HIGHER RETURNS
-module.exports = {
+export default {
     // Gas optimization settings - DYNAMIC PRICING ENABLED
     GAS_SETTINGS: {
         maxGasPrice: '80000000000', // 80 Gwei (increased for faster execution)
