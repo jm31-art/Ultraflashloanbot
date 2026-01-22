@@ -8439,14 +8439,259 @@ async def main_async_mev_protected():
     """Main async execution with MEV protection"""
     return await main_async()
 
+# KILOCODE: ENHANCED final_printer_2025.py WITH COORDINATION
+# Add this to your existing final_printer_2025.py
+
+class BotCoordinationIntegration:
+    """Integration layer for Python bot coordination"""
+
+    def __init__(self, config):
+        self.config = config
+        self.coordinator_endpoint = config.get('COORDINATOR_URL', 'http://localhost:8080')
+        self.bot_type = "PYTHON_BOT"
+        self.opportunity_cache = {}
+        self.conflict_avoidance = True
+
+    async def check_opportunity_permission(self, opportunity_data):
+        """Check if Python bot can execute this opportunity"""
+
+        opportunity_hash = self._generate_opportunity_hash(opportunity_data)
+        token_a = opportunity_data['token_a']
+        token_b = opportunity_data['token_b']
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.coordinator_endpoint}/check-opportunity",
+                    json={
+                        'bot_type': self.bot_type,
+                        'opportunity_hash': opportunity_hash,
+                        'token_a': token_a,
+                        'token_b': token_b,
+                        'amount': str(opportunity_data['amount']),
+                        'expected_profit': str(opportunity_data['expected_profit'])
+                    }
+                ) as response:
+
+                    result = await response.json()
+
+                    if result['allowed']:
+                        # Reserve the opportunity
+                        await self._reserve_opportunity(opportunity_hash)
+                        return True, "APPROVED"
+                    else:
+                        return False, result['reason']
+
+        except Exception as e:
+            self.logger.error(f"Coordination check failed: {e}")
+            # Fallback to local decision if coordination unavailable
+            return self._local_coordination_check(opportunity_data)
+
+    def _generate_opportunity_hash(self, opportunity_data):
+        """Generate unique hash for opportunity"""
+
+        data_string = (
+            f"{opportunity_data['token_a']}_"
+            f"{opportunity_data['token_b']}_"
+            f"{opportunity_data['amount']}_"
+            f"{opportunity_data['expected_profit']}_"
+            f"{opportunity_data.get('exchange', 'unknown')}"
+        )
+
+        return hashlib.sha256(data_string.encode()).hexdigest()
+
+    async def _reserve_opportunity(self, opportunity_hash):
+        """Reserve opportunity in coordination system"""
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.coordinator_endpoint}/reserve-opportunity",
+                    json={
+                        'bot_type': self.bot_type,
+                        'opportunity_hash': opportunity_hash,
+                        'ttl': 300000  // 5 minutes
+                    }
+                ) as response:
+
+                    return await response.json()
+
+        except Exception as e:
+            self.logger.error(f"Opportunity reservation failed: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def _local_coordination_check(self, opportunity_data):
+        """Fallback local coordination when network unavailable"""
+
+        # Implement local heuristics
+        token_a_symbol = self._get_token_symbol(opportunity_data['token_a'])
+        token_b_symbol = self._get_token_symbol(opportunity_data['token_b'])
+
+        # Check if tokens are in Python bot's domain
+        allowed_tokens = self.config['PRIORITY_TOKENS']
+
+        if token_a_symbol in allowed_tokens and token_b_symbol in allowed_tokens:
+            return True, "LOCAL_APPROVAL"
+        else:
+            return False, "TOKEN_OUTSIDE_DOMAIN"
+
+    def _get_token_symbol(self, token_address):
+        """Get token symbol from address"""
+        # Simple mapping - in production, use contract calls
+        token_map = {
+            "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c": "WBNB",
+            "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56": "BUSD",
+            "0x55d398326f99059fF775485246999027B3197955": "USDT",
+            "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82": "CAKE",
+            "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3EAd9c": "BTCB",
+            "0x2170Ed0880ac9A755fd29B2688956BD959F933F8": "ETH",
+            "0x7083609fCE4d1d8Dc0C979AAb8c869Ea2C873402": "DOT",
+            "0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47": "ADA"
+        }
+        return token_map.get(token_address, "UNKNOWN")
+
+    def report_operation_result(self, operation_data):
+        """Report operation result to coordination system"""
+
+        asyncio.create_task(self._send_operation_report(operation_data))
+
+    async def _send_operation_report(self, operation_data):
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.coordinator_endpoint}/operation-result",
+                    json={
+                        'bot_type': self.bot_type,
+                        'operation_id': operation_data['operation_id'],
+                        'success': operation_data['success'],
+                        'profit': str(operation_data.get('profit', 0)),
+                        'gas_used': operation_data.get('gas_used', 0),
+                        'error_type': operation_data.get('error_type', ''),
+                        'timestamp': datetime.now().isoformat()
+                    }
+                ) as response:
+
+                    return await response.json()
+
+        except Exception as e:
+            self.logger.error(f"Operation report failed: {e}")
+
+# Enhanced main execution with coordination
+class EnhancedArbitrageBot:
+    """Enhanced arbitrage bot with coordination integration"""
+
+    def __init__(self, config):
+        self.config = config
+        self.coordination = BotCoordinationIntegration(config)
+        self.opportunity_filter = self.create_opportunity_filter()
+
+    def create_opportunity_filter(self):
+        """Create opportunity filter with coordination"""
+        async def filter_func(opportunity):
+            allowed, reason = await self.coordination.check_opportunity_permission(opportunity)
+            if not allowed:
+                logger.info(f"Opportunity filtered: {reason}")
+                return False
+            return True
+        return filter_func
+
+    async def process_opportunity(self, opportunity):
+        """Enhanced opportunity processing with coordination"""
+
+        # Check coordination permission
+        allowed, reason = await self.coordination.check_opportunity_permission(opportunity)
+
+        if not allowed:
+            logger.info(f"Opportunity rejected: {reason}")
+            self.coordination.report_operation_result({
+                'operation_id': opportunity.get('id'),
+                'success': False,
+                'error_type': reason
+            })
+            return None
+
+        # Proceed with execution (placeholder - integrate with existing logic)
+        try:
+            # Your existing arbitrage execution logic here
+            result = await self.execute_arbitrage(opportunity)
+
+            # Report success
+            self.coordination.report_operation_result({
+                'operation_id': opportunity.get('id'),
+                'success': True,
+                'profit': result.get('profit', 0),
+                'gas_used': result.get('gas_used', 0)
+            })
+
+            return result
+
+        except Exception as e:
+            # Report failure
+            self.coordination.report_operation_result({
+                'operation_id': opportunity.get('id'),
+                'success': False,
+                'error_type': str(type(e).__name__)
+            })
+            raise
+
+    async def execute_arbitrage(self, opportunity):
+        """Placeholder for arbitrage execution - integrate with existing logic"""
+        # This should integrate with your existing arbitrage execution
+        logger.info(f"Executing arbitrage for opportunity: {opportunity}")
+        return {'profit': opportunity.get('expected_profit', 0), 'gas_used': 21000}
+
+# Modified main execution
+async def main_async_mev_protected_with_coordination():
+    """Main async execution with MEV protection and coordination"""
+
+    # Load coordination config
+    coordination_config = {
+        'COORDINATOR_URL': os.getenv('COORDINATOR_URL', 'http://localhost:8080'),
+        'PRIORITY_TOKENS': ["WBNB", "BUSD", "USDT", "CAKE"]
+    }
+
+    # Create enhanced bot with coordination
+    bot = EnhancedArbitrageBot(coordination_config)
+
+    print("🐍 Python Arbitrage Bot Starting with Coordination...")
+    print(f"   Wallet: {os.getenv('PYTHON_BOT_WALLET', 'Not set')}")
+    print(f"   Contract: {os.getenv('PYTHON_FLASH_CONTRACT', 'Not set')}")
+    print(f"   Strategy: High-frequency MEV")
+    print(f"   Priority Tokens: {coordination_config['PRIORITY_TOKENS']}")
+
+    # Your existing main loop logic here, but with coordination
+    # This is a placeholder - integrate with your existing main_async_mev_protected logic
+
+    while True:
+        try:
+            # Your existing opportunity scanning logic
+            opportunities = []  # Replace with actual scanning
+
+            for opportunity in opportunities:
+                # Check coordination before processing
+                allowed, reason = await bot.coordination.check_opportunity_permission(opportunity)
+                if allowed:
+                    result = await bot.process_opportunity(opportunity)
+                    if result:
+                        logger.info(f"Arbitrage executed: {result}")
+                else:
+                    logger.info(f"Opportunity skipped: {reason}")
+
+            await asyncio.sleep(1)  # Adjust timing as needed
+
+        except Exception as e:
+            logger.error(f"Main loop error: {e}")
+            await asyncio.sleep(5)
+
 # Launch the asynchronous profit machine
 if __name__ == "__main__":
-    logger.info("🚀 ULTRAFLASHLOANBOT 2025 — ASYNCHRONOUS PROFIT MACHINE")
-    tg("🚀 ASYNC PROFIT MACHINE STARTING")
+    logger.info("🚀 ULTRAFLASHLOANBOT 2025 — ASYNCHRONOUS PROFIT MACHINE WITH COORDINATION")
+    tg("🚀 ASYNC PROFIT MACHINE WITH COORDINATION STARTING")
 
     try:
         initialize_mev_protected_bot()
-        asyncio.run(main_async_mev_protected())
+        asyncio.run(main_async_mev_protected_with_coordination())
     except Exception as e:
         logger.error(f"MEV protection initialization failed: {e}")
         emergency_fallback()

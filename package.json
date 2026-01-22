@@ -26,6 +26,7 @@
     "run:auto:hybrid": "arbitrage_env\\Scripts\\python.exe self_discover_hybrid_bot.py --mode hybrid",
 
     "run:printer": "python final_printer_2025.py",
+    "coordinator": "node src/coordination-server.js",
 
     "run:ai": "node -e \"console.log('AI-Powered Arbitrage Bot Starting...'); require('./ai/mev_protector').aiMEVProtector.initialize().then(() => console.log('AI Ready!')).catch(console.error);\" && npm run run:printer",
     "lint": "eslint . --ext .js"
@@ -55,6 +56,7 @@
     "axios": "^1.13.2",
     "dotenv": "^16.6.1",
     "ethers": "^6.13.0",
+    "express": "^4.18.0",
     "moralis": "^2.26.1",
     "telegraf": "^4.12.0",
     "web3": "^1.10.0"
