@@ -393,7 +393,7 @@ class UnifiedMonitoringDashboard {
 }
 
 // Start unified monitoring
-if (require.main === module) {
+if (import.meta.url === `file://${process.argv[1]}`) {
     const dashboard = new UnifiedMonitoringDashboard();
 
     // Graceful shutdown
