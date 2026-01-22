@@ -1,10 +1,10 @@
 // KILOCODE: JAVASCRIPT BOT COORDINATION
 // src/bot-coordination.js
 
-const axios = require('axios');
-const EventEmitter = require('events');
-const crypto = require('crypto');
-const { BotCoordinationConfig } = require('../config/bot-coordination');
+import axios from 'axios';
+import { EventEmitter } from 'events';
+import crypto from 'crypto';
+import { BotCoordinationConfig } from '../config/bot-coordination.js';
 
 class JavaScriptBotCoordinator extends EventEmitter {
 
@@ -363,7 +363,7 @@ if (require.main === module) {
     main().catch(console.error);
 }
 
-module.exports = {
+export {
     JavaScriptBotCoordinator,
     CoordinatedArbitrageBot
 };

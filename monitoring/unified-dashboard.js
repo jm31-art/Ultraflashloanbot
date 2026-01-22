@@ -1,9 +1,13 @@
 // KILOCODE: UNIFIED MONITORING DASHBOARD
 // monitoring/unified-dashboard.js
 
-const WebSocket = require('ws');
-const express = require('express');
-const path = require('path');
+import WebSocket from 'ws';
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 class UnifiedMonitoringDashboard {
 
@@ -404,4 +408,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = UnifiedMonitoringDashboard;
+export default UnifiedMonitoringDashboard;

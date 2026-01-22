@@ -1,8 +1,8 @@
 // KILOCODE: COORDINATION SERVER
 // src/coordination-server.js
 
-const express = require('express');
-const { BotCoordinationConfig, BotCoordinator } = require('../config/bot-coordination');
+import express from 'express';
+import { BotCoordinationConfig, BotCoordinator } from '../config/bot-coordination.js';
 
 const app = express();
 const PORT = process.env.COORDINATOR_PORT || 8080;
@@ -139,4 +139,4 @@ process.on('SIGINT', () => {
     process.exit(0);
 });
 
-module.exports = app;
+export default app;
