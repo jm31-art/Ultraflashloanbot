@@ -27,6 +27,7 @@
 
     "run:printer": "python final_printer_2025.py",
     "coordinator": "node src/coordination-server.js",
+    "bot:coordinated": "node src/bot-coordination.js",
 
     "run:ai": "node -e \"console.log('AI-Powered Arbitrage Bot Starting...'); require('./ai/mev_protector').aiMEVProtector.initialize().then(() => console.log('AI Ready!')).catch(console.error);\" && npm run run:printer",
     "lint": "eslint . --ext .js"

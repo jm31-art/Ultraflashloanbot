@@ -75,6 +75,44 @@ app.get('/status', (req, res) => {
     });
 });
 
+app.post('/register-bot', (req, res) => {
+    try {
+        const { bot_type, config } = req.body;
+
+        console.log(`📝 Registering bot: ${bot_type}`);
+
+        // Store bot registration (in production, use database)
+        // For now, just acknowledge
+
+        res.json({
+            success: true,
+            bot_type: bot_type,
+            registered_at: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Bot registration failed:', error);
+        res.status(500).json({ error: 'Registration failed' });
+    }
+});
+
+app.post('/health-report', (req, res) => {
+    try {
+        const { bot_type, success_rate, consecutive_failures, last_profit, last_operation } = req.body;
+
+        console.log(`❤️ Health report from ${bot_type}: ${success_rate * 100}% success rate`);
+
+        // Store health data (in production, use database/time-series storage)
+        // For now, just acknowledge
+
+        res.json({ success: true });
+
+    } catch (error) {
+        console.error('Health report processing failed:', error);
+        res.status(500).json({ error: 'Health report failed' });
+    }
+});
+
 app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
