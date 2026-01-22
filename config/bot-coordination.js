@@ -191,7 +191,7 @@ class BotCoordinator {
     }
 }
 
-module.exports = {
+export {
     BotCoordinationConfig,
     BotCoordinator
 };
