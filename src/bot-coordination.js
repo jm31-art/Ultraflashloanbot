@@ -150,6 +150,7 @@ class JavaScriptBotCoordinator extends EventEmitter {
     async reportOperationResult(operationData) {
 
         try {
+            // Report to coordination server
             await axios.post(`${this.coordinatorUrl}/operation-result`, {
                 bot_type: this.botType,
                 operation_id: operationData.id,
@@ -157,6 +158,15 @@ class JavaScriptBotCoordinator extends EventEmitter {
                 profit: operationData.profit.toString(),
                 gas_used: operationData.gasUsed.toString(),
                 error_type: operationData.errorType || '',
+                timestamp: new Date().toISOString()
+            });
+
+            // Report to unified dashboard
+            const dashboardUrl = process.env.DASHBOARD_URL || 'http://localhost:3000';
+            await axios.post(`${dashboardUrl}/report/${this.botType.toLowerCase()}`, {
+                profit: operationData.profit,
+                success: operationData.success,
+                gasUsed: operationData.gasUsed,
                 timestamp: new Date().toISOString()
             });
 

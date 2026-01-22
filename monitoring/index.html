@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UltraFlashloanBot - Unified Monitoring Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f0f23;
+            color: #ffffff;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .metric-card {
+            background: #1a1a2e;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            border: 1px solid #16213e;
+        }
+
+        .metric-card h3 {
+            color: #00d4ff;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+
+        .metric-value {
+            font-size: 2em;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .python { border-left: 4px solid #ff6b6b; }
+        .javascript { border-left: 4px solid #4ecdc4; }
+        .system { border-left: 4px solid #ffd93d; }
+
+        .profit { color: #00ff88; }
+        .operations { color: #00d4ff; }
+        .success { color: #ffd93d; }
+        .conflicts { color: #ff6b6b; }
+
+        .charts-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: #1a1a2e;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        .chart-card h3 {
+            color: #00d4ff;
+            margin-bottom: 15px;
+        }
+
+        .alerts-section {
+            background: #1a1a2e;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .alerts-section h3 {
+            color: #ff6b6b;
+            margin-bottom: 15px;
+        }
+
+        .alert {
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 4px solid;
+        }
+
+        .alert.error { border-left-color: #ff6b6b; background: rgba(255, 107, 107, 0.1); }
+        .alert.warning { border-left-color: #ffd93d; background: rgba(255, 217, 61, 0.1); }
+        .alert.info { border-left-color: #00d4ff; background: rgba(0, 212, 255, 0.1); }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-active { background: #00ff88; }
+        .status-inactive { background: #666; }
+
+        .last-update {
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .charts-container {
+                grid-template-columns: 1fr;
+            }
+
+            .header h1 {
+                font-size: 2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 UltraFlashloanBot</h1>
+            <p>Unified Hybrid Monitoring Dashboard</p>
+        </div>
+
+        <div class="metrics-grid">
+            <div class="metric-card python">
+                <h3>🐍 Python Bot</h3>
+                <div class="metric-value profit" id="python-profit">$0.00</div>
+                <div>Operations: <span class="operations" id="python-ops">0</span></div>
+                <div>Success Rate: <span class="success" id="python-success">0%</span></div>
+                <div>Status: <span class="status-indicator" id="python-status"></span><span id="python-status-text">Inactive</span></div>
+            </div>
+
+            <div class="metric-card javascript">
+                <h3>🟢 JavaScript Bot</h3>
+                <div class="metric-value profit" id="js-profit">$0.00</div>
+                <div>Operations: <span class="operations" id="js-ops">0</span></div>
+                <div>Success Rate: <span class="success" id="js-success">0%</span></div>
+                <div>Status: <span class="status-indicator" id="js-status"></span><span id="js-status-text">Inactive</span></div>
+            </div>
+
+            <div class="metric-card system">
+                <h3>⚡ System Overview</h3>
+                <div class="metric-value profit" id="system-profit">$0.00</div>
+                <div>Total Operations: <span class="operations" id="system-ops">0</span></div>
+                <div>Conflicts: <span class="conflicts" id="system-conflicts">0</span></div>
+                <div>Coordination: <span class="success">Active</span></div>
+            </div>
+        </div>
+
+        <div class="charts-container">
+            <div class="chart-card">
+                <h3>📈 Profit Over Time</h3>
+                <canvas id="profitChart" width="400" height="200"></canvas>
+            </div>
+
+            <div class="chart-card">
+                <h3>🎯 Success Rates</h3>
+                <canvas id="successChart" width="400" height="200"></canvas>
+            </div>
+        </div>
+
+        <div class="alerts-section">
+            <h3>🚨 Recent Alerts</h3>
+            <div id="alerts-container">
+                <div class="alert info">Dashboard initialized - waiting for bot reports...</div>
+            </div>
+        </div>
+
+        <div class="last-update" id="last-update">
+            Last update: Never
+        </div>
+    </div>
+
+    <script>
+        // WebSocket connection
+        const ws = new WebSocket('ws://localhost:3000');
+
+        // Chart instances
+        let profitChart, successChart;
+
+        // Data storage
+        let metricsHistory = [];
+        const maxHistoryPoints = 50;
+
+        ws.onopen = function(event) {
+            console.log('Connected to monitoring server');
+        };
+
+        ws.onmessage = function(event) {
+            const message = JSON.parse(event.data);
+
+            if (message.type === 'METRICS_UPDATE') {
+                updateMetrics(message.data);
+                updateCharts(message.data);
+            } else if (message.type === 'ALERTS_UPDATE') {
+                updateAlerts(message.data);
+            }
+        };
+
+        ws.onclose = function(event) {
+            console.log('Disconnected from monitoring server');
+            setTimeout(() => {
+                window.location.reload();
+            }, 5000);
+        };
+
+        function updateMetrics(data) {
+            // Update Python bot metrics
+            document.getElementById('python-profit').textContent = `$${data.pythonBot.totalProfit.toFixed(2)}`;
+            document.getElementById('python-ops').textContent = data.pythonBot.totalOperations;
+            document.getElementById('python-success').textContent = `${(data.pythonBot.successRate * 100).toFixed(1)}%`;
+
+            const pythonStatus = document.getElementById('python-status');
+            const pythonStatusText = document.getElementById('python-status-text');
+            if (data.pythonBot.active) {
+                pythonStatus.className = 'status-indicator status-active';
+                pythonStatusText.textContent = 'Active';
+            } else {
+                pythonStatus.className = 'status-indicator status-inactive';
+                pythonStatusText.textContent = 'Inactive';
+            }
+
+            // Update JavaScript bot metrics
+            document.getElementById('js-profit').textContent = `$${data.javascriptBot.totalProfit.toFixed(2)}`;
+            document.getElementById('js-ops').textContent = data.javascriptBot.totalOperations;
+            document.getElementById('js-success').textContent = `${(data.javascriptBot.successRate * 100).toFixed(1)}%`;
+
+            const jsStatus = document.getElementById('js-status');
+            const jsStatusText = document.getElementById('js-status-text');
+            if (data.javascriptBot.active) {
+                jsStatus.className = 'status-indicator status-active';
+                jsStatusText.textContent = 'Active';
+            } else {
+                jsStatus.className = 'status-indicator status-inactive';
+                jsStatusText.textContent = 'Inactive';
+            }
+
+            // Update system metrics
+            document.getElementById('system-profit').textContent = `$${data.system.totalProfit.toFixed(2)}`;
+            document.getElementById('system-ops').textContent = data.system.totalOperations;
+            document.getElementById('system-conflicts').textContent = data.system.conflicts;
+
+            // Update last update time
+            document.getElementById('last-update').textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+
+            // Store history for charts
+            metricsHistory.push({
+                timestamp: new Date(),
+                pythonProfit: data.pythonBot.totalProfit,
+                jsProfit: data.javascriptBot.totalProfit,
+                pythonSuccess: data.pythonBot.successRate,
+                jsSuccess: data.javascriptBot.successRate
+            });
+
+            if (metricsHistory.length > maxHistoryPoints) {
+                metricsHistory.shift();
+            }
+        }
+
+        function updateCharts(data) {
+            // Initialize charts if not done yet
+            if (!profitChart) {
+                initializeCharts();
+            }
+
+            // Update profit chart
+            profitChart.data.labels = metricsHistory.map(d => d.timestamp.toLocaleTimeString());
+            profitChart.data.datasets[0].data = metricsHistory.map(d => d.pythonProfit);
+            profitChart.data.datasets[1].data = metricsHistory.map(d => d.jsProfit);
+            profitChart.update();
+
+            // Update success rate chart
+            successChart.data.labels = metricsHistory.map(d => d.timestamp.toLocaleTimeString());
+            successChart.data.datasets[0].data = metricsHistory.map(d => d.pythonSuccess * 100);
+            successChart.data.datasets[1].data = metricsHistory.map(d => d.jsSuccess * 100);
+            successChart.update();
+        }
+
+        function updateAlerts(alerts) {
+            const container = document.getElementById('alerts-container');
+            container.innerHTML = '';
+
+            if (alerts.length === 0) {
+                container.innerHTML = '<div class="alert info">No recent alerts</div>';
+                return;
+            }
+
+            alerts.forEach(alert => {
+                const alertDiv = document.createElement('div');
+                alertDiv.className = `alert ${alert.severity}`;
+                alertDiv.innerHTML = `
+                    <strong>${alert.type}:</strong> ${alert.message}
+                    <br><small>${new Date(alert.timestamp).toLocaleString()}</small>
+                `;
+                container.appendChild(alertDiv);
+            });
+        }
+
+        function initializeCharts() {
+            // Profit chart
+            const profitCtx = document.getElementById('profitChart').getContext('2d');
+            profitChart = new Chart(profitCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Python Bot',
+                        data: [],
+                        borderColor: '#ff6b6b',
+                        backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                        tension: 0.4
+                    }, {
+                        label: 'JavaScript Bot',
+                        data: [],
+                        borderColor: '#4ecdc4',
+                        backgroundColor: 'rgba(78, 205, 196, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return '$' + value.toFixed(2);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Success rate chart
+            const successCtx = document.getElementById('successChart').getContext('2d');
+            successChart = new Chart(successCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Python Bot',
+                        data: [],
+                        borderColor: '#ff6b6b',
+                        backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                        tension: 0.4
+                    }, {
+                        label: 'JavaScript Bot',
+                        data: [],
+                        borderColor: '#4ecdc4',
+                        backgroundColor: 'rgba(78, 205, 196, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                callback: function(value) {
+                                    return value + '%';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Initialize charts on load
+        initializeCharts();
+    </script>
+</body>
+</html>
