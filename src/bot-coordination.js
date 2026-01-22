@@ -132,16 +132,15 @@ class JavaScriptBotCoordinator extends EventEmitter {
     }
 
     getTokenSymbol(tokenAddress) {
-        // Simple token symbol mapping
+        // Arbitrum token symbol mapping
         const tokenMap = {
-            "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c": "WBNB",
-            "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56": "BUSD",
-            "0x55d398326f99059fF775485246999027B3197955": "USDT",
-            "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82": "CAKE",
-            "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3EAd9c": "BTCB",
-            "0x2170Ed0880ac9A755fd29B2688956BD959F933F8": "ETH",
-            "0x7083609fCE4d1d8Dc0C979AAb8c869Ea2C873402": "DOT",
-            "0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47": "ADA"
+            "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1": "WETH",
+            "0xFF970A61A04b1cA14834A43f5de4533eBDDB5CC8": "USDC",
+            "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9": "USDT",
+            "0x912CE59144191C1204E64559FE8253a0e49E6548": "ARB",
+            "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f": "WBTC",
+            "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1": "DAI",
+            "0x17FC002b466eEc40DaE837Fc4bE5c67993ddBd6F": "FRAX"
         };
 
         return tokenMap[tokenAddress] || "UNKNOWN";

@@ -7,24 +7,24 @@ const BotCoordinationConfig = {
     PYTHON_BOT: {
         WALLET: process.env.PYTHON_BOT_WALLET || "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1", // Separate wallet
         FLASH_LOAN_CONTRACT: process.env.PYTHON_FLASH_CONTRACT || "0x8aB9F5a0A473764869c5fF9D991F9a9D3c0b2C71", // Separate contract
-        RPC_URL: process.env.PYTHON_RPC_URL || "https://bsc-mainnet.nodereal.me/v1/your-api-key",
+        RPC_URL: process.env.PYTHON_RPC_URL || "https://arb1.arbitrum.io/rpc",
         STRATEGY: "HIGH_FREQUENCY_MEV", // Specialized strategy
-        PRIORITY_TOKENS: ["WBNB", "BUSD", "USDT", "CAKE"],
+        PRIORITY_TOKENS: ["WETH", "USDC", "USDT", "ARB"],
         OPERATION_MODE: "MEV_PROTECTED",
-        MAX_GAS_PRICE: "80 gwei",
-        MIN_PROFIT_THRESHOLD: "15 USD"
+        MAX_GAS_PRICE: "1 gwei", // Arbitrum gas is much cheaper
+        MIN_PROFIT_THRESHOLD: "5 USD" // Lower threshold due to lower gas costs
     },
 
     // JavaScript Bot Configuration
     JAVASCRIPT_BOT: {
         WALLET: process.env.JS_BOT_WALLET || "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb2", // Different wallet
         FLASH_LOAN_CONTRACT: process.env.JS_FLASH_CONTRACT || "0x7cB5fC1B9C9d8dD3c0b2C71a9B9D991F9a9D3c0b2C7", // Different contract
-        RPC_URL: process.env.JS_RPC_URL || "https://bsc-dataseed.binance.org/",
+        RPC_URL: process.env.JS_RPC_URL || "https://arb1.arbitrum.io/rpc",
         STRATEGY: "BROAD_MARKET_LIQUIDATION", // Broader strategy
-        PRIORITY_TOKENS: ["BTCB", "ETH", "DOT", "ADA"],
+        PRIORITY_TOKENS: ["WBTC", "ARB", "DAI", "FRAX"],
         OPERATION_MODE: "STANDARD",
-        MAX_GAS_PRICE: "100 gwei",
-        MIN_PROFIT_THRESHOLD: "25 USD"
+        MAX_GAS_PRICE: "2 gwei", // Arbitrum gas is much cheaper
+        MIN_PROFIT_THRESHOLD: "10 USD"
     },
 
     // Coordination Rules

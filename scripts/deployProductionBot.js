@@ -1,16 +1,16 @@
 // KILOCODE: PRODUCTION DEPLOYMENT SCRIPT
 async function deployProductionBot() {
 
-    console.log("🚀 Deploying Production UltraFlashloanBot...");
+    console.log("🚀 Deploying Production UltraFlashloanBot on Arbitrum...");
 
     // Verify all dependencies
     const requiredContracts = [
-        "0x10ED43C718714eb63d5aA57B78B54704E256024E", // PancakeSwap Router
-        "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8", // Biswap Router
-        "0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7", // ApeSwap Router
+        "0xE592427A0AEce92De3Edee1F18E0157C05861564", // Uniswap V3 Router
+        "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506", // SushiSwap Router
+        "0xc873fEcbd354f5A56E00E710B90EF4201db2448d", // Camelot Router
         "0x794a61358D6845594F94dc1DB02A252b5b4814aD", // AAVE V3 Pool
         "0xBA12222222228d8Ba445958a75a0704d566BF2C8", // Balancer Vault
-        "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE"  // BNB/USD Feed
+        "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"  // ETH/USD Feed
     ];
 
     for (const contract of requiredContracts) {

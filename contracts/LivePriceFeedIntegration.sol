@@ -7,25 +7,25 @@ import "./Interfaces.sol";
 // KILOCODE: LIVE PRICE FEED INTEGRATION (CONTINUED)
 contract LivePriceFeedIntegration is Ownable {
 
-    // Chainlink Price Feeds (BSC Mainnet)
-    address constant BNB_USD_FEED = 0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE;
-    address constant BTC_USD_FEED = 0x264990fbd0A4796A3E3CaE8dfaC0A7b3c9E216AB;
-    address constant ETH_USD_FEED = 0x9ef1B8c0E4F7dcEbf8f7A7916c1F2c49dBc6d6f9;
+    // Chainlink Price Feeds (Arbitrum Mainnet)
+    address constant ETH_USD_FEED = 0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612; // ETH/USD
+    address constant BTC_USD_FEED = 0x6ce185860a4963106506C203335A2910413708e9C; // BTC/USD
+    address constant ARB_USD_FEED = 0xb2A824043730FE05F3DA2EFafa1CBbe83fa548D6; // ARB/USD
 
     // Token/Feed mapping
     mapping(address => address) public tokenPriceFeeds;
     mapping(address => uint8) public tokenDecimals;
 
     constructor() {
-        // Initialize major token feeds
-        tokenPriceFeeds[0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c] = BNB_USD_FEED; // WBNB
-        tokenPriceFeeds[0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3EAd9c] = BTC_USD_FEED; // BTCB
-        tokenPriceFeeds[0x2170Ed0880ac9A755fd29B2688956BD959F933F8] = ETH_USD_FEED; // ETH
+        // Initialize major token feeds for Arbitrum
+        tokenPriceFeeds[0x82aF49447D8a07e3bd95BD0d56f35241523fBab1] = ETH_USD_FEED; // WETH
+        tokenPriceFeeds[0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f] = BTC_USD_FEED; // WBTC
+        tokenPriceFeeds[0x912CE59144191C1204E64559FE8253a0e49E6548] = ARB_USD_FEED; // ARB
 
         // Initialize decimals
-        tokenDecimals[0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c] = 18;
-        tokenDecimals[0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3EAd9c] = 18;
-        tokenDecimals[0x2170Ed0880ac9A755fd29B2688956BD959F933F8] = 18;
+        tokenDecimals[0x82aF49447D8a07e3bd95BD0d56f35241523fBab1] = 18; // WETH
+        tokenDecimals[0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f] = 8;  // WBTC
+        tokenDecimals[0x912CE59144191C1204E64559FE8253a0e49E6548] = 18; // ARB
     }
 
     function getRealTokenPrice(address token) public view returns (uint256 price, uint8 decimals) {
@@ -179,14 +179,14 @@ contract LivePriceFeedIntegration is Ownable {
 
     function _isCriticalToken(address token) internal pure returns (bool) {
 
-        // Define critical tokens that need multi-oracle validation
+        // Define critical tokens that need multi-oracle validation on Arbitrum
         address[6] memory criticalTokens = [
-            0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, // WBNB
-            0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56, // BUSD
-            0x55d398326f99059fF775485246999027B3197955, // USDT
-            0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d, // USDC
-            0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3EAd9c, // BTCB
-            0x2170Ed0880ac9A755fd29B2688956BD959F933F8  // ETH
+            0x82aF49447D8a07e3bd95BD0d56f35241523fBab1, // WETH
+            0xFF970A61A04b1cA14834A43f5de4533eBDDB5CC8, // USDC.e
+            0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9, // USDT
+            0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f, // WBTC
+            0x912CE59144191C1204E64559FE8253a0e49E6548, // ARB
+            0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1  // DAI
         ];
 
         for (uint i = 0; i < criticalTokens.length; i++) {

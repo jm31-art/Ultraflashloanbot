@@ -7,10 +7,10 @@ import "./Interfaces.sol";
 // KILOCODE: REAL DEX ARBITRAGE EXECUTION ENGINE
 contract RealArbitrageExecutor {
 
-    // Real DEX router interfaces
-    IPancakeRouter02 constant PANCAKE_ROUTER = IPancakeRouter02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
-    IBiswapRouter constant BISWAP_ROUTER = IBiswapRouter(0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8);
-    IApeRouter constant APESWAP_ROUTER = IApeRouter(0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7);
+    // Arbitrum DEX router interfaces
+    IPancakeRouter02 constant UNISWAP_ROUTER = IPancakeRouter02(0xE592427A0AEce92De3Edee1F18E0157C05861564); // Uniswap V3 Router
+    IBiswapRouter constant SUSHISWAP_ROUTER = IBiswapRouter(0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506); // SushiSwap Router
+    IApeRouter constant CAMELOT_ROUTER = IApeRouter(0xc873fEcbd354f5A56E00E710B90EF4201db2448d); // Camelot Router
 
     // Slippage protection: 0.5%
     uint256 constant maxSlippage = 50; // basis points
@@ -158,9 +158,9 @@ contract RealArbitrageExecutor {
 
             return amounts[amounts.length - 1];
 
-        } else if (keccak256(bytes(getRouterName(route.router))) == keccak256(bytes("Biswap"))) {
+        } else if (keccak256(bytes(getRouterName(route.router))) == keccak256(bytes("SushiSwap"))) {
 
-            uint256[] memory amounts = BISWAP_ROUTER.swapExactTokensForTokens(
+            uint256[] memory amounts = SUSHISWAP_ROUTER.swapExactTokensForTokens(
                 amountIn,
                 minOutput,
                 route.path,
@@ -170,9 +170,9 @@ contract RealArbitrageExecutor {
 
             return amounts[amounts.length - 1];
 
-        } else if (keccak256(bytes(getRouterName(route.router))) == keccak256(bytes("ApeSwap"))) {
+        } else if (keccak256(bytes(getRouterName(route.router))) == keccak256(bytes("Camelot"))) {
 
-            uint256[] memory amounts = APESWAP_ROUTER.swapExactTokensForTokens(
+            uint256[] memory amounts = CAMELOT_ROUTER.swapExactTokensForTokens(
                 amountIn,
                 minOutput,
                 route.path,
@@ -211,9 +211,9 @@ contract RealArbitrageExecutor {
 
             return amounts[amounts.length - 1];
 
-        } else if (keccak256(bytes(getRouterName(route.router))) == keccak256(bytes("Biswap"))) {
+        } else if (keccak256(bytes(getRouterName(route.router))) == keccak256(bytes("SushiSwap"))) {
 
-            uint256[] memory amounts = BISWAP_ROUTER.swapExactTokensForTokens(
+            uint256[] memory amounts = SUSHISWAP_ROUTER.swapExactTokensForTokens(
                 amountIn,
                 minOutput,
                 route.path,
@@ -223,9 +223,9 @@ contract RealArbitrageExecutor {
 
             return amounts[amounts.length - 1];
 
-        } else if (keccak256(bytes(getRouterName(route.router))) == keccak256(bytes("ApeSwap"))) {
+        } else if (keccak256(bytes(getRouterName(route.router))) == keccak256(bytes("Camelot"))) {
 
-            uint256[] memory amounts = APESWAP_ROUTER.swapExactTokensForTokens(
+            uint256[] memory amounts = CAMELOT_ROUTER.swapExactTokensForTokens(
                 amountIn,
                 minOutput,
                 route.path,
@@ -258,23 +258,23 @@ contract RealArbitrageExecutor {
     }
 
     function getRouterAddress(string memory exchange) internal pure returns (address) {
-        if (keccak256(bytes(exchange)) == keccak256(bytes("PancakeSwap"))) {
-            return 0x10ED43C718714eb63d5aA57B78B54704E256024E;
-        } else if (keccak256(bytes(exchange)) == keccak256(bytes("Biswap"))) {
-            return 0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8;
-        } else if (keccak256(bytes(exchange)) == keccak256(bytes("ApeSwap"))) {
-            return 0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7;
+        if (keccak256(bytes(exchange)) == keccak256(bytes("Uniswap"))) {
+            return 0xE592427A0AEce92De3Edee1F18E0157C05861564; // Uniswap V3 Router
+        } else if (keccak256(bytes(exchange)) == keccak256(bytes("SushiSwap"))) {
+            return 0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506; // SushiSwap Router
+        } else if (keccak256(bytes(exchange)) == keccak256(bytes("Camelot"))) {
+            return 0xc873fEcbd354f5A56E00E710B90EF4201db2448d; // Camelot Router
         }
         revert("Unknown exchange");
     }
 
     function getRouterName(address router) internal pure returns (string memory) {
-        if (router == 0x10ED43C718714eb63d5aA57B78B54704E256024E) {
-            return "PancakeSwap";
-        } else if (router == 0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8) {
-            return "Biswap";
-        } else if (router == 0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7) {
-            return "ApeSwap";
+        if (router == 0xE592427A0AEce92De3Edee1F18E0157C05861564) {
+            return "Uniswap";
+        } else if (router == 0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506) {
+            return "SushiSwap";
+        } else if (router == 0xc873fEcbd354f5A56E00E710B90EF4201db2448d) {
+            return "Camelot";
         }
         return "Unknown";
     }

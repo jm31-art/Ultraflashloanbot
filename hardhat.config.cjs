@@ -25,6 +25,17 @@ module.exports = {
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
       chainId: 56,
       gasPrice: process.env.BSC_MAX_GAS_PRICE ? parseInt(process.env.BSC_MAX_GAS_PRICE) * 1000000000 : undefined
+    },
+    arbitrum: {
+      url: process.env.ARBITRUM_RPC_URL || "https://arb1.arbitrum.io/rpc",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 42161,
+      gasPrice: process.env.ARBITRUM_MAX_GAS_PRICE ? parseInt(process.env.ARBITRUM_MAX_GAS_PRICE) * 1000000000 : undefined
+    },
+    arbitrumGoerli: {
+      url: process.env.ARBITRUM_GOERLI_RPC_URL || "https://goerli-rollup.arbitrum.io/rpc",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 421613
     }
   }
 };
