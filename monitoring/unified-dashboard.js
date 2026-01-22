@@ -1,6 +1,7 @@
 // KILOCODE: UNIFIED MONITORING DASHBOARD
 // monitoring/unified-dashboard.js
 
+import { WebSocketServer } from 'ws';
 import WebSocket from 'ws';
 import express from 'express';
 import path from 'path';
@@ -70,7 +71,7 @@ class UnifiedMonitoringDashboard {
         });
 
         // Initialize WebSocket server
-        this.wss = new WebSocket.Server({ server });
+        this.wss = new WebSocketServer({ server });
         this.setupWebSocket();
     }
 
