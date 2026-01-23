@@ -359,11 +359,13 @@ class BNBPriceOracle:
     def _chainlink_price(self) -> Decimal:
         """Get BNB price from Chainlink oracle"""
         try:
-            # Use the existing get_chainlink_price function
-            price = get_chainlink_price(self.chainlink_feed)
-            if price and price > 0:
-                return Decimal(str(price))
-            raise ValueError("Invalid Chainlink price")
+            # Use Web3 to call Chainlink feed
+            abi = [{"inputs":[],"name":"latestAnswer","outputs":[{"internalType":"int256","name":"","type":"int256"}],"stateMutability":"view","type":"function"}]
+            contract = w3.eth.contract(address=self.chainlink_feed, abi=abi)
+            price_raw = contract.functions.latestAnswer().call()
+            # Chainlink BNB/USD has 8 decimals
+            price = Decimal(price_raw) / Decimal(10**8)
+            return price
         except Exception as e:
             raise ValueError(f"Chainlink price fetch failed: {e}")
 
@@ -2752,7 +2754,7 @@ class MarketAdaptiveParameters:
             volatility = self.market_data.get('volatility', 0.01)
 
             # Gas cost estimation (21000 gas for transfer, plus arbitrage overhead)
-            gas_cost_usd = (gas_gwei * 50000 / 1e9) * BNB_PRICE  # Simplified
+            gas_cost_usd = (gas_gwei * 50000 / 1e9) * bnb_oracle.get_price()  # Dynamic price
 
             # Flash loan fee (typically 0.09% for Aave V3)
             flash_fee_rate = Decimal("0.0009")
@@ -4569,9 +4571,9 @@ class ProfitOptimizedGasEngine:
     def get_bnb_price(self):
         """Get current BNB price"""
         try:
-            return fetch_price_safe("BNB", "dexscreener") or BNB_PRICE
+            return fetch_price_safe("BNB", "dexscreener") or bnb_oracle.get_price()
         except:
-            return BNB_PRICE
+            return bnb_oracle.get_price()
 
     def adjust_gas_for_profit(self, target_gas, max_cost_usd, gas_limit):
         """Adjust gas price to stay within profit bounds"""
@@ -4705,7 +4707,7 @@ def fetch_real_time_reference_prices():
 
 # Dynamic parameters are now called directly in functions
 MIN_PROFIT_PCT = Decimal("0.0015")  # Keep static for now
-BNB_PRICE = bnb_oracle.get_price()  # Dynamic BNB price oracle
+# BNB_PRICE is now dynamic - use bnb_oracle.get_price() throughout the code
 MIN_PROFIT_USD = Decimal("5.0")  # Minimum profit threshold in USD
 
 # BSC CHAINLINK ORACLE ADDRESSES
@@ -5180,7 +5182,7 @@ class SecureTransactionManager:
         """Basic transaction authorization"""
         # Check transaction value
         value_bnb = transaction['value'] / Decimal(10**18)
-        value_usd = value_bnb * BNB_PRICE
+        value_usd = value_bnb * bnb_oracle.get_price()
 
         # Basic limits
         if value_usd > Decimal("10000"):  # $10K limit for basic auth
@@ -5234,7 +5236,7 @@ class SecureTransactionManager:
     def validate_transaction_amount(self, transaction):
         """Validate transaction amount against limits"""
         value_bnb = transaction['value'] / Decimal(10**18)
-        value_usd = value_bnb * BNB_PRICE
+        value_usd = value_bnb * bnb_oracle.get_price()
 
         # Check single transaction limit
         if value_usd > self.max_transaction_value:
@@ -5286,7 +5288,7 @@ class SecureTransactionManager:
             'timestamp': datetime.now(),
             'transaction': transaction,
             'signed_tx_hash': signed_tx.hash.hex() if hasattr(signed_tx, 'hash') else 'unknown',
-            'value_usd': (transaction['value'] / Decimal(10**18)) * BNB_PRICE,
+            'value_usd': (transaction['value'] / Decimal(10**18)) * bnb_oracle.get_price(),
             'status': 'success'
         }
 
@@ -5308,7 +5310,7 @@ class SecureTransactionManager:
             'timestamp': datetime.now(),
             'transaction': transaction,
             'error': str(error),
-            'value_usd': (transaction['value'] / Decimal(10**18)) * BNB_PRICE,
+            'value_usd': (transaction['value'] / Decimal(10**18)) * bnb_oracle.get_price(),
             'status': 'failed'
         }
 
@@ -6984,7 +6986,7 @@ def edge9():
                 }
                 for name, addr in meme_tokens.items():
                     if addr in inp:
-                        usd = (w3.eth.get_balance(tx["from"]) / 1e18) * BNB_PRICE
+                        usd = (w3.eth.get_balance(tx["from"]) / 1e18) * bnb_oracle.get_price()
                         if usd > 35000 or (tx.value == 0 and int(tx.gas) > 350000):  # Lower thresholds
                             logger.info(f"[09/13] MEME STINK {name} ~${usd:,.0f}")
                             tg(f"MEME STINK\n{name} ${usd:,.0f}")
@@ -7092,7 +7094,7 @@ def edge12_fixed():
         # Calculate actual savings
         gas_difference = current_gas - predicted_gas
         if gas_difference > 0:
-            savings_usd = (gas_difference / 1e9) * 21000 * (BNB_PRICE / 1e9)
+            savings_usd = (gas_difference / 1e9) * 21000 * (bnb_oracle.get_price() / 1e9)
             savings_text = f"save ${savings_usd:.3f}"
         else:
             savings_text = "no savings"
@@ -7123,7 +7125,7 @@ def edge13():
         blk = w3.eth.get_block('pending', full_transactions=True)
         large_txs = [tx for tx in blk.get("transactions", []) if tx.value > w3.to_wei(10, "ether")]
         if len(large_txs) > 3:
-            total_value = sum(tx.value for tx in large_txs) / 1e18 * BNB_PRICE
+            total_value = sum(tx.value for tx in large_txs) / 1e18 * bnb_oracle.get_price()
             logger.info(f"[13/13] MEMPOOL PATTERN → {len(large_txs)} large txs (${total_value:,.0f})")
             tg(f"MEMPOOL PATTERN\n{len(large_txs)} large txs\n${total_value:,.0f}")
     except Exception as e:
@@ -7480,7 +7482,7 @@ async def edge9_async(self):
                     }
                     for name, addr in meme_tokens.items():
                         if addr in inp:
-                            usd = (w3.eth.get_balance(tx["from"]) / 1e18) * BNB_PRICE
+                            usd = (w3.eth.get_balance(tx["from"]) / 1e18) * bnb_oracle.get_price()
                             if usd > 35000 or (tx.value == 0 and int(tx.gas) > 350000):
                                 return {
                                     'edge': 'edge9',
@@ -7648,7 +7650,7 @@ async def edge13_async(self):
 
         large_txs = [tx for tx in blk.get("transactions", []) if tx.value > w3.to_wei(10, "ether")]
         if len(large_txs) > 3:
-            total_value = sum(tx.value for tx in large_txs) / 1e18 * BNB_PRICE
+            total_value = sum(tx.value for tx in large_txs) / 1e18 * bnb_oracle.get_price()
             return {
                 'edge': 'edge13',
                 'large_tx_count': len(large_txs),
@@ -7828,7 +7830,7 @@ class SecureBot:
             # For now, create a mock transaction
             transaction = {
                 'to': '0x1234567890123456789012345678901234567890',  # Mock address
-                'value': int(opportunity.get('profit', 0) * Decimal(10**18) / BNB_PRICE),
+                'value': int(opportunity.get('profit', 0) * Decimal(10**18) / bnb_oracle.get_price()),
                 'gas': 250000,
                 'gasPrice': w3.eth.gas_price,
                 'nonce': w3.eth.get_transaction_count(self.get_wallet_address()),
