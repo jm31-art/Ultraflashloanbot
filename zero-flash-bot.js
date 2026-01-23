@@ -4,7 +4,9 @@ dotenv.config();
 
 // Configuration
 const RPC_URL = process.env.RPC_URL || 'https://bsc-mainnet.nodereal.io/v1/d534b4de2d6243f19f43721c4f3dfd82';
-const PRIVATE_KEY = process.env.PRIVATE_KEY;
+const JS_BOT_PRIVATE_KEY = process.env.JS_BOT_PRIVATE_KEY;
+// Fallback to old PRIVATE_KEY for backward compatibility
+const PRIVATE_KEY = JS_BOT_PRIVATE_KEY || process.env.PRIVATE_KEY;
 const TREASURY_ADDRESS = process.env.TREASURY_ADDRESS || '0xd858c700e5b16f1fddbddd8fc02a71d5730e41ff'; // owner
 
 // Pancake V3 Pool Addresses (0.01% fee)

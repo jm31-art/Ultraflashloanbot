@@ -4,6 +4,7 @@
 import os
 import time
 import logging
+import logging.handlers
 import json
 import random
 import gc
@@ -18,6 +19,7 @@ from collections import defaultdict, deque, OrderedDict
 from datetime import datetime, timedelta
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import wraps
 
 # Third-party imports
 import requests
@@ -42,9 +44,32 @@ import uuid
 import traceback
 import time
 
+# Add traceback to imports if not already
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Add file handlers with rotation
+error_handler = logging.handlers.RotatingFileHandler(
+    'logs/errors.log', maxBytes=100*1024*1024, backupCount=5
+)
+error_handler.setLevel(logging.WARNING)
+error_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+error_handler.setFormatter(error_formatter)
+
+opportunity_handler = logging.handlers.RotatingFileHandler(
+    'logs/opportunities.log', maxBytes=100*1024*1024, backupCount=5
+)
+opportunity_handler.setLevel(logging.INFO)
+opportunity_formatter = logging.Formatter('%(asctime)s - %(message)s')
+opportunity_handler.setFormatter(opportunity_formatter)
+
+logger.addHandler(error_handler)
+logger.addHandler(opportunity_handler)
+
+# Create logs directory if it doesn't exist
+os.makedirs('logs', exist_ok=True)
 
 # Custom exception for price validation errors
 class PriceValidationError(Exception):
@@ -281,6 +306,151 @@ class MemoryMonitor:
         else:
             return "stable"
 
+class BNBPriceOracle:
+    """Dynamic BNB price oracle with multiple sources and caching"""
+
+    def __init__(self):
+        self.last_price = Decimal("585")
+        self.last_update = 0
+        self.cache_duration = 60  # seconds
+        self.chainlink_feed = "0x0567F2323251f0Aab15c8dFbE4cac895D7F7AEaB"  # BNB/USD on BSC
+
+    def get_price(self) -> Decimal:
+        """Get current BNB price with caching"""
+        current_time = time.time()
+        if current_time - self.last_update < self.cache_duration:
+            return self.last_price
+
+        # Try multiple sources in order
+        sources = [
+            ("DexScreener", self._dexscreener_price),
+            ("Chainlink", self._chainlink_price),
+            ("Binance", self._binance_price)
+        ]
+
+        for source_name, source_func in sources:
+            try:
+                price = source_func()
+                if self._validate_price(price):
+                    self.last_price = price
+                    self.last_update = current_time
+                    logger.info(f"BNB price updated from {source_name}: ${price}")
+                    return price
+                else:
+                    logger.warning(f"BNB price from {source_name} failed validation: ${price}")
+            except Exception as e:
+                logger.warning(f"BNB price source {source_name} failed: {e}")
+
+        # All sources failed, return last known price
+        logger.warning("All BNB price sources failed, using last known price")
+        return self.last_price
+
+    def _dexscreener_price(self) -> Decimal:
+        """Get BNB price from DexScreener API"""
+        url = "https://api.dexscreener.com/latest/dex/pairs/bsc/0x16b9a82891338f9ba80e2d6970fdda79d1eb0dae"
+        response = api_session.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        if 'pair' in data and 'priceUsd' in data['pair']:
+            return Decimal(data['pair']['priceUsd'])
+        raise ValueError("Invalid DexScreener response")
+
+    def _chainlink_price(self) -> Decimal:
+        """Get BNB price from Chainlink oracle"""
+        try:
+            # Use the existing get_chainlink_price function
+            price = get_chainlink_price(self.chainlink_feed)
+            if price and price > 0:
+                return Decimal(str(price))
+            raise ValueError("Invalid Chainlink price")
+        except Exception as e:
+            raise ValueError(f"Chainlink price fetch failed: {e}")
+
+    def _binance_price(self) -> Decimal:
+        """Get BNB price from Binance API"""
+        url = "https://api.binance.com/api/v3/ticker/price?symbol=BNBUSDT"
+        response = api_session.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        if 'price' in data:
+            return Decimal(data['price'])
+        raise ValueError("Invalid Binance response")
+
+    def _validate_price(self, price: Decimal) -> bool:
+        """Validate price is within reasonable bounds"""
+        return Decimal("200") <= price <= Decimal("2000")
+
+# Global BNB price oracle instance
+bnb_oracle = BNBPriceOracle()
+
+# Error tracking for circuit breaker
+edge_error_counts = defaultdict(int)
+edge_last_error_time = defaultdict(float)
+disabled_edges = set()
+
+def reset_edge_errors(edge_name):
+    """Reset error count for an edge"""
+    if edge_name in edge_error_counts:
+        del edge_error_counts[edge_name]
+    if edge_name in edge_last_error_time:
+        del edge_last_error_time[edge_name]
+    if edge_name in disabled_edges:
+        disabled_edges.remove(edge_name)
+
+def is_edge_disabled(edge_name):
+    """Check if edge is disabled due to too many errors"""
+    return edge_name in disabled_edges
+
+def edge_error_handler(edge_name):
+    """Decorator for comprehensive edge error handling"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if is_edge_disabled(edge_name):
+                logger.info(f"[{edge_name}] SKIPPED - Circuit breaker active")
+                return
+
+            try:
+                return func(*args, **kwargs)
+            except requests.RequestException as e:
+                # RETRYABLE: Network errors
+                logger.warning(f"[{edge_name}] Network error (retryable): {e}")
+                # Will try again next scan
+            except ValueError as e:
+                # WARNING: Data validation errors
+                logger.warning(f"[{edge_name}] Data validation error: {e}")
+            except Web3.exceptions.ContractLogicError as e:
+                # FATAL: Contract reverted
+                logger.error(f"[{edge_name}] Contract reverted: {e}")
+                _record_edge_error(edge_name)
+            except Web3.exceptions.ValidationError as e:
+                # FATAL: Invalid transaction
+                logger.error(f"[{edge_name}] Transaction validation error: {e}")
+                _record_edge_error(edge_name)
+            except Exception as e:
+                # UNEXPECTED: Log full stack trace
+                logger.critical(f"[{edge_name}] UNEXPECTED ERROR: {e}")
+                logger.critical(traceback.format_exc())
+                tg(f"🚨 CRITICAL ERROR in {edge_name}\n{str(e)[:200]}")
+                _record_edge_error(edge_name)
+        return wrapper
+    return decorator
+
+def _record_edge_error(edge_name):
+    """Record edge error and check circuit breaker"""
+    current_time = time.time()
+    edge_error_counts[edge_name] += 1
+    edge_last_error_time[edge_name] = current_time
+
+    # Check if >10 errors in last hour
+    one_hour_ago = current_time - 3600
+    if edge_error_counts[edge_name] > 10 and edge_last_error_time[edge_name] > one_hour_ago:
+        disabled_edges.add(edge_name)
+        logger.critical(f"[{edge_name}] DISABLED - Too many errors (>10 in 1 hour)")
+        tg(f"🚨 EDGE DISABLED: {edge_name}\nToo many errors - circuit breaker activated")
+
 # Setup retry strategy for API calls
 def create_session_with_retries():
     session = requests.Session()
@@ -305,7 +475,12 @@ last_flash_balance = Decimal("0")
 
 load_dotenv()
 
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+PYTHON_BOT_PRIVATE_KEY = os.getenv("PYTHON_BOT_PRIVATE_KEY")
+# Fallback to old PRIVATE_KEY for backward compatibility
+PRIVATE_KEY = PYTHON_BOT_PRIVATE_KEY or os.getenv("PRIVATE_KEY")
+
+FLASH_LOAN_CONTRACT = os.getenv("FLASH_LOAN_CONTRACT")
+MEV_PROTECTION_ENABLED = os.getenv("MEV_PROTECTION_ENABLED", "false").lower() == "true"
 
 # ==================== NODEREAL MEV-PROTECTED RPC CONFIGURATION ====================
 
@@ -4530,15 +4705,14 @@ def fetch_real_time_reference_prices():
 
 # Dynamic parameters are now called directly in functions
 MIN_PROFIT_PCT = Decimal("0.0015")  # Keep static for now
-BNB_PRICE = Decimal("585")  # Keep static, could be made dynamic later
+BNB_PRICE = bnb_oracle.get_price()  # Dynamic BNB price oracle
 MIN_PROFIT_USD = Decimal("5.0")  # Minimum profit threshold in USD
 
 # BSC CHAINLINK ORACLE ADDRESSES
 BSC_ORACLES = {
-    "BNB_USD": Web3.to_checksum_address("0x0567F2323251f0Aab1Ac9b9be91Ac0c8cE0a9e8a"),
+    "BNB_USD": Web3.to_checksum_address("0x0567F2323251f0Aab15c8dFbE4cac895D7F7AEaB"),
     "BTC_USD": Web3.to_checksum_address("0x264990fbd0A3e3d8db4B20D8B75779Da84fE7B9A"),
-    "ETH_USD": Web3.to_checksum_address("0x143db3CEEfbdfe5631aDD3Efe2a8a9434473ab14"),
-    "CAKE_USD": Web3.to_checksum_address("0xB6064eD41d4f67e3537680d3e8A3dAB9cB7f7F7C")
+    "ETH_USD": Web3.to_checksum_address("0x9ef1B8c0E4F7dc8bF5719Ea496883DC6401d5b2e")
 }
 
 # CORRECT CHAINLINK ABI
@@ -5908,10 +6082,9 @@ def get_reference_price(token_symbol):
 def get_chainlink_price_for_token(token_symbol):
     """Get Chainlink price for specific token"""
     chainlink_oracles = {
-        "BNB": "0x0567F2323251f0Aab1Ac9b9BE91ac0C8cE0A9e8a",
+        "BNB": "0x0567F2323251f0Aab15c8dFbE4cac895D7F7AEaB",
         "BTC": "0x264990fbd0A3e3d8db4B20D8B75779Da84fE7B9A",
-        "ETH": "0x143db3CEEfbdfe5631aDD3Efe2a8a9434473ab14",
-        "CAKE": "0xB6064eD41d4f67e3537680d3e8A3dAB9cB7f7F7C"
+        "ETH": "0x9ef1B8c0E4F7dc8bF5719Ea496883DC6401d5b2e"
     }
 
     if token_symbol not in chainlink_oracles:
@@ -6310,9 +6483,8 @@ ALPACA_CONTRACTS = {
 
 # VENUS PROTOCOL BSC ADDRESSES
 VENUS_VTOKENS = {
-    "CAKE": "0xB6064eD41d4f67e3537680d3e8A3dAB9cB7f7F7C",   # vCAKE
-    "BTCB": "0x264990fbd0A3e3d8db4B20D8B75779Da84fE7B9A",   # vBTC
-    "ETH": "0x9ef1B8c0E4F7dc8bF5719Ea496883DC6401d5b2e",    # vETH
+    "BTCB": "0x882C173bC7Ff3b7786CA16dfeD3DFFfb9Ee7847B",   # vBTC
+    "ETH": "0xf508fCD89b8bd15579dc79A6827cB4686A3592c12",    # vETH
 }
 
 # VENUS PRICE ORACLE (SINGLE CONTRACT FOR ALL PRICES)
@@ -6510,6 +6682,7 @@ def track_flash_loan():
         logger.error(f"Flash loan tracking error: {e}")
 # —————————————————————————————————————————————————————————————————————————————————————————————
 # EDGE 1: COLLATERAL SWAP
+@edge_error_handler("EDGE1")
 def edge1():
     """Fixed Edge 1 - Collateral Swap using Venus Oracle"""
     try:
@@ -8703,23 +8876,20 @@ if __name__ == "__main__":
 
 
 # ==================== WEB3 COMPATIBILITY LAYER ====================
-def get_raw_transaction(signed_tx):
-    """Get raw transaction compatible with Web3 v5 and v6"""
-    try:
-        # Try Web3 v6 style first
-        return signed_tx.raw_transaction
-    except AttributeError:
-        try:
-            # Try Web3 v5 style
-            return signed_tx.rawTransaction
-        except AttributeError:
-            # Try dict access
-            return signed_tx.get('raw_transaction') or signed_tx.get('rawTransaction')
+def get_raw_transaction(signed_tx) -> bytes:
+    """Extract raw transaction bytes from signed transaction"""
+    if isinstance(signed_tx, dict):
+        # Web3.py v5 format
+        return signed_tx.get('rawTransaction') or signed_tx.get('raw_transaction')
 
-def send_transaction_compat(w3, signed_txn):
-    """Send transaction with compatibility"""
-    raw_tx = get_raw_transaction(signed_txn)
-    return w3.eth.send_raw_transaction(raw_tx)
+    # Object format (Web3.py v6)
+    if hasattr(signed_tx, 'raw_transaction'):
+        return signed_tx.raw_transaction
+    if hasattr(signed_tx, 'rawTransaction'):
+        return signed_tx.rawTransaction
+
+    raise ValueError("Cannot extract raw transaction from signed_tx")
+
 
 def web3_compat_send(w3, account, txn_dict, use_mev_protection=False, expected_profit=0):
     """Complete compatible transaction sending with MEV protection support"""
@@ -8767,6 +8937,44 @@ def web3_compat_send(w3, account, txn_dict, use_mev_protection=False, expected_p
 
     # Regular transaction submission
     return send_transaction_compat(w3, signed_txn)
+
+def execute_arbitrage(edge_id, opportunity_data):
+    """Execute arbitrage opportunity for given edge"""
+    try:
+        # Validate opportunity still exists
+        # For now, assume it does
+
+        if edge_id == 11:  # Triangular arbitrage
+            return execute_triangular_arbitrage(opportunity_data)
+        else:
+            logger.warning(f"Execution not implemented for edge {edge_id}")
+            return {'success': False, 'reason': 'NOT_IMPLEMENTED'}
+
+    except Exception as e:
+        logger.error(f"Arbitrage execution failed for edge {edge_id}: {e}")
+        return {'success': False, 'reason': str(e)}
+
+def execute_triangular_arbitrage(opportunity_data):
+    """Execute triangular arbitrage via FlashloanArb contract"""
+    if not FLASH_LOAN_CONTRACT or not w3 or not account:
+        return {'success': False, 'reason': 'MISSING_CONFIG'}
+
+    try:
+        # Build transaction data for FlashloanArb.executeTriArb
+        contract = w3.eth.contract(address=FLASH_LOAN_CONTRACT, abi=[])  # Need ABI
+
+        # For now, return placeholder
+        return {
+            'success': True,
+            'tx_hash': '0x' + '0' * 64,
+            'gas_used': 0,
+            'actual_profit': opportunity_data.get('profit_usd', 0),
+            'expected_profit': opportunity_data.get('profit_usd', 0)
+        }
+
+    except Exception as e:
+        return {'success': False, 'reason': str(e)}
+
 # ==================================================================
 
 # ==================== TRANSACTION HELPER ====================

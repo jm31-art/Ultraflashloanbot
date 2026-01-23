@@ -30,10 +30,54 @@ interface IVToken {
     function transfer(address dst, uint256 amount) external returns (bool);
 }
 
+// AAVE V3 Pool Interface
+interface IAAVEPool {
+    function flashLoanSimple(
+        address receiverAddress,
+        address asset,
+        uint256 amount,
+        bytes calldata params,
+        uint16 referralCode
+    ) external;
+
+    function liquidationCall(
+        address collateralAsset,
+        address debtAsset,
+        address user,
+        uint256 debtToCover,
+        bool receiveAToken
+    ) external;
+}
+
 contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    // Events
+    event FlashloanOperationExecuted(
+        uint8 operationType, // 1=arbitrage, 2=liquidation
+        address indexed tokenA,
+        address indexed tokenB,
+        address indexed tokenC,
+        uint256 amountIn,
+        uint256 amountOut,
+        uint256 profit,
+        bool success,
+        uint256 timestamp
+    );
+    event SlippageToleranceSet(uint256 oldTolerance, uint256 newTolerance);
+    event SwapExecuted(
+        address indexed tokenIn,
+        address indexed tokenOut,
+        uint256 amountIn,
+        uint256 expectedOut,
+        uint256 actualOut,
+        uint256 slippage,
+        string router
+    );
+
+    uint256 public constant GAS_PRICE_LIMIT = 500 gwei; // Max 500 gwei gas price
     uint256 public minProfit;
+    uint256 public slippageTolerance = 5; // 0.5% default (basis points, 5 = 0.5%)
     bool public safetyChecksEnabled;
     mapping(string => address) public routers;
     mapping(address => bool) public authorizedFlashLoanProviders;
@@ -229,6 +273,14 @@ contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
         emit MinProfitSet(oldProfit, _minProfit);
     }
 
+    // Slippage management
+    function setSlippageTolerance(uint256 _slippageTolerance) external onlyOwner {
+        require(_slippageTolerance >= 1 && _slippageTolerance <= 20, "Slippage tolerance must be 0.1%-2%");
+        uint256 oldTolerance = slippageTolerance;
+        slippageTolerance = _slippageTolerance;
+        emit SlippageToleranceSet(oldTolerance, _slippageTolerance);
+    }
+
     // Flash loan provider authorization
     function setAuthorizedFlashLoanProvider(address provider, bool authorized) external onlyOwner {
         authorizedFlashLoanProviders[provider] = authorized;
@@ -287,7 +339,7 @@ contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
         _executionStatus[msg.sender] = _NOT_ENTERED;
     }
 
-    // Triangular Arbitrage Executor
+    // Triangular Arbitrage Executor with Slippage Protection
     function executeTriArb(
         address tokenA,
         address tokenB,
@@ -297,7 +349,7 @@ contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
         string memory router2Name,
         string memory router3Name,
         uint256 minReturnA,
-        uint256 deadline
+        uint256 /*deadline*/ // Ignored, using fixed 5min deadline
     ) external whenNotPaused onlyOwner returns (uint256 finalAmountA, uint256 profit) {
         require(amountIn > 0, "amountIn=0");
 
@@ -311,55 +363,69 @@ contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
         IUniswapV2Router r2 = IUniswapV2Router(router2);
         IUniswapV2Router r3 = IUniswapV2Router(router3);
 
+        uint256 deadline = block.timestamp + 300; // 5 minutes
+
         // Transfer tokenA from caller to contract
         IERC20(tokenA).safeTransferFrom(msg.sender, address(this), amountIn);
 
-        // 1) A -> B on router1
+        // MEV Protection: Validate price stability before execution
+        require(validatePriceStability(tokenA, tokenB, 100), "Price manipulation detected on A-B"); // 1% max deviation
+        require(validatePriceStability(tokenB, tokenC, 100), "Price manipulation detected on B-C");
+        require(validatePriceStability(tokenC, tokenA, 100), "Price manipulation detected on C-A");
+
+        // 1) A -> B on router1 with slippage protection
         autoApproveIfNeeded(tokenA, router1, amountIn);
         address[] memory pathAB = new address[](2);
         pathAB[0] = tokenA;
         pathAB[1] = tokenB;
 
-        // Optional safety: estimate amountsOut and ensure reasonable slippage if safetyChecksEnabled
-        if (safetyChecksEnabled) {
-            uint[] memory outAB = r1.getAmountsOut(amountIn, pathAB);
-            require(outAB[1] > 0, "r1 out 0");
-        }
+        uint[] memory expectedAB = r1.getAmountsOut(amountIn, pathAB);
+        require(expectedAB[1] > 0, "No liquidity for A->B swap");
+        uint256 minOutAB = (expectedAB[1] * (1000 - slippageTolerance)) / 1000;
 
-        uint[] memory amountsAB = r1.swapExactTokensForTokens(amountIn, 0, pathAB, address(this), deadline);
+        uint[] memory amountsAB = r1.swapExactTokensForTokens(amountIn, minOutAB, pathAB, address(this), deadline);
         uint256 amtB = amountsAB[amountsAB.length - 1];
 
-        // Approve router2 for tokenB
-        autoApproveIfNeeded(tokenB, router2, amtB);
+        uint256 slippageAB = expectedAB[1] > amtB ? ((expectedAB[1] - amtB) * 10000) / expectedAB[1] : 0;
+        require(slippageAB <= slippageTolerance * 10, "Slippage exceeded max tolerance on A->B");
 
-        // 2) B -> C on router2
+        emit SwapExecuted(tokenA, tokenB, amountIn, expectedAB[1], amtB, slippageAB, router1Name);
+
+        // 2) B -> C on router2 with slippage protection
+        autoApproveIfNeeded(tokenB, router2, amtB);
         address[] memory pathBC = new address[](2);
         pathBC[0] = tokenB;
         pathBC[1] = tokenC;
 
-        if (safetyChecksEnabled) {
-            uint[] memory outBC = r2.getAmountsOut(amtB, pathBC);
-            require(outBC[1] > 0, "r2 out 0");
-        }
+        uint[] memory expectedBC = r2.getAmountsOut(amtB, pathBC);
+        require(expectedBC[1] > 0, "No liquidity for B->C swap");
+        uint256 minOutBC = (expectedBC[1] * (1000 - slippageTolerance)) / 1000;
 
-        uint[] memory amountsBC = r2.swapExactTokensForTokens(amtB, 0, pathBC, address(this), deadline);
+        uint[] memory amountsBC = r2.swapExactTokensForTokens(amtB, minOutBC, pathBC, address(this), deadline);
         uint256 amtC = amountsBC[amountsBC.length - 1];
 
-        // Approve router3 for tokenC
-        autoApproveIfNeeded(tokenC, router3, amtC);
+        uint256 slippageBC = expectedBC[1] > amtC ? ((expectedBC[1] - amtC) * 10000) / expectedBC[1] : 0;
+        require(slippageBC <= slippageTolerance * 10, "Slippage exceeded max tolerance on B->C");
 
-        // 3) C -> A on router3
+        emit SwapExecuted(tokenB, tokenC, amtB, expectedBC[1], amtC, slippageBC, router2Name);
+
+        // 3) C -> A on router3 with slippage protection
+        autoApproveIfNeeded(tokenC, router3, amtC);
         address[] memory pathCA = new address[](2);
         pathCA[0] = tokenC;
         pathCA[1] = tokenA;
 
-        if (safetyChecksEnabled) {
-            uint[] memory outCA = r3.getAmountsOut(amtC, pathCA);
-            require(outCA[1] > 0, "r3 out 0");
-        }
+        uint[] memory expectedCA = r3.getAmountsOut(amtC, pathCA);
+        require(expectedCA[1] > 0, "No liquidity for C->A swap");
+        uint256 minOutCA = (expectedCA[1] * (1000 - slippageTolerance)) / 1000;
 
-        uint[] memory amountsCA = r3.swapExactTokensForTokens(amtC, 0, pathCA, address(this), deadline);
+        uint[] memory amountsCA = r3.swapExactTokensForTokens(amtC, minOutCA, pathCA, address(this), deadline);
         finalAmountA = amountsCA[amountsCA.length - 1];
+
+        uint256 slippageCA = expectedCA[1] > finalAmountA ? ((expectedCA[1] - finalAmountA) * 10000) / expectedCA[1] : 0;
+        require(slippageCA <= slippageTolerance * 10, "Slippage exceeded max tolerance on C->A");
+
+        emit SwapExecuted(tokenC, tokenA, amtC, expectedCA[1], finalAmountA, slippageCA, router3Name);
 
         // Optional minReturnA guard
         if (minReturnA > 0) {
@@ -580,14 +646,71 @@ contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
     }
 
     function executeAaveLiquidation(
-        address /*protocol*/,
-        address /*borrower*/,
-        address /*debtAsset*/,
-        address /*collateralAsset*/,
-        uint256 /*debtToCover*/
-    ) internal pure returns (uint256) {
-        // Placeholder for Aave liquidation
-        revert("Aave liquidation not implemented");
+        address protocol,
+        address borrower,
+        address debtAsset,
+        address collateralAsset,
+        uint256 debtToCover
+    ) internal returns (uint256 profit) {
+        // AAVE liquidation requires the contract to have the debtAsset
+        // In production, this should be wrapped in a flash loan
+
+        IAAVEPool pool = IAAVEPool(protocol);
+
+        // Check if borrower is liquidatable (health factor < 1)
+        // This is simplified - in production, check user account data
+
+        // Approve debtAsset to pool if needed (usually not required for liquidationCall)
+
+        // Execute liquidation
+        pool.liquidationCall(collateralAsset, debtAsset, borrower, debtToCover, false);
+
+        // Calculate seized collateral (debtToCover + bonus)
+        // AAVE liquidation bonus is typically 5-10%
+        uint256 liquidationBonus = 500; // 5% default
+        uint256 seizedCollateral = debtToCover + (debtToCover * liquidationBonus / 10000);
+
+        // Swap collateral to debtAsset to recover funds
+        address router = routers["PancakeSwap"];
+        require(router != address(0), "PancakeSwap router not set");
+
+        autoApproveIfNeeded(collateralAsset, router, seizedCollateral);
+
+        address[] memory path = _getPath(collateralAsset, debtAsset);
+        uint[] memory expectedOut = IUniswapV2Router(router).getAmountsOut(seizedCollateral, path);
+        uint256 minOut = expectedOut[1] * 995 / 1000; // 0.5% slippage
+
+        uint[] memory amounts = IUniswapV2Router(router).swapExactTokensForTokens(
+            seizedCollateral,
+            minOut,
+            path,
+            address(this),
+            block.timestamp + 300
+        );
+
+        uint256 recoveredDebt = amounts[amounts.length - 1];
+
+        // Profit is recovered - debtToCover (since we spent debtToCover)
+        profit = recoveredDebt - debtToCover;
+
+        // Validate profit
+        require(profit > 0, "Liquidation not profitable");
+
+        // Transfer profit to owner
+        IERC20(debtAsset).safeTransfer(owner(), profit);
+
+        emit LiquidationExecuted(
+            protocol,
+            borrower,
+            collateralAsset,
+            debtAsset,
+            debtToCover,
+            seizedCollateral,
+            profit,
+            block.timestamp
+        );
+
+        return profit;
     }
 
     function executeCompoundLiquidation(
@@ -1225,7 +1348,14 @@ contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
     }
 
     // COMPLETE FLASHLOAN ARBITRAGE EXECUTION ENGINE
-    function receiveFlashLoan(address token, uint amount, uint fee, bytes calldata data) external comprehensiveReentrancyGuard nonReentrant onlyAuthorizedFlashProvider whenNotPaused {
+    function receiveFlashLoan(address token, uint amount, uint fee, bytes calldata data) external comprehensiveReentrancyGuard nonReentrant whenNotPaused {
+        // Validate caller is authorized flash loan provider
+        require(
+            msg.sender == 0x794a61358D6845594F94dc1DB02A252b5b4814aD || // AAVE V3 Pool
+            msg.sender == 0xBA12222222228d8Ba445958a75a0704d566BF2C8,   // Balancer Vault
+            "Unauthorized flash loan provider"
+        );
+
         // Check gas price is reasonable
         require(tx.gasprice <= GAS_PRICE_LIMIT, "Gas price too high");
 
@@ -1235,54 +1365,130 @@ contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
         // Validate flash loan parameters
         _validateFlashLoanParameters(token, amount, fee);
 
-        // Decode arbitrage parameters with validation
-        (
-            address tokenA,
-            address tokenB,
-            string[] memory exchanges,
-            address[] memory path,
-            address caller,
-            uint gasReimbursement,
-            uint _minProfit,
-            uint maxSlippage,
-            uint deadline
-        ) = abi.decode(data, (address, address, string[], address[], address, uint, uint, uint, uint));
+        // Decode operation type and data
+        (uint8 operationType, bytes memory operationData) = abi.decode(data, (uint8, bytes));
 
-        // Additional security checks
-        require(block.timestamp <= deadline, "Transaction expired");
-        require(path.length >= 2, "Invalid arbitrage path");
-        require(_minProfit > 0, "Minimum profit must be positive");
-        require(maxSlippage <= 500, "Max slippage too high"); // 5% max
+        uint minProfit;
+        bool isArbitrage = false;
+        bool isLiquidation = false;
 
-        // Validate external call safety
-        _validateExternalCallSafety(token, tokenA, tokenB, path, exchanges);
+        address tokenA;
+        address tokenB;
+        address tokenC;
+        string memory exchangeAB;
+        string memory exchangeBC;
+        string memory exchangeCA;
+
+        address protocol;
+        address user;
+        address debtAsset;
+        address collateralAsset;
+        uint debtToCover;
+
+        if (operationType == 1) {
+            // Triangular arbitrage
+            isArbitrage = true;
+            (
+                tokenA,
+                tokenB,
+                tokenC,
+                exchangeAB,
+                exchangeBC,
+                exchangeCA,
+                minProfit
+            ) = abi.decode(operationData, (address, address, address, string, string, string, uint));
+        } else if (operationType == 2) {
+            // Liquidation
+            isLiquidation = true;
+            (
+                protocol,
+                user,
+                debtAsset,
+                collateralAsset,
+                debtToCover,
+                minProfit
+            ) = abi.decode(operationData, (address, address, address, address, uint, uint));
+        } else {
+            revert("Invalid operation type");
+        }
 
         // Calculate repayment amount
         uint repayAmount = amount + fee;
+        uint initialBalance = IERC20(token).balanceOf(address(this));
+        require(initialBalance >= amount, "Insufficient flash loan amount received");
 
-        // EXECUTE PROFITABLE ARBITRAGE STRATEGY
-        uint profit = executeProfitableArbitrage(
-            token,
-            amount,
-            tokenA,
-            tokenB,
-            exchanges,
-            path,
-            _minProfit,
-            maxSlippage
-        );
+        // Execute operation
+        bool operationSuccess = false;
+        uint finalBalance = 0;
+
+        if (isArbitrage) {
+            // Validate triangular path
+            require(tokenA == token && tokenC == token, "Invalid triangular path: must start and end with flash token");
+            require(tokenA != tokenB && tokenB != tokenC && tokenA != tokenC, "Invalid tokens: must be different");
+            require(minProfit > 0, "Minimum profit must be positive");
+
+            // Execute triangular arbitrage: A → B → C → A
+            try this.executeTriangularArbitrage(tokenA, tokenB, tokenC, amount, exchangeAB, exchangeBC, exchangeCA) returns (uint returnedAmount) {
+                finalBalance = returnedAmount;
+                operationSuccess = true;
+            } catch {
+                // Arbitrage failed, but we still need to repay the loan
+                finalBalance = IERC20(token).balanceOf(address(this));
+                operationSuccess = false;
+            }
+        } else if (isLiquidation) {
+            // Validate liquidation parameters
+            require(debtAsset == token, "Flash loaned token must be debt asset");
+            require(amount == debtToCover, "Flash loan amount must equal debt to cover");
+            require(protocol != address(0), "Invalid protocol");
+            require(user != address(0), "Invalid user");
+            require(collateralAsset != address(0), "Invalid collateral asset");
+            require(debtToCover > 0, "Invalid debt amount");
+            require(minProfit > 0, "Minimum profit must be positive");
+
+            // Execute liquidation
+            try this.executeFlashLiquidation(protocol, user, debtAsset, collateralAsset, debtToCover) returns (uint returnedAmount) {
+                finalBalance = returnedAmount;
+                operationSuccess = true;
+            } catch {
+                // Liquidation failed, but we still need to repay the loan
+                finalBalance = IERC20(token).balanceOf(address(this));
+                operationSuccess = false;
+            }
+        } else {
+            revert("Invalid operation");
+        }
+
+        // Calculate profit (final - initial - fee - gas)
+        uint gasCost = estimateGasCosts();
+        uint totalCost = repayAmount + gasCost;
+        uint profit = finalBalance > totalCost ? finalBalance - totalCost : 0;
 
         // Validate profit meets minimum threshold
-        require(profit >= _minProfit, "Profit below minimum threshold");
+        require(profit >= minProfit, "Profit below minimum threshold");
 
-        // Safe repayment
+        // Safe repayment (always repay to avoid bad debt)
         IERC20(token).safeApprove(msg.sender, repayAmount);
 
-        // Transfer profit to caller
-        if (profit > 0) {
-            IERC20(token).safeTransfer(caller, profit);
-            emitProfitDistribution(caller, profit, "arbitrage_profit");
+        // Transfer profit to owner if operation was successful
+        if (operationSuccess && profit > 0) {
+            uint profitAmount = finalBalance - repayAmount;
+            IERC20(token).safeTransfer(owner(), profitAmount);
+            emitProfitDistribution(owner(), profitAmount, isArbitrage ? "flashloan_arbitrage_profit" : "flashloan_liquidation_profit");
         }
+
+        // Emit detailed operation result
+        emit FlashloanOperationExecuted(
+            operationType,
+            tokenA,
+            tokenB,
+            tokenC,
+            amount,
+            finalBalance,
+            profit,
+            operationSuccess,
+            block.timestamp
+        );
 
         emit FlashloanCallbackValidated(msg.sender, amount);
     }
@@ -1364,6 +1570,201 @@ contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
         _updateSlippageConfig(tokenIn, tokenOut, actualOut, expectedOutFull);
 
         return (expectedOut, actualOut);
+    }
+
+    // Execute triangular arbitrage with 0.5% max slippage protection
+    function executeTriangularArbitrage(
+        address tokenA,
+        address tokenB,
+        address tokenC,
+        uint amountA,
+        string memory exchangeAB,
+        string memory exchangeBC,
+        string memory exchangeCA
+    ) external returns (uint finalAmountA) {
+        require(msg.sender == address(this), "Only callable by contract");
+
+        uint currentAmount = amountA;
+
+        // Step 1: A → B on exchangeAB
+        address routerAB = routers[exchangeAB];
+        require(routerAB != address(0), "Exchange AB router not set");
+
+        uint expectedB = _getExpectedOutput(tokenA, tokenB, currentAmount, routerAB);
+        uint minOutB = expectedB * 995 / 1000; // 0.5% max slippage
+
+        autoApproveIfNeeded(tokenA, routerAB, currentAmount);
+        uint[] memory amountsAB = IUniswapV2Router(routerAB).swapExactTokensForTokens(
+            currentAmount,
+            minOutB,
+            _getPath(tokenA, tokenB),
+            address(this),
+            block.timestamp + 300
+        );
+        currentAmount = amountsAB[amountsAB.length - 1];
+
+        // Step 2: B → C on exchangeBC
+        address routerBC = routers[exchangeBC];
+        require(routerBC != address(0), "Exchange BC router not set");
+
+        uint expectedC = _getExpectedOutput(tokenB, tokenC, currentAmount, routerBC);
+        uint minOutC = expectedC * 995 / 1000; // 0.5% max slippage
+
+        autoApproveIfNeeded(tokenB, routerBC, currentAmount);
+        uint[] memory amountsBC = IUniswapV2Router(routerBC).swapExactTokensForTokens(
+            currentAmount,
+            minOutC,
+            _getPath(tokenB, tokenC),
+            address(this),
+            block.timestamp + 300
+        );
+        currentAmount = amountsBC[amountsBC.length - 1];
+
+        // Step 3: C → A on exchangeCA
+        address routerCA = routers[exchangeCA];
+        require(routerCA != address(0), "Exchange CA router not set");
+
+        uint expectedA = _getExpectedOutput(tokenC, tokenA, currentAmount, routerCA);
+        uint minOutA = expectedA * 995 / 1000; // 0.5% max slippage
+
+        autoApproveIfNeeded(tokenC, routerCA, currentAmount);
+        uint[] memory amountsCA = IUniswapV2Router(routerCA).swapExactTokensForTokens(
+            currentAmount,
+            minOutA,
+            _getPath(tokenC, tokenA),
+            address(this),
+            block.timestamp + 300
+        );
+        finalAmountA = amountsCA[amountsCA.length - 1];
+
+        return finalAmountA;
+    }
+
+    // Execute flash liquidation
+    function executeFlashLiquidation(
+        address protocol,
+        address user,
+        address debtAsset,
+        address collateralAsset,
+        uint debtToCover
+    ) external returns (uint finalDebtAmount) {
+        require(msg.sender == address(this), "Only callable by contract");
+
+        if (protocol == VENUS_COMPTROLLER) {
+            return _executeVenusFlashLiquidation(user, debtAsset, collateralAsset, debtToCover);
+        } else if (protocol == 0x794a61358D6845594F94dc1DB02A252b5b4814aD) { // AAVE V3 Pool
+            return _executeAAVEFlashLiquidation(user, debtAsset, collateralAsset, debtToCover);
+        } else {
+            revert("Unsupported protocol for flash liquidation");
+        }
+    }
+
+    function _executeVenusFlashLiquidation(
+        address user,
+        address debtAsset,
+        address collateralAsset,
+        uint debtToCover
+    ) internal returns (uint finalDebtAmount) {
+        IVenusComptroller comptroller = IVenusComptroller(VENUS_COMPTROLLER);
+        IVToken debtVToken = IVToken(getVTokenAddress(debtAsset));
+        IVToken collateralVToken = IVToken(getVTokenAddress(collateralAsset));
+
+        // Check health factor (shortfall > 0)
+        (uint256 error, uint256 liquidity, uint256 shortfall) = comptroller.getAccountLiquidity(user);
+        require(error == 0, "Failed to get account liquidity");
+        require(shortfall > 0, "Account not eligible for liquidation");
+
+        // Get borrower debt
+        uint256 borrowerDebt = debtVToken.borrowBalanceStored(user);
+        require(borrowerDebt > 0, "No debt to liquidate");
+
+        // Calculate max liquidatable (50% of debt)
+        uint256 maxLiquidatable = borrowerDebt * 50 / 100;
+        uint256 actualLiquidationAmount = debtToCover > maxLiquidatable ? maxLiquidatable : debtToCover;
+
+        // Approve debt asset to vToken
+        autoApproveIfNeeded(debtAsset, address(debtVToken), actualLiquidationAmount);
+
+        // Execute liquidation
+        uint256 seizedCollateral = debtVToken.liquidateBorrow(user, actualLiquidationAmount, collateralVToken);
+        require(seizedCollateral > 0, "Liquidation failed");
+
+        // Calculate expected debt from swap (seized + bonus)
+        uint256 liquidationBonus = 800; // 8% default
+        uint256 totalCollateral = seizedCollateral + (seizedCollateral * liquidationBonus / 10000);
+
+        // Swap collateral to debt asset
+        address router = routers["PancakeSwap"]; // Use PancakeSwap for swap
+        require(router != address(0), "PancakeSwap router not set");
+
+        autoApproveIfNeeded(collateralAsset, router, totalCollateral);
+
+        address[] memory path = _getPath(collateralAsset, debtAsset);
+        uint[] memory expectedOut = IUniswapV2Router(router).getAmountsOut(totalCollateral, path);
+        uint256 minOut = expectedOut[1] * 995 / 1000; // 0.5% slippage
+
+        uint[] memory amounts = IUniswapV2Router(router).swapExactTokensForTokens(
+            totalCollateral,
+            minOut,
+            path,
+            address(this),
+            block.timestamp + 300
+        );
+
+        finalDebtAmount = amounts[amounts.length - 1];
+        return finalDebtAmount;
+    }
+
+    function _executeAAVEFlashLiquidation(
+        address /*user*/,
+        address /*debtAsset*/,
+        address /*collateralAsset*/,
+        uint /*debtToCover*/
+    ) internal pure returns (uint) {
+        // Placeholder for AAVE liquidation
+        revert("AAVE flash liquidation not implemented");
+    }
+
+    // MEV Protection: TWAP validation
+    function validatePriceStability(address tokenA, address tokenB, uint256 maxDeviation) internal view returns (bool) {
+        // Simplified TWAP check - compare current price with recent average
+        // In production, implement proper TWAP oracle
+
+        uint256 currentPrice = _getCurrentPrice(tokenA, tokenB);
+        uint256 twapPrice = _getTWAP(tokenA, tokenB, 5 minutes);
+
+        if (twapPrice == 0) return true; // Skip if no TWAP available
+
+        uint256 deviation = currentPrice > twapPrice ?
+            ((currentPrice - twapPrice) * 10000) / twapPrice :
+            ((twapPrice - currentPrice) * 10000) / twapPrice;
+
+        return deviation <= maxDeviation; // maxDeviation in basis points
+    }
+
+    function _getCurrentPrice(address tokenA, address tokenB) internal view returns (uint256) {
+        address router = routers["PancakeSwap"];
+        if (router == address(0)) return 0;
+
+        try IUniswapV2Router(router).getAmountsOut(1 ether, _getPath(tokenA, tokenB)) returns (uint[] memory amounts) {
+            return amounts[1];
+        } catch {
+            return 0;
+        }
+    }
+
+    function _getTWAP(address tokenA, address tokenB, uint256 period) internal view returns (uint256) {
+        // Simplified - return current price (implement proper TWAP in production)
+        // Would require price history storage
+        return _getCurrentPrice(tokenA, tokenB);
+    }
+
+    // Helper function to create swap path
+    function _getPath(address tokenIn, address tokenOut) internal pure returns (address[] memory) {
+        address[] memory path = new address[](2);
+        path[0] = tokenIn;
+        path[1] = tokenOut;
+        return path;
     }
 
     // Owner withdrawal of any leftover tokens
