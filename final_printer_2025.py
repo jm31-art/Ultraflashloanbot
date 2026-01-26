@@ -9286,8 +9286,7 @@ if __name__ == "__main__":
     tg("🚀 ASYNC PROFIT MACHINE WITH COORDINATION STARTING")
 
     # Validate private key
-    private_key = os.getenv('PRIVATE_KEY')
-    if not private_key or private_key == 'your_private_key_here':
+    if not PRIVATE_KEY or PRIVATE_KEY.startswith("0xYOUR_") or "HERE" in PRIVATE_KEY:
         logger.error("❌ PRIVATE_KEY not set or is placeholder. Please set a valid private key in environment variables.")
         tg("❌ PRIVATE_KEY ERROR: Bot cannot run without valid private key")
         exit(1)
