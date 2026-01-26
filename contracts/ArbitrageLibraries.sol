@@ -11,20 +11,6 @@ library ArbitrageMath {
     uint256 internal constant PRECISION = 1e18;
     uint256 internal constant BASIS_POINTS_DIVISOR = 10000;
 
-library SecurityValidator {
-
-    function validateTokenAddress(address token) internal pure returns (bool) {
-        return token != address(0) && token != 0x000000000000000000000000000000000000dEaD;
-    }
-
-    function validateExchange(string memory exchange) internal pure returns (bool) {
-        bytes32 hash = keccak256(bytes(exchange));
-        return hash == keccak256("PancakeSwap") ||
-               hash == keccak256("Biswap") ||
-               hash == keccak256("ApeSwap");
-    }
-}
-
     function calculateOptimalTradeSize(
         uint256 availableCapital,
         uint256 priceImpact,

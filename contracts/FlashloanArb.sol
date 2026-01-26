@@ -1773,5 +1773,91 @@ contract FlashloanArb is Ownable, Pausable, ReentrancyGuard {
         IERC20(token).transfer(owner(), bal);
     }
 
+    // Arbitrum flash loan functions
+
+    function executeArbitrumFlashLoan(
+        address token,
+        uint256 amount,
+        bytes calldata params
+    ) external onlyOwner {
+        // Try Balancer first (0% fee)
+        if (isBalancerAvailable(token, amount)) {
+            executeBalancerFlashLoan(token, amount, params);
+        } else {
+            // Fallback to AAVE (0.09% fee)
+            executeAAVEFlashLoan(token, amount, params);
+        }
+    }
+
+    function executeBalancerFlashLoan(
+        address token,
+        uint256 amount,
+        bytes calldata params
+    ) internal {
+        address[] memory tokens = new address[](1);
+        tokens[0] = token;
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = amount;
+        IVault(BALANCER_VAULT_ARBITRUM).flashLoan(
+            address(this),
+            tokens,
+            amounts,
+            params
+        );
+        emit ArbitrumFlashLoan(BALANCER_VAULT_ARBITRUM, token, amount, 0, 0);
+    }
+
+    function executeAAVEFlashLoan(
+        address token,
+        uint256 amount,
+        bytes calldata params
+    ) internal {
+        IAAVEPool(AAVE_POOL_ARBITRUM).flashLoanSimple(
+            address(this),
+            token,
+            amount,
+            params,
+            0
+        );
+        emit ArbitrumFlashLoan(AAVE_POOL_ARBITRUM, token, amount, amount * 9 / 10000, 0);
+    }
+
+    function estimateTotalGasCost(uint256 l2GasUsed) public view returns (uint256) {
+        uint256 l1GasCost = 2000 * tx.gasprice;
+        uint256 l2GasCost = l2GasUsed * tx.gasprice;
+        return l1GasCost + l2GasCost;
+    }
+
+    function isBalancerAvailable(address token, uint256 amount) internal view returns (bool) {
+        // Check if Balancer has liquidity for the token
+        // Placeholder, assume always available for now
+        return true;
+    }
+
+    function receiveFlashLoan(
+        address[] memory tokens,
+        uint256[] memory amounts,
+        uint256[] memory feeAmounts,
+        bytes memory userData
+    ) external {
+        require(msg.sender == BALANCER_VAULT_ARBITRUM, "Unauthorized");
+        // Execute the arbitrage or liquidation logic here
+        // For now, placeholder
+    }
+
+    function executeOperation(
+        address asset,
+        uint256 amount,
+        uint256 premium,
+        address initiator,
+        bytes calldata params
+    ) external returns (bool) {
+        require(msg.sender == AAVE_POOL_ARBITRUM, "Unauthorized");
+        // Execute logic
+        // Approve repayment
+        IERC20(asset).approve(AAVE_POOL_ARBITRUM, amount + premium);
+        return true;
+    }
+
     receive() external payable {}
 }

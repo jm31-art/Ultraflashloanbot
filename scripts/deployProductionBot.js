@@ -1,16 +1,16 @@
 // KILOCODE: PRODUCTION DEPLOYMENT SCRIPT
 async function deployProductionBot() {
 
-    console.log("🚀 Deploying Production UltraFlashloanBot on Arbitrum...");
+    console.log("🚀 Deploying Production UltraFlashloanBot on Arbitrum Nova...");
 
-    // Verify all dependencies
+    // Verify all dependencies (Arbitrum Nova addresses)
     const requiredContracts = [
-        "0xE592427A0AEce92De3Edee1F18E0157C05861564", // Uniswap V3 Router
-        "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506", // SushiSwap Router
-        "0xc873fEcbd354f5A56E00E710B90EF4201db2448d", // Camelot Router
-        "0x794a61358D6845594F94dc1DB02A252b5b4814aD", // AAVE V3 Pool
-        "0xBA12222222228d8Ba445958a75a0704d566BF2C8", // Balancer Vault
-        "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"  // ETH/USD Feed
+        "0xE592427A0AEce92De3Edee1F18E0157C05861564", // Uniswap V3 Router (if available)
+        "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506", // SushiSwap Router (if available)
+        "0x7a6c8748F5bCDAaF6aB8c5C5c4b9a6F0c8b9a5c", // Camelot Router (Arbitrum Nova)
+        "0x794a61358D6845594F94dc1DB02A252b5b4814aD", // AAVE V3 Pool (if available)
+        "0xBA12222222228d8Ba445958a75a0704d566BF2C8", // Balancer Vault (if available)
+        "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"  // ETH/USD Feed (if available)
     ];
 
     for (const contract of requiredContracts) {

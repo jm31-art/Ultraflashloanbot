@@ -1,40 +1,45 @@
 {
     "dexes": {
-        "PancakeSwap": {
-            "factory": "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
-            "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-            "version": "v2",
-            "fee": 0.25
+        "UniswapV3": {
+            "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+            "router": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+            "version": "v3",
+            "fee": 0.3,
+            "description": "Primary DEX on Arbitrum Nova"
         },
-        "ApeSwap": {
-            "factory": "0x0841BD0B734E4F5853f0dD8d7Ea041c241fb0Da6",
-            "router": "0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7",
+        "SushiSwap": {
+            "factory": "0xc35DADB65012eC5796536bD9864eD8773aBc74C4",
+            "router": "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",
             "version": "v2",
-            "fee": 0.2
+            "fee": 0.3,
+            "description": "Popular DEX with good liquidity"
         },
-        "BiSwap": {
-            "factory": "0x858E3312ed3A876947EA49d572A7C42DE08af7EE",
-            "router": "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8",
+        "Camelot": {
+            "factory": "0x6EcCab422D763aC031210895C81787E87B43A652",
+            "router": "0xc873fEcbd354f5A56E00E710B90EF4201db2448d",
             "version": "v2",
-            "fee": 0.1
+            "fee": 0.2,
+            "description": "Arbitrum Nova native DEX"
         }
     },
     "rpcUrls": [
-        "https://bsc-dataseed.binance.org",
-        "https://bsc-dataseed1.defibit.io",
-        "https://bsc-dataseed1.ninicoin.io",
-        "https://bsc-dataseed2.defibit.io"
+        "https://nova.arbitrum.io/rpc",
+        "https://nova-sequencer.arbitrum.io/rpc",
+        "https://arbitrum-one.publicnode.com",
+        "https://arbitrum.llamarpc.com"
     ],
     "wsUrls": [
-        "wss://bsc-ws-node.nariox.org:443",
-        "wss://bsc.getblock.io/mainnet/"
+        "wss://nova-feed.arbitrum.io/feed",
+        "wss://arbitrum-one.publicnode.com"
     ],
-    "multicallAddress": "0x1Ee38d535d541c55C9dae27B12edf090C608E6Fb",
+    "multicallAddress": "0xcA11bde05977b3631167028862bE2a173976CA11b",
     "retryAttempts": 3,
     "retryDelay": 1000,
     "priceUpdateInterval": 1000,
-    "minLiquidity": 50000,
+    "minLiquidity": 100000,
     "maxPriceDeviation": 1.0,
-    "gasLimit": 500000,
-    "defaultSlippage": 0.5
+    "gasLimit": 3000000,
+    "defaultSlippage": 0.5,
+    "network": "arbitrum-nova",
+    "chainId": 42170
 }

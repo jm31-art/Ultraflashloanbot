@@ -5,10 +5,9 @@ module.exports = {
   solidity: {
     version: "0.8.20",
     settings: {
-      viaIR: true,
       optimizer: {
         enabled: true,
-        runs: 200
+        runs: 200  // Optimize for deployment cost
       }
     }
   },
@@ -16,26 +15,27 @@ module.exports = {
     hardhat: {
       chainId: 1337
     },
-    bsctest: {
-      url: process.env.BSC_TEST_RPC || "https://data-seed-prebsc-1-s1.binance.org:8545/",
-      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
-    },
-    bsc: {
-      url: process.env.BSC_RPC_URL || process.env.RPC_URL || "https://bsc-dataseed.binance.org/",
-      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
-      chainId: 56,
-      gasPrice: process.env.BSC_MAX_GAS_PRICE ? parseInt(process.env.BSC_MAX_GAS_PRICE) * 1000000000 : undefined
-    },
     arbitrum: {
       url: process.env.ARBITRUM_RPC_URL || "https://arb1.arbitrum.io/rpc",
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
       chainId: 42161,
-      gasPrice: process.env.ARBITRUM_MAX_GAS_PRICE ? parseInt(process.env.ARBITRUM_MAX_GAS_PRICE) * 1000000000 : undefined
+      gasPrice: "auto",  // Arbitrum uses dynamic gas
+      // Arbitrum specific settings
+      arbitrum: {
+        // Enable Arbitrum compatibility mode
+        enableCustomGasReporter: true
+      }
     },
-    arbitrumGoerli: {
-      url: process.env.ARBITRUM_GOERLI_RPC_URL || "https://goerli-rollup.arbitrum.io/rpc",
+    arbitrumSepolia: {
+      url: process.env.ARBITRUM_TESTNET_RPC || "https://sepolia-rollup.arbitrum.io/rpc",
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
-      chainId: 421613
+      chainId: 421614
+    },
+    arbitrumNova: {
+      url: process.env.ARBITRUM_NOVA_RPC_URL || "https://nova.arbitrum.io/rpc",  // Public RPC (free)
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 42170,
+      gasPrice: 10000000  // 0.01 gwei in wei
     }
   }
 };

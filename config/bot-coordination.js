@@ -3,28 +3,28 @@
 
 const BotCoordinationConfig = {
 
-    // Python Bot Configuration (final_printer_2025.py)
+    // Python Bot Configuration (final_printer_2025.py) - Arbitrum Nova
     PYTHON_BOT: {
         WALLET: process.env.PYTHON_BOT_WALLET || "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1", // Separate wallet
         FLASH_LOAN_CONTRACT: process.env.PYTHON_FLASH_CONTRACT || "0x8aB9F5a0A473764869c5fF9D991F9a9D3c0b2C71", // Separate contract
-        RPC_URL: process.env.PYTHON_RPC_URL || "https://arb1.arbitrum.io/rpc",
+        RPC_URL: process.env.PYTHON_RPC_URL || "https://nova.arbitrum.io/rpc", // Arbitrum Nova
         STRATEGY: "HIGH_FREQUENCY_MEV", // Specialized strategy
-        PRIORITY_TOKENS: ["WETH", "USDC", "USDT", "ARB"],
+        PRIORITY_TOKENS: ["WETH", "USDC", "USDT", "ARB", "WBTC"], // Arbitrum Nova high-liquidity tokens
         OPERATION_MODE: "MEV_PROTECTED",
-        MAX_GAS_PRICE: "1 gwei", // Arbitrum gas is much cheaper
-        MIN_PROFIT_THRESHOLD: "5 USD" // Lower threshold due to lower gas costs
+        MAX_GAS_PRICE: "0.01 gwei", // Arbitrum Nova gas is ultra-cheap
+        MIN_PROFIT_THRESHOLD: "1 USD" // Very low threshold due to ultra-low gas costs
     },
 
-    // JavaScript Bot Configuration
+    // JavaScript Bot Configuration - Arbitrum Nova
     JAVASCRIPT_BOT: {
         WALLET: process.env.JS_BOT_WALLET || "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb2", // Different wallet
         FLASH_LOAN_CONTRACT: process.env.JS_FLASH_CONTRACT || "0x7cB5fC1B9C9d8dD3c0b2C71a9B9D991F9a9D3c0b2C7", // Different contract
-        RPC_URL: process.env.JS_RPC_URL || "https://arb1.arbitrum.io/rpc",
+        RPC_URL: process.env.JS_RPC_URL || "https://nova.arbitrum.io/rpc", // Arbitrum Nova
         STRATEGY: "BROAD_MARKET_LIQUIDATION", // Broader strategy
-        PRIORITY_TOKENS: ["WBTC", "ARB", "DAI", "FRAX"],
+        PRIORITY_TOKENS: ["WETH", "USDC", "USDT", "ARB", "WBTC"], // Arbitrum Nova high-liquidity tokens
         OPERATION_MODE: "STANDARD",
-        MAX_GAS_PRICE: "2 gwei", // Arbitrum gas is much cheaper
-        MIN_PROFIT_THRESHOLD: "10 USD"
+        MAX_GAS_PRICE: "0.02 gwei", // Arbitrum Nova gas is ultra-cheap
+        MIN_PROFIT_THRESHOLD: "2 USD" // Low threshold for Nova
     },
 
     // Coordination Rules
@@ -91,8 +91,16 @@ class BotCoordinator {
     }
 
     getTokenSymbol(tokenAddress) {
-        // Simple token symbol mapping - in production, use token contract
+        // Arbitrum Nova token symbol mapping
         const tokenMap = {
+            // Arbitrum Nova Native Tokens
+            "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1": "WETH",
+            "0xaf88d065e77c8cC2239327C5EDb3A432268e5831": "USDC",
+            "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9": "USDT",
+            "0x912CE59144191C1204E64559FE8253a0e49E6548": "ARB",
+            "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f": "WBTC",
+
+            // Legacy mappings (for compatibility)
             "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c": "WBNB",
             "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56": "BUSD",
             "0x55d398326f99059fF775485246999027B3197955": "USDT",

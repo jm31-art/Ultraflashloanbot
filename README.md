@@ -1,29 +1,38 @@
 # 🚀 MONEY TREES PRINTER 2025
 
-**Advanced DeFi Arbitrage Bot with 13 Nuclear Edges**
+**Dual-Strategy DeFi Bot System - Arbitrage + Liquidation**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/node.js-18+-green.svg)](https://nodejs.org/)
 
-A high-performance arbitrage bot that scans 13 different arbitrage strategies across PancakeSwap, ApeSwap, BiSwap, and other DEXes on BSC. Features micro-arbitrage detection, volatility-adaptive scanning, and AI-powered optimization.
+A high-performance dual-bot system optimized for **Arbitrum Nova** with native asset integration:
+- **🐍 Python Bot**: Arbitrage scanning (12 edges) - Cross-DEX price gaps on WETH/USDC/USDT/ARB/WBTC
+- **☕ JavaScript Bot**: Liquidation hunting - Protocol liquidations on Arbitrum Nova
+
+Features micro-arbitrage detection, volatility-adaptive scanning, AI-powered optimization, Dune analytics integration, and specialized liquidation strategies on ultra-low-cost Arbitrum Nova.
 
 ## 🔥 Key Features
 
-### 🎯 **13 Arbitrage Edges**
+### 🎯 **Python Bot: 12 Arbitrage Edges**
 1. **Collateral Swap V3** - Oracle vs DEX price gaps
 2. **WBNB Premium** - Wrapped token arbitrage
-3. **Beefy + Venus Liquidations** - Vault health monitoring
+3. **BeEFy + Venus Liquidation** - Protocol liquidation opportunities
 4. **Alpaca FairPrice Gap** - Fair price arbitrage
 5. **Pancake V3 Fee Tier Sniping** - Fee optimization
 6. **Venus XVS Reward Spike** - Reward monitoring
 7. **Cross-DEX Deviation** - Multi-DEX arbitrage
 8. **Flash Loan Pool Dryness** - Lender rotation
-9. **Stink Sniper (Meme Pools)** - MEV sandwich detection
-10. **Memecoin Sniper** - New token detection
-11. **Triangular Arbitrage** - Multi-hop arbitrage paths
-12. **AI Gas Optimization** - Gas price prediction
-13. **Mempool Pattern Recognition** - Large transaction monitoring
+9. **Memecoin Sniper** - New token detection
+10. **Triangular Arbitrage** - Multi-hop arbitrage paths
+11. **AI Gas Optimization** - Gas price prediction
+12. **Mempool Pattern Recognition** - Large transaction monitoring
+
+### 💀 **JavaScript Bot: Liquidation Strategy**
+- **Venus Protocol** - vToken liquidation opportunities
+- **AAVE V3** - Health factor monitoring
+- **Cream Finance** - Liquidation detection
+- **Compound** - Position monitoring
 
 ### ⚡ **Performance Features**
 - **Micro-Arbitrage Detection**: 0.15%+ profit gaps (down from 0.4%)
@@ -61,7 +70,13 @@ nano .env
 
 **Required .env variables:**
 ```env
-PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE
+# Python Arbitrage Bot (existing)
+PYTHON_BOT_PRIVATE_KEY=0xYOUR_PYTHON_BOT_PRIVATE_KEY_HERE
+
+# JavaScript Liquidation Bot (separate wallet!)
+LIQUIDATION_BOT_KEY=0xYOUR_LIQUIDATION_BOT_PRIVATE_KEY_HERE
+
+# Notifications
 TELEGRAM_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 ```
@@ -100,47 +115,63 @@ npm run test:calculator
 npm test
 ```
 
-### 5. Start the Bot
+### 5. Start the Bots
 
-**Live Trading Mode:**
+**Python Arbitrage Bot:**
 ```bash
-npm run run:auto
+# Activate Python environment
+source arbitrage_env/bin/activate
+
+# Run arbitrage scanner
+python final_printer_2025.py
 ```
 
-**Monitor Mode (with output):**
+**JavaScript Liquidation Bot:**
 ```bash
-npm run run:printer
+# Run liquidation hunter
+node run_live_trading.js
 ```
 
-**AI-Enhanced Mode:**
+**Run Both Bots Simultaneously:**
 ```bash
-npm run run:ai
+# Terminal 1 - Python arbitrage
+source arbitrage_env/bin/activate && python final_printer_2025.py
+
+# Terminal 2 - JavaScript liquidation
+node run_live_trading.js
 ```
 
 ## 📁 Project Structure
 
 ```
 money-trees-printer-2025/
-├── final_printer_2025.py      # Main arbitrage bot
-├── contracts/                 # Solidity smart contracts
-│   ├── FlashloanArb.sol      # Main arbitrage contract
-│   └── Interfaces.sol        # Contract interfaces
-├── utils/                     # Utility modules
-│   ├── FlashProvider.js      # Flash loan providers
+├── 🐍 final_printer_2025.py      # Python arbitrage bot (11 edges)
+├── ☕ run_live_trading.js       # JavaScript liquidation bot
+├── zero-flash-bot.js           # Flash arbitrage bot
+├── contracts/                  # Solidity smart contracts
+│   ├── FlashloanArb.sol       # Arbitrage contract
+│   ├── RealArbitrageExecutor.sol # Triangular arbitrage
+│   └── Interfaces.sol         # Contract interfaces
+├── bot/                        # JavaScript bot modules
+│   ├── UnifiedStrategyManager.js # Strategy orchestration
+│   ├── LiquidationBot.js      # Liquidation strategies
+│   └── ArbitrageBot.js        # Arbitrage strategies
+├── utils/                      # Utility modules
+│   ├── FlashProvider.js       # Flash loan providers
 │   ├── PerformanceDashboard.js # Performance tracking
-│   └── SecureMEVProtector.js # MEV protection
-├── ai/                        # AI/ML models
-│   ├── mev_protector.py      # MEV detection AI
+│   └── SecureMEVProtector.js  # MEV protection
+├── ai/                         # AI/ML models
+│   ├── mev_protector.py       # MEV detection AI
 │   └── gas_price_predictor.pkl # Gas prediction model
-├── services/                  # Core services
+├── services/                   # Core services
 │   └── ArbitrageCalculator.py # Arbitrage calculations
-├── config/                    # Configuration files
-│   └── dex.js                # DEX configurations
-├── test/                      # Test files
-├── .env                       # Environment variables (create from template)
-├── requirements.txt           # Python dependencies
-├── package.json              # Node.js dependencies
-└── README.md                 # This file
+├── config/                     # Configuration files
+│   └── dex.js                 # DEX configurations
+├── test/                       # Test files
+├── .env                        # Environment variables
+├── requirements.txt            # Python dependencies
+├── package.json               # Node.js dependencies
+└── README.md                  # This file
 ```
 
 ## ⚙️ Configuration
@@ -152,14 +183,22 @@ MIN_PROFIT_PCT = Decimal("0.0015") # 0.15% minimum gap
 MIN_PROFIT_USD = Decimal("15")     # $15 minimum profit
 ```
 
-### DEX Configuration
-The bot monitors these DEXes:
-- **PancakeSwap V2/V3**
-- **ApeSwap**
-- **BiSwap**
-- **MDEX**
-- **Venus Protocol**
-- **Beefy Finance**
+### DEX Configuration (Arbitrum Nova)
+The bot monitors these DEXes on Arbitrum Nova with native asset pairs:
+
+**Primary DEXes:**
+- **Uniswap V3** - WETH/USDC, WETH/USDT, USDC/USDT, WETH/WBTC, ARB/WETH
+- **SushiSwap** - WETH/USDC, WETH/USDT, USDC/USDT, WETH/WBTC, ARB/WETH
+- **Camelot** - Arbitrum Nova native DEX with high liquidity
+
+**High-Liquidity Pairs:**
+- **WETH/USDC** (Very High Liquidity)
+- **WETH/USDT** (Very High Liquidity)
+- **USDC/USDT** (Very High Liquidity)
+- **WETH/WBTC** (High Liquidity)
+- **ARB/WETH** (High Liquidity)
+
+**Note**: All pairs use Arbitrum Nova's native tokens for maximum efficiency and lowest gas costs.
 
 ### Telegram Alerts
 Set up a Telegram bot for real-time notifications:

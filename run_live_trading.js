@@ -18,7 +18,9 @@ process.on('uncaughtException', (error) => {
 
 async function main() {
     try {
-        // SILENT STARTUP - NO LOGS
+        console.log('💀 LIQUIDATION BOT STARTING - SPECIALIZED STRATEGY');
+        console.log('🎯 Strategy: LIQUIDATION ONLY (no arbitrage overlap with Python bot)');
+        console.log('🔄 Checking for liquidation opportunities...');
 
         // Initialize SINGLE RPC MANAGER (source of truth)
         rpcManager.initialize();
@@ -26,16 +28,24 @@ async function main() {
         // Get provider from SINGLE source of truth
         const provider = rpcManager.getReadProvider();
 
-        // Initialize signer
-        const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+        // Initialize signer - USE SEPARATE WALLET FROM PYTHON BOT
+        const LIQUIDATION_BOT_KEY = process.env.LIQUIDATION_BOT_KEY;
+        if (!LIQUIDATION_BOT_KEY) {
+            console.error('❌ LIQUIDATION_BOT_KEY not set in environment variables');
+            console.error('💡 Set LIQUIDATION_BOT_KEY to a different wallet than PYTHON_BOT_PRIVATE_KEY');
+            process.exit(1);
+        }
 
-        // Initialize and start the unified strategy manager
+        const signer = new ethers.Wallet(LIQUIDATION_BOT_KEY, provider);
+        console.log(`💀 Liquidation Bot Wallet: ${signer.address}`);
+
+        // SPECIALIZED FOR LIQUIDATION ONLY - NO OVERLAP WITH PYTHON ARBITRAGE BOT
         const manager = new UnifiedStrategyManager(provider, signer, {
-            arbitrageWeight: 1.0, // Focus exclusively on arbitrage
-            liquidationWeight: 0.0,
-            nftWeight: 0.0,
-            crossProtocolWeight: 0.0,
-            multicoinWeight: 0.0,
+            arbitrageWeight: 0.0,        // DISABLED - Python bot handles arbitrage
+            liquidationWeight: 1.0,      // FULL FOCUS on liquidations
+            nftWeight: 0.0,              // DISABLED
+            crossProtocolWeight: 0.0,    // DISABLED
+            multicoinWeight: 0.0,        // DISABLED
             maxConcurrentStrategies: 1
         });
 
