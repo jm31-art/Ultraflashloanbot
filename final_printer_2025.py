@@ -1,7 +1,12 @@
 # final_printer_2025.py — FULL 12-EDGE NUCLEAR PRINTER (DEC 2025 TOP 3 WALLET EXACT)
 
-# Standard library imports
+# Load environment variables FIRST
 import os
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'), override=True)
+print(f"DEBUG: PRIVATE_KEY exists: {bool(os.getenv('PRIVATE_KEY'))}")
+
+# Standard library imports
 import time
 import logging
 import logging.handlers
@@ -34,7 +39,6 @@ from web3 import Web3
 from web3.middleware import geth_poa_middleware
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
-from dotenv import load_dotenv
 from services.DuneEnhancedMEVBot import DuneEnhancedMEVBot
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -556,8 +560,6 @@ ERC20_ABI = [
         "type": "function"
     }
 ]
-
-load_dotenv()
 
 PYTHON_BOT_PRIVATE_KEY = os.getenv("PYTHON_BOT_PRIVATE_KEY")
 # Fallback to old PRIVATE_KEY for backward compatibility
@@ -2243,13 +2245,14 @@ def initialize_mev_protected_bot():
     logger.info("Initializing MEV-protected bot...")
 
     # Initialize Dune Enhanced MEV Bot first (always available)
-    dune_api_key = os.getenv('DUNE_API_KEY')
-    if dune_api_key:
-        global dune_bot
-        dune_bot = DuneEnhancedMEVBot(dune_api_key)
-        logger.info("Dune Enhanced MEV Bot initialized")
-    else:
-        logger.warning("DUNE_API_KEY not found in environment variables")
+    if 'dune_bot' not in globals():
+        dune_api_key = os.getenv('DUNE_API_KEY')
+        if dune_api_key:
+            global dune_bot
+            dune_bot = DuneEnhancedMEVBot(dune_api_key)
+            logger.info("Dune Enhanced MEV Bot initialized")
+        else:
+            logger.warning("DUNE_API_KEY not found in environment variables")
 
     # Try MEV-protected RPC first, fallback to public RPCs
     mev_protection_enabled = os.getenv('MEV_PROTECTION_ENABLED', 'true').lower() == 'true'
@@ -8080,7 +8083,7 @@ async def edge13_async(self):
 class SecureBot:
     """Military-grade secure arbitrage bot"""
 
-    def __init__(self):
+    def __init__(self, private_key=None):
         # Initialize security components
         self.key_manager = SecureKeyManager()
         self.tx_manager = SecureTransactionManager(self.key_manager)
@@ -8099,7 +8102,7 @@ class SecureBot:
         self.setup_emergency_procedures()
 
         # Initialize encrypted private key
-        self.initialize_secure_key()
+        self.initialize_secure_key(private_key)
 
         logger.info("🔐 SecureBot initialized with military-grade security")
 
@@ -8142,7 +8145,7 @@ class SecureBot:
         # Configure triggers for emergency shutdown
         logger.info("Emergency shutdown triggers configured")
 
-    def initialize_secure_key(self):
+    def initialize_secure_key(self, private_key=None):
         """Initialize encrypted private key"""
         try:
             # Check if we have an encrypted key
@@ -8152,8 +8155,8 @@ class SecureBot:
                 logger.info("Encrypted private key loaded from environment")
                 return
 
-            # Check if we have a plain private key to encrypt
-            plain_key = os.getenv('PRIVATE_KEY')
+            # Use provided private key or get from environment
+            plain_key = private_key or os.getenv('PRIVATE_KEY')
             if plain_key:
                 # Encrypt the key
                 encrypted_key = self.key_manager.encrypt_private_key(plain_key)
@@ -8349,8 +8352,10 @@ class SecureBot:
 
 # ==================== BULLETPROOF MAIN LOOP ====================
 
-# Initialize military-grade secure bot
-secure_bot = SecureBot()
+# Initialize military-grade secure bot (prevent duplicate initialization)
+if 'secure_bot' not in globals():
+    private_key = os.getenv('PRIVATE_KEY')
+    secure_bot = SecureBot(private_key=private_key)
 
 def prepare_transaction_data(opportunity):
     """Placeholder for preparing transaction data"""
