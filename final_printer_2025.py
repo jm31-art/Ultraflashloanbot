@@ -2268,7 +2268,7 @@ def initialize_mev_protected_bot():
 
             # Connect to MEV-protected RPC
             if not nodereal_rpc.connect_http():
-                logger.warning("Failed to connect to MEV-protected HTTP RPC - using fallback")
+                logger.info("MEV protection not available - using public RPC")
                 mev_protection_enabled = False
             else:
                 logger.info("MEV-protected HTTP RPC connected")
@@ -2280,16 +2280,16 @@ def initialize_mev_protected_bot():
                 logger.info("MEV-protected WebSocket connected")
 
         except Exception as e:
-            logger.warning(f"MEV protection initialization failed: {e} - using fallback RPC")
+            logger.info(f"MEV protection not configured: {e} - using public RPC")
             mev_protection_enabled = False
     else:
         logger.info("MEV protection disabled or API key not configured - using public RPC")
         mev_protection_enabled = False
 
-    # Set up Web3 with Arbitrum Nova as primary, fallbacks for reliability
+    # Set up Web3 with Arbitrum One as primary, fallbacks for reliability
     rpc_urls = [
-        os.getenv('ARBITRUM_NOVA_RPC_URL', 'https://nova.arbitrum.io/rpc'),  # Primary - Arbitrum Nova
-        os.getenv('ARBITRUM_RPC_URL', 'https://arb1.arbitrum.io/rpc'),  # Arbitrum One fallback
+        os.getenv('ARBITRUM_RPC_URL', 'https://arb1.arbitrum.io/rpc'),  # Primary - Arbitrum One
+        os.getenv('ARBITRUM_NOVA_RPC_URL', 'https://nova.arbitrum.io/rpc'),  # Arbitrum Nova fallback
         'https://arbitrum-one.publicnode.com',  # Public node fallback
         'https://arbitrum.llamarpc.com',  # LlamaRPC fallback (if available)
     ]
@@ -9234,7 +9234,7 @@ async def main_async_mev_protected_with_coordination():
     # Load coordination config
     coordination_config = {
         'COORDINATOR_URL': os.getenv('COORDINATOR_URL', 'http://localhost:8080'),
-        'PRIORITY_TOKENS': ["WBNB", "BUSD", "USDT", "CAKE"]
+        'PRIORITY_TOKENS': ["WETH", "USDC", "USDT", "ARB"]
     }
 
     # Create enhanced bot with coordination
@@ -9279,6 +9279,13 @@ async def main_async_mev_protected_with_coordination():
 if __name__ == "__main__":
     logger.info("🚀 ULTRAFLASHLOANBOT 2025 — ASYNCHRONOUS PROFIT MACHINE WITH COORDINATION")
     tg("🚀 ASYNC PROFIT MACHINE WITH COORDINATION STARTING")
+
+    # Validate private key
+    private_key = os.getenv('PRIVATE_KEY')
+    if not private_key or private_key == 'your_private_key_here':
+        logger.error("❌ PRIVATE_KEY not set or is placeholder. Please set a valid private key in environment variables.")
+        tg("❌ PRIVATE_KEY ERROR: Bot cannot run without valid private key")
+        exit(1)
 
     try:
         initialize_mev_protected_bot()

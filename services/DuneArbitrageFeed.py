@@ -10,7 +10,7 @@ class DuneArbitrageFeed:
         """
         Fetch recent large DEX trades that could indicate arbitrage opportunities.
         """
-        query = """
+        query = f"""
         SELECT
             block_time,
             tx_hash,
@@ -23,19 +23,14 @@ class DuneArbitrageFeed:
             blockchain
         FROM dex.trades
         WHERE block_time > NOW() - INTERVAL '5' minute
-            AND amount_usd > {{min_volume}}
+            AND amount_usd > {min_volume_usd}
         ORDER BY amount_usd DESC
         """
 
         try:
-            # For now, return empty results since Dune API integration needs more setup
-            # This prevents the bot from crashing while keeping the framework ready
-            print("🌵 Dune integration ready - API calls disabled for now")
-            return pd.DataFrame()  # Return empty DataFrame
-
-            # TODO: Implement proper Dune query execution when API is fully configured
-            # result = self.client.run_query(query=query)
-            # return pd.DataFrame(result.result.rows)
+            # Execute the Dune query
+            result = self.client.run_query(query=query)
+            return pd.DataFrame(result.result.rows)
 
         except Exception as e:
             print(f"🌵 Dune API error (continuing without Dune): {e}")
