@@ -4,7 +4,7 @@
 import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'), override=True)
-print(f"DEBUG: PRIVATE_KEY exists: {bool(os.getenv('PRIVATE_KEY'))}")
+print(f"DEBUG: PYTHON_BOT_PRIVATE_KEY loaded: {bool(os.getenv('PYTHON_BOT_PRIVATE_KEY'))}")
 
 # Standard library imports
 import time
@@ -3020,7 +3020,8 @@ class MemoryEfficientContractValidator:
         logger.info("Memory-efficient contract validator cleanup completed")
 
 # Backward compatibility - create instance of new validator
-contract_validator = MemoryEfficientContractValidator(w3)
+if 'contract_validator' not in globals():
+    contract_validator = MemoryEfficientContractValidator(w3)
 
 # Keep old class name for compatibility but use new implementation
 class ContractValidator(MemoryEfficientContractValidator):
@@ -8354,8 +8355,7 @@ class SecureBot:
 
 # Initialize military-grade secure bot (prevent duplicate initialization)
 if 'secure_bot' not in globals():
-    private_key = os.getenv('PRIVATE_KEY')
-    secure_bot = SecureBot(private_key=private_key)
+    secure_bot = SecureBot(private_key=PRIVATE_KEY)
 
 def prepare_transaction_data(opportunity):
     """Placeholder for preparing transaction data"""
