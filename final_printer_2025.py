@@ -2286,12 +2286,12 @@ def initialize_mev_protected_bot():
         logger.info("MEV protection disabled or API key not configured - using public RPC")
         mev_protection_enabled = False
 
-    # Set up Web3 with Arbitrum One as primary, fallbacks for reliability
+    # Set up Web3 with NodeReal MEV-protected RPC as primary, fallbacks for reliability
     rpc_urls = [
-        os.getenv('ARBITRUM_RPC_URL', 'https://arb1.arbitrum.io/rpc'),  # Primary - Arbitrum One
+        os.getenv('ARBITRUM_RPC_URL', 'https://open-platform.nodereal.io/417a6f29ddd74e778572d91139069066/arbitrum/'),  # Primary - NodeReal MEV-protected
+        os.getenv('ARBITRUM_PUBLIC_RPC', 'https://arb1.arbitrum.io/rpc'),  # Arbitrum One public fallback
         os.getenv('ARBITRUM_NOVA_RPC_URL', 'https://nova.arbitrum.io/rpc'),  # Arbitrum Nova fallback
         'https://arbitrum-one.publicnode.com',  # Public node fallback
-        'https://arbitrum.llamarpc.com',  # LlamaRPC fallback (if available)
     ]
 
     w3 = None
